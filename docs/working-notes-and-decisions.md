@@ -17,6 +17,17 @@ One entry per decision, newest first. Format:
 this choice over the alternatives. Note what's still open or deferred within it, if anything.
 -->
 
+**2026-10-18 - Spike skeleton decisions (Claude Code session 1).** Details in `docs/sessions/2026-10-18-spike-skeleton.md`; the reasoning worth keeping:
+
+- *Images:* every photo goes through `app.images.prepare_image`: orientation applied, then the image is rebuilt from raw pixels (so EXIF/GPS/XMP/ICC cannot ride along), downscaled to a 1568 px long edge (configurable, `APP_IMAGE_MAX_EDGE`; image tokens scale with area, so this is also the cost lever), re-encoded as JPEG q85. Never upscaled. Tests and the mock spike use a generated image carrying fake GPS, so no real photo is needed anywhere.
+- *Pricing:* one table, `src/app/pricing.py`, with source URL and date (checked 2026-10-18). Costs are always *estimates* from API-reported usage plus a configurable per-search estimate (`$0.01`, from "$10 per 1,000 searches"). Haiku 5.5's prompt-length tier is modeled; an unpriced model is costed at the highest known rate so the cap errs conservative and the table prints a warning.
+- *Models:* defaults `claude-sonnet-5-5` (perception) and `claude-haiku-5-5` (retrieval), both confirmed on the models overview page. Config only; recorded per stage in trace and table.
+- *Web search tool version:* default is the basic `web_search_20250305` (works on every model, results go straight into context) rather than the `_20260209`+ dynamic-filtering variants, because those run code execution under the hood and I could not verify Haiku 5.5 support or the token trade-off without a live call. `APP_WEB_SEARCH_TOOL` switches it so the two can be compared live.
+- *Thinking effort:* `APP_EFFORT_PERCEPTION=medium`, `APP_EFFORT_RETRIEVAL=low` are guesses (thinking tokens bill as output). Explore live; they may be the biggest cost lever.
+- *Perception schema (`schema_version` 1):* top-down plan in normalized coordinates (north = wall farthest from camera). Added a `furniture_gaps` list (categories the room visibly lacks) so retrieval slots have something to derive from. Living things are a separate list, never in `furniture`. Bounds (0..1 positions, confidence, positive sizes) are validated by pydantic *after* parsing; the JSON Schema sent to the API strips `maxItems`/`maxLength`/numeric bounds rather than pretending they work.
+- *Slot derivation:* done in code, not by an LLM call, so the number of searching calls is bounded and inspectable. Order: furniture marked replaceable (`keepable: unlikely`), then gaps, then room-type defaults only if neither exists. Keepable items are never slots. Total budget is split equally across slots (spike heuristic). Slots run sequentially under one shared `Budget` (steps and dollars cap the whole run); parallelizing is a latency lever to test later (todo).
+- *URL guard:* a candidate is kept only if its URL appeared in that call's search results (ignoring only a `#fragment` and trailing slash). The mock deliberately returns one unverified URL per slot so the guard visibly fires in every mock run.
+
 **2026-10-18 - Form factor: site tab backed by a Python service.** Modeled on the Satellite Point-of-View Tool: a new tab on `portfolio-site`, with the agent in this repo (from `portfolio-project-template`) and a thin Vercel function between them so keys and rate limits stay server-side. Proposed, to confirm after the spike. See ADR 0002.
 
 **2026-10-18 - Blank canvas is 2D, from perception data.** Claude does not generate images, so a photo-real empty room means a second vendor. v1 renders a 2D top-down canvas from structured perception output; photo-real is a gated experiment. See ADR 0003.
@@ -37,7 +48,9 @@ this choice over the alternatives. Note what's still open or deferred within it,
 - Shopping API vendor candidates, pricing and terms of use (non-commercial portfolio). Cowork to research before retrieval configuration B.
 - Which model per stage (perception vs retrieval vs self-check); decided by the spike.
 - Workspace spend limit and a project-named API key in the `portfolio-projects` Console workspace, before the first live run.
-- Template gaps: mock/live-forced `eval-standard` and `eval-nightly` targets, adversarial eval pattern.
+- Template gaps: adversarial eval pattern. (Mock/live-forced `eval-standard` and `eval-nightly` targets are done in this repo as of 2026-10-18; not yet ported back to the template.)
+- Unverified until a live call: whether Haiku 5.5 accepts structured output + `web_search_20250305` + `effort` together (check `capabilities.server_tools` via the Models API first), and how many thinking tokens each stage burns.
+- `Config.max_cost_usd` (0.25) and `max_steps` (12) are still template guesses. They bound a whole spike run now; the proposed full-run target ($0.20) sits below the cap on purpose, but validate both against the exploratory run.
 
 
 ## See also
