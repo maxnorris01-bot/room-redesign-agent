@@ -117,6 +117,86 @@ def _placeholder_for(schema: dict[str, Any]) -> Any:
     return "mock"
 
 
+MOCK_RETAILER = "MOCK"
+MOCK_URL_FOUND = "https://mock.example/product/found"
+MOCK_URL_UNVERIFIED = "https://mock.example/product/never-searched"
+
+
+def mock_perception_payload() -> dict[str, Any]:
+    """A schema-valid, obviously fake room (title-routed from `RoomPerception`)."""
+    return {
+        "schema_version": 1,
+        "room_type": "MOCK living room",
+        "dimensions": {
+            "width_m": 4.0,
+            "length_m": 5.0,
+            "ceiling_height_m": 2.5,
+            "confidence": 0.1,
+            "derivation": "MOCK placeholder, not derived from the image",
+        },
+        "openings": [
+            {"kind": "window", "wall": "east", "position_along_wall": 0.5, "width_m": 1.2,
+             "note": "MOCK window"},
+            {"kind": "door", "wall": "south", "position_along_wall": 0.2, "width_m": 0.9,
+             "note": "MOCK door"},
+        ],
+        "fixed_items": [
+            {"category": "radiator", "position": {"x": 0.9, "y": 0.5},
+             "size": {"width_m": 0.2, "depth_m": 1.0}, "note": "MOCK fixed item"},
+        ],
+        "furniture": [
+            {"id": "f1", "category": "sofa", "position": {"x": 0.3, "y": 0.6},
+             "size": {"width_m": 2.0, "depth_m": 0.9}, "keepable": "unlikely",
+             "note": "MOCK sofa, marked replaceable"},
+            {"id": "f2", "category": "armchair", "position": {"x": 0.7, "y": 0.7},
+             "size": {"width_m": 0.9, "depth_m": 0.9}, "keepable": "likely",
+             "note": "MOCK armchair, marked keepable"},
+        ],
+        "furniture_gaps": [
+            {"category": "coffee table", "reason": "MOCK gap"},
+            {"category": "floor lamp", "reason": "MOCK gap"},
+        ],
+        "living_things": [
+            {"kind": "pet", "description": "MOCK pet, never furniture",
+             "position": {"x": 0.5, "y": 0.8}},
+        ],
+        "art_and_decor": [
+            {"kind": "wall art", "location": "north wall", "note": "MOCK decor"},
+        ],
+        "style_descriptors": ["MOCK style"],
+        "uncertainties": ["MOCK: this is placeholder data from the mock client, not a real room"],
+    }  # fmt: skip
+
+
+def mock_retrieval_payload(slot: str) -> dict[str, Any]:
+    """Clearly labelled fake candidates; one URL is deliberately absent from the search results,
+    so the unverified-URL guard visibly drops it in every mock run."""
+    return {
+        "slot": slot,
+        "candidates": [
+            {"name": f"MOCK {slot} (fake)", "retailer": MOCK_RETAILER, "price": 123.45,
+             "currency": "USD", "url": MOCK_URL_FOUND},
+            {"name": f"MOCK {slot} (fake, URL not in search results)", "retailer": MOCK_RETAILER,
+             "price": 99.0, "currency": "USD", "url": MOCK_URL_UNVERIFIED},
+        ],
+        "note": "MOCK data from the mock client; nothing here is a real product",
+    }  # fmt: skip
+
+
+def _slot_from_request(kwargs: dict[str, Any]) -> str:
+    """The retrieval user message names its slot on a line starting 'Slot: '."""
+    content = kwargs["messages"][0]["content"]
+    text = (
+        content
+        if isinstance(content, str)
+        else " ".join(b.get("text", "") for b in content if b.get("type") == "text")
+    )
+    for line in text.splitlines():
+        if line.startswith("Slot: "):
+            return line.removeprefix("Slot: ").strip()
+    return "unknown slot"
+
+
 class MockAnthropicClient:
     """Auto-generates a schema-valid response for any structured-output request.
 
@@ -139,6 +219,22 @@ class MockAnthropicClient:
         if schema is None:
             # No structured-output schema on this request - just echo something schema-free.
             return response([text_block("mock response")], input_tokens=100, output_tokens=20)
+        title = schema.get("title")
+        if title == "RoomPerception":
+            return response(
+                [text_block(mock_perception_payload())], input_tokens=1800, output_tokens=700
+            )
+        if title == "SlotCandidates":
+            slot = _slot_from_request(kwargs)
+            return response(
+                [
+                    *search_blocks(f"MOCK query: {slot}", [MOCK_URL_FOUND]),
+                    text_block(mock_retrieval_payload(slot)),
+                ],
+                input_tokens=2500,
+                output_tokens=250,
+                searches=1,
+            )
         payload = _placeholder_for(schema)
         uses_search = bool(kwargs.get("tools"))
         if uses_search:
