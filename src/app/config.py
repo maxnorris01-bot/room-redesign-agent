@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 from dotenv import find_dotenv, load_dotenv
 
+from app.pricing import WEB_SEARCH_USD_PER_REQUEST
+
 LLM_MODES = ("mock", "live")
 
 
@@ -26,6 +28,25 @@ class Config:
     # default to "live" - every entry point (CLI, eval harness) should be free unless explicitly
     # opted in via APP_LLM_MODE=live, e.g. a dedicated `make eval-fast-live` target.
     llm_mode: str = "mock"
+    # Model per pipeline stage: configuration, never hardcoded in logic. Defaults verified against
+    # the models overview page on 2026-10-18; see also .env.example.
+    model_perception: str = "claude-sonnet-5-5"
+    model_retrieval: str = "claude-haiku-5-5"
+    # Basic web search works on every model; _20260209+ adds dynamic filtering (runs code
+    # execution under the hood). Config, so the two can be compared live without a code change.
+    web_search_tool: str = "web_search_20250305"
+    max_searches_per_slot: int = 3
+    default_slots: int = 3
+    image_max_edge: int = 1568
+    # The SDK default (2) can bill a timed-out call and then retry it. Keep it low on expensive
+    # live calls.
+    sdk_max_retries: int = 1
+    # Thinking depth per stage (output_config.effort). Starting guesses to explore live, not
+    # measured: thinking tokens bill as output tokens, so effort is a direct cost lever.
+    effort_perception: str = "medium"
+    effort_retrieval: str = "low"
+    # Per-search cost estimate (USD); the API returns no dollar figure. Default: pricing.py.
+    web_search_usd: float = WEB_SEARCH_USD_PER_REQUEST
 
     def __post_init__(self) -> None:
         if self.llm_mode not in LLM_MODES:
@@ -38,6 +59,18 @@ class Config:
             max_cost_usd=float(os.environ.get("APP_MAX_COST_USD", "0.25")),
             tracing_disabled=os.environ.get("APP_TRACING_DISABLED", "0") == "1",
             llm_mode=os.environ.get("APP_LLM_MODE", "mock"),
+            model_perception=os.environ.get("APP_MODEL_PERCEPTION", cls.model_perception),
+            model_retrieval=os.environ.get("APP_MODEL_RETRIEVAL", cls.model_retrieval),
+            web_search_tool=os.environ.get("APP_WEB_SEARCH_TOOL", cls.web_search_tool),
+            max_searches_per_slot=int(
+                os.environ.get("APP_MAX_SEARCHES_PER_SLOT", cls.max_searches_per_slot)
+            ),
+            default_slots=int(os.environ.get("APP_DEFAULT_SLOTS", cls.default_slots)),
+            image_max_edge=int(os.environ.get("APP_IMAGE_MAX_EDGE", cls.image_max_edge)),
+            sdk_max_retries=int(os.environ.get("APP_SDK_MAX_RETRIES", cls.sdk_max_retries)),
+            effort_perception=os.environ.get("APP_EFFORT_PERCEPTION", cls.effort_perception),
+            effort_retrieval=os.environ.get("APP_EFFORT_RETRIEVAL", cls.effort_retrieval),
+            web_search_usd=float(os.environ.get("APP_WEB_SEARCH_USD", cls.web_search_usd)),
         )
 
 

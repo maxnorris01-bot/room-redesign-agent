@@ -1,11 +1,13 @@
 [project]
 name = "app"
 version = "0.1.0"
-description = "PROJECT_NAME"
+description = "Room Redesign Agent: room photo + budget + style in, furniture list with real links out."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=1.7.0",
+    "pillow>=13.0.0",
+    "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
     "pyyaml>=6.0",
 ]
@@ -17,6 +19,7 @@ dev = [
     "mypy>=1.10",
     "types-PyYAML",
     "pre-commit>=3.7",
+    "types-pillow>=10.2.0.20240822",
 ]
 
 [build-system]
@@ -36,7 +39,7 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src", "evals"]
+files = ["src", "evals", "scripts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

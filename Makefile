@@ -1,4 +1,5 @@
-.PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-nightly
+.PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-standard-live \
+	eval-nightly eval-nightly-live spike spike-live
  
 install:
 	uv sync
@@ -27,11 +28,28 @@ eval-fast:
 eval-fast-live:
 	APP_LLM_MODE=live uv run python -m evals.run --tier fast
  
-# NOTE: unlike fast/fast-live, these two don't force a mode - they inherit whatever APP_LLM_MODE
-# is set to (mock by default). Worth adding the same explicit mock/live split before either is
-# used for real - see docs/lessons-learned.md, this is a known, still-open gap.
+# Standard and nightly tiers follow the same split as fast: the plain target forces mock (free),
+# the -live target forces live (real API cost; CI schedules and Max run those deliberately).
 eval-standard:
-	uv run python -m evals.run --tier standard
- 
+	APP_LLM_MODE=mock uv run python -m evals.run --tier standard
+
+# Costs real API money.
+eval-standard-live:
+	APP_LLM_MODE=live uv run python -m evals.run --tier standard
+
 eval-nightly:
-	uv run python -m evals.run --tier nightly
+	APP_LLM_MODE=mock uv run python -m evals.run --tier nightly
+
+# Costs real API money.
+eval-nightly-live:
+	APP_LLM_MODE=live uv run python -m evals.run --tier nightly
+
+# Cost/latency spike (SPEC.md "Session 1"). Pass arguments with ARGS, e.g.
+#   make spike ARGS='spike-photos/living-room.jpg --budget 800 --style "warm minimalist"'
+# Mock is forced: no network, no key required.
+spike:
+	APP_LLM_MODE=mock uv run python scripts/spike.py $(ARGS)
+
+# Costs real API money. Run deliberately (Max's call), after the Console spend limit exists.
+spike-live:
+	APP_LLM_MODE=live uv run python scripts/spike.py $(ARGS)

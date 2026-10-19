@@ -16,7 +16,8 @@ Every request goes through `complete`, which:
 docstring in `app.config`.
 
 Web-search-specific pieces (`web_search_tool`, the search-related fields on `Completion`,
-`_web_searches`) assume Claude's built-in web search tool. Delete them if a project doesn't use
+`pricing.web_searches`) assume Claude's built-in web search tool. Delete them if a project
+doesn't use
 search; keep them if it does (research/retrieval-style calls - most agent projects built from this
 template will).
 """
@@ -32,7 +33,9 @@ import anthropic
 from anthropic.types import Message
 
 from app.config import Config, check_budget
+from app.images import PreparedImage
 from app.mock_llm import MockAnthropicClient
+from app.pricing import estimate_cost, web_searches
 from app.prompts import Prompt
 from app.tracing import span
 
@@ -44,21 +47,7 @@ class _MessagesClient(Protocol):
     def messages(self) -> Any: ...
 
 
-# USD per million tokens (input, output). Verify against current pricing when starting a new
-# project - these change, and an unknown/renamed model falls back to the most expensive known
-# rate below so the cost cap stays conservative rather than silently under-counting.
-PRICING: dict[str, tuple[float, float]] = {
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-sonnet-5": (2.0, 10.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-opus-5": (5.0, 25.0),
-    "claude-opus-4-8": (5.0, 25.0),
-    "claude-fable-5-1": (10.0, 50.0),
-}
-CACHE_READ_MULTIPLIER = 0.1
-CACHE_WRITE_MULTIPLIER = 1.25
-WEB_SEARCH_USD_PER_REQUEST = 0.01
-WEB_SEARCH_TOOL_TYPE = "web_search_20260209"  # dynamic filtering; needs Sonnet 4.6+/Opus 4.6+
+WEB_SEARCH_TOOL_TYPE = "web_search_20250305"  # default; Config.web_search_tool overrides
 
 REQUEST_TIMEOUT_S = 120.0
 
@@ -89,10 +78,21 @@ class Budget:
 class Completion:
     text: str
     retrieved_urls: set[str] = field(default_factory=set)
+    # Totals across every request this logical call made (pause_turn resumes add requests).
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    web_searches: int = 0
+    cost_usd: float = 0.0
+    steps: int = 0
+    # Search log across requests: {"query": ...}, {"results": n} or {"error": code} entries.
+    searches: list[dict[str, Any]] = field(default_factory=list)
 
 
-@lru_cache(maxsize=2)
-def get_client(mode: str) -> _MessagesClient:
+@lru_cache(maxsize=4)
+def get_client(mode: str, max_retries: int = 1) -> _MessagesClient:
     """Return the client for `mode` ("mock" or "live"), cached per mode.
 
     Called with `budget.config.llm_mode`, so which client answers is controlled entirely by
@@ -101,30 +101,11 @@ def get_client(mode: str) -> _MessagesClient:
     """
     if mode == "mock":
         return MockAnthropicClient()
-    return anthropic.Anthropic(timeout=REQUEST_TIMEOUT_S)
+    return anthropic.Anthropic(timeout=REQUEST_TIMEOUT_S, max_retries=max_retries)
 
 
-def web_search_tool(max_uses: int) -> dict[str, Any]:
-    return {"type": WEB_SEARCH_TOOL_TYPE, "name": "web_search", "max_uses": max_uses}
-
-
-def estimate_cost(model: str, usage: Any) -> float:
-    # Unknown models are priced at the most expensive known rate so the cap stays conservative.
-    in_price, out_price = PRICING.get(model, max(PRICING.values()))
-    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
-    token_cost = (
-        usage.input_tokens * in_price
-        + cache_read * in_price * CACHE_READ_MULTIPLIER
-        + cache_write * in_price * CACHE_WRITE_MULTIPLIER
-        + usage.output_tokens * out_price
-    ) / 1_000_000
-    return float(token_cost + _web_searches(usage) * WEB_SEARCH_USD_PER_REQUEST)
-
-
-def _web_searches(usage: Any) -> int:
-    server_tool_use = getattr(usage, "server_tool_use", None)
-    return int(getattr(server_tool_use, "web_search_requests", 0) or 0)
+def web_search_tool(max_uses: int, tool_type: str = WEB_SEARCH_TOOL_TYPE) -> dict[str, Any]:
+    return {"type": tool_type, "name": "web_search", "max_uses": max_uses}
 
 
 def _inspect_tool_blocks(content: list[Any]) -> tuple[list[dict[str, Any]], set[str]]:
@@ -169,6 +150,7 @@ def complete(
     max_tokens: int,
     schema: dict[str, Any] | None = None,
     tools: list[dict[str, Any]] | None = None,
+    images: list[PreparedImage] | None = None,
     effort: str | None = None,
     stream: bool = False,
 ) -> Completion:
@@ -178,8 +160,15 @@ def complete(
     `_create_message`. Leave it `False` (default) for short calls with nothing to fix.
     """
     config = budget.config
-    client = get_client(config.llm_mode)
-    messages: list[Any] = [{"role": "user", "content": user_text}]
+    client = get_client(config.llm_mode, config.sdk_max_retries)
+    # Images go first, then the text: the documented best placement for vision prompts.
+    user_content: str | list[dict[str, Any]] = user_text
+    if images:
+        user_content = [
+            *(img.content_block() for img in images),
+            {"type": "text", "text": user_text},
+        ]
+    messages: list[Any] = [{"role": "user", "content": user_content}]
     output_config: dict[str, Any] = {}
     if schema is not None:
         output_config["format"] = {"type": "json_schema", "schema": schema}
@@ -187,6 +176,7 @@ def complete(
         output_config["effort"] = effort
 
     retrieved: set[str] = set()
+    done = Completion(text="", model=model)
     while True:
         params: dict[str, Any] = {
             "model": model,
@@ -211,12 +201,21 @@ def complete(
             response = _create_message(client, config, params, stream)
             searches, urls = _inspect_tool_blocks(list(response.content))
             retrieved |= urls
-            cost = estimate_cost(model, response.usage)
+            cost = estimate_cost(model, response.usage, web_search_usd=config.web_search_usd)
+            usage = response.usage
+            done.input_tokens += usage.input_tokens
+            done.output_tokens += usage.output_tokens
+            done.cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
+            done.cache_write_tokens += getattr(usage, "cache_creation_input_tokens", 0) or 0
+            done.web_searches += web_searches(usage)
+            done.cost_usd += cost
+            done.steps += 1
+            done.searches.extend(searches)
             rec.update(
                 stop_reason=response.stop_reason,
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
-                web_searches=_web_searches(response.usage),
+                web_searches=web_searches(response.usage),
                 searches=searches,
                 cost_usd=round(cost, 5),
                 request_id=getattr(response, "_request_id", None),
@@ -236,7 +235,9 @@ def complete(
         text_blocks = [b.text for b in response.content if b.type == "text"]
         if not text_blocks:
             raise LLMOutputError(f"{span_name}: response has no text content")
-        return Completion(text=text_blocks[0], retrieved_urls=retrieved)
+        done.text = text_blocks[0]
+        done.retrieved_urls = retrieved
+        return done
 
 
 def parse_json_object(text: str, *, what: str) -> dict[str, Any]:

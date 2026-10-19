@@ -11,3 +11,6 @@ runs/
 .DS_Store
 evals/reports/*.json
 *-output.txt
+# Personal room photos and spike run output: never commit (see CLAUDE.md photo rules)
+spike-photos/
+spike-output/
