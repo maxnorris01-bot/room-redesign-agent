@@ -17,6 +17,8 @@ One entry per decision, newest first. Format:
 this choice over the alternatives. Note what's still open or deferred within it, if anything.
 -->
 
+**2026-10-18 - Perception exploration (one photo): labelling works; plan-view and furniture removal do not yet.** Segmentation and Claude's own read label a room well; classical CV fails on white rooms; plan-view dimensions from one photo are unreliable (a corner shot breaks the "frontal, north = far wall" convention in schema v1); LaMa removal gave a recognisable but smeared empty room. Consequence: treat the canvas as a proposal the user confirms. ADR 0003 is NOT yet amended and photo-real is NOT in v1; both await the project owner. Schema v1 stays the baseline for the exploratory live run. Full write-up: `docs/research/2026-10-18-perception-exploration.md`.
+
 **2026-10-18 - Spike skeleton decisions (Claude Code session 1).** Details in `docs/sessions/2026-10-18-spike-skeleton.md`; the reasoning worth keeping:
 
 - *Images:* every photo goes through `app.images.prepare_image`: orientation applied, then the image is rebuilt from raw pixels (so EXIF/GPS/XMP/ICC cannot ride along), downscaled to a 1568 px long edge (configurable, `APP_IMAGE_MAX_EDGE`; image tokens scale with area, so this is also the cost lever), re-encoded as JPEG q85. Never upscaled. Tests and the mock spike use a generated image carrying fake GPS, so no real photo is needed anywhere.
