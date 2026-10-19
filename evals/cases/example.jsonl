@@ -1,0 +1,2 @@
+{"id": "example-001", "category": "smoke", "input": "The quick brown fox", "expected_contains": ["fox"]}
+{"id": "example-002", "category": "smoke", "input": "Hello world", "expected_contains": ["hello", "world"]}
