@@ -13,6 +13,27 @@
    `docs/working-notes-and-decisions.md` and `docs/todo.md` once they exist (this template's
    copies are blank stubs, not live content).
 
+## This project: Room Redesign Agent
+- `SPEC.md` is the contract for implementation sessions. Scope, non-goals and the spike's definition
+  of done live there; decisions and reasoning live in `docs/working-notes-and-decisions.md` and
+  `docs/adr/`. If something tempting is out of scope, add it to `docs/todo.md` instead of building it.
+- **Mock is the default everywhere.** Set `APP_LLM_MODE=mock` explicitly on every command you run;
+  never rely on `.env`. **Live runs (`make spike-live`, `make eval-*-live`) are Max's call only** - do
+  not run them, even if a key is present. Mock mode must work with `ANTHROPIC_API_KEY` unset.
+- Cost/latency targets in `SPEC.md` are proposed, not locked. Scripts may print them as
+  informational ("proposed") comparisons but never enforce them, and they never go in
+  `evals/thresholds.yaml` until an ADR locks them.
+- Models are configuration (`APP_MODEL_PERCEPTION`, `APP_MODEL_RETRIEVAL` in `src/app/config.py`),
+  never hardcoded in logic. Prices live only in `src/app/pricing.py`, with a source URL and date.
+- Structured-output gotchas: JSON Schema `maxItems` is rejected and `maxLength` is not enforced, so
+  never rely on either to bound output; parse the FIRST text block as the JSON; stream long or
+  tool-using calls; don't leave SDK retries at default on expensive calls.
+- **Photo rules.** Real room photos are personal. They live only in the gitignored `spike-photos/`
+  (run output in the gitignored `spike-output/`). Never commit a photo, and never download one for
+  tests - generate a synthetic image in code. Every image goes through
+  `app.images.prepare_image` (strips EXIF/GPS, downscales to a configurable max long edge, default
+  1568 px) before it is sent anywhere.
+
 ## Commands
 - Install: `make install`
 - Lint + format check: `make lint`

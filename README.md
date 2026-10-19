@@ -1,8 +1,10 @@
-# PROJECT_NAME
+# Room Redesign Agent
 
-> One-sentence pitch: what it does and for whom.
+> Upload a photo of a room, set a budget and a style, and get a furniture list with real links and prices plus a written rationale - an agentic pipeline (perceive, retrieve, propose, self-check) built to be measured on cost and latency first.
 
-![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)
+_Status: pre-v1. Only the cost-and-latency spike skeleton exists (`scripts/spike.py`); see [`SPEC.md`](SPEC.md)._
+
+![CI](https://github.com/maxnorris01-bot/room-redesign-agent/actions/workflows/ci.yml/badge.svg)
 <!-- Add an eval-score badge once the nightly job publishes one. -->
 
 <!-- DEMO: replace with a GIF (docs/demo.gif) or a live link. Keep it under 30 seconds. -->
@@ -46,7 +48,7 @@ truncating silently.
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/OWNER/REPO && cd REPO
+git clone https://github.com/maxnorris01-bot/room-redesign-agent && cd room-redesign-agent
 cp .env.example .env        # add ANTHROPIC_API_KEY if you'll run anything live (see below)
 make install
 make test

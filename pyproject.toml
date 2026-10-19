@@ -1,7 +1,7 @@
 [project]
 name = "app"
 version = "0.1.0"
-description = "PROJECT_NAME"
+description = "Room Redesign Agent: room photo + budget + style in, furniture list with real links out."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
