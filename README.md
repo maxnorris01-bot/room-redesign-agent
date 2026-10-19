@@ -74,8 +74,8 @@ it deliberately, not routinely - see Evaluation below.
 |------|------|------|------|---------|
 | fast (mock) | every PR, routinely | ~10-15 cases | free | `make eval-fast` |
 | fast (live) | deliberately, not routinely | ~10-15 cases | real API cost | `make eval-fast-live` |
-| standard | CI on main | ~50 cases | real API cost | `make eval-standard` |
-| nightly | scheduled | 100+ cases | real API cost | `make eval-nightly` |
+| standard | CI on main | ~50 cases | free (mock) / real API cost (`-live`) | `make eval-standard` / `make eval-standard-live` |
+| nightly | scheduled | 100+ cases | free (mock) / real API cost (`-live`) | `make eval-nightly` / `make eval-nightly-live` |
 
 - Cases live in `evals/cases/` and change through PRs like code. Cases the model itself proves
   unstable on across identical live runs move to `evals/cases/known-unstable/` instead of gating
@@ -84,9 +84,8 @@ it deliberately, not routinely - see Evaluation below.
   see that file's own comment - and should get tuned in their own dedicated commits once you have
   real measurements, not left at their starting values indefinitely.
 - LLM-as-judge rubrics live in `evals/rubrics/` and are validated against a human-labeled gold set (see `evals/README.md`).
-- `eval-standard` and `eval-nightly` don't yet have mock-forced/live-forced variants the way
-  `eval-fast`/`eval-fast-live` do - they inherit whatever `APP_LLM_MODE` is set to (mock by
-  default). Worth adding the same explicit split before either is used for real.
+- Every tier has explicit mock-forced and live-forced targets: `make eval-standard` /
+  `make eval-standard-live`, `make eval-nightly` / `make eval-nightly-live` (same split as fast).
 
 ## Known failures and limitations
 
