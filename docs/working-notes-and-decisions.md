@@ -17,6 +17,8 @@ One entry per decision, newest first. Format:
 this choice over the alternatives. Note what's still open or deferred within it, if anything.
 -->
 
+**2026-10-20 - Exploratory live run (one room): $0.0762 and 35.9 s for perception plus 2 retrieval slots.** Searches were 52% of cost, perception output 63% of perception cost; perception was 48% of time. Perception was accurate on what is visible but plan geometry assumed a frontal view; retrieval returned listing-page URLs (not product pages) and one empty slot. No targets locked yet; ADR 0004 comes before the measured 3-room run, with a stage-allocation proposal in the session doc. Details: `docs/sessions/2026-10-20-exploratory-live-run.md`.
+
 **2026-10-18 - Perception exploration (one photo): labelling works; plan-view and furniture removal do not yet.** Segmentation and Claude's own read label a room well; classical CV fails on white rooms; plan-view dimensions from one photo are unreliable (a corner shot breaks the "frontal, north = far wall" convention in schema v1); LaMa removal gave a recognisable but smeared empty room. Consequence: treat the canvas as a proposal the user confirms. ADR 0003 is NOT yet amended and photo-real is NOT in v1; both await the project owner. Schema v1 stays the baseline for the exploratory live run. Full write-up: `docs/research/2026-10-18-perception-exploration.md`.
 
 **2026-10-18 - Spike skeleton decisions (Claude Code session 1).** Details in `docs/sessions/2026-10-18-spike-skeleton.md`; the reasoning worth keeping:
