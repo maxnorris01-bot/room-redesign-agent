@@ -11,7 +11,7 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 <!-- The most important items, in the order you'd actually tackle them. -->
 
 - [ ] Workspace spend limit and project-named API key in the Anthropic Console (`portfolio-projects` workspace), before any live run. Walk through one step at a time.
-- [ ] **Exploratory live run on one room (Max's call, ungraded):** put a photo in `spike-photos/`, then `make spike-live ARGS='spike-photos/<photo> --budget 800 --style "warm minimalist"'` (rough guess $0.05-0.15, unmeasured; the step/cost caps in `Config` will stop it). Record the per-stage table in a session doc. Check first that the models accept the tools: Models API `capabilities.server_tools.web_search.supported` for `claude-haiku-5-5`.
+- [x] **Exploratory live run on one room (Max's call, ungraded):** put a photo in `spike-photos/`, then `make spike-live ARGS='spike-photos/<photo> --budget 800 --style "warm minimalist"'` (rough guess $0.05-0.15, unmeasured; the step/cost caps in `Config` will stop it). Record the per-stage table in a session doc. Check first that the models accept the tools: Models API `capabilities.server_tools.web_search.supported` for `claude-haiku-5-5`. Done 2026-10-20: $0.0762, 35.9 s; see `docs/sessions/2026-10-20-exploratory-live-run.md`.
 - [ ] Max: decide the two open questions from `docs/research/2026-10-18-perception-exploration.md` (amend ADR 0003 to a user-confirmed canvas; photo-real empty room in v1 or stay gated).
 - [ ] Cowork: research shopping API candidates (pricing, terms, coverage) for retrieval configuration B.
 - [ ] Lock cost and latency targets in ADR 0004 (after the exploratory run, before the measured 3-room run).
@@ -21,6 +21,11 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- Real, but not next. -->
 
+- [ ] Retrieval: require a product-page URL (not only a URL present in the search results) and decide how prices get verified from product pages (fetch tool vs shopping API). The exploratory run returned listing-page URLs and one empty slot.
+- [ ] Trim perception output tokens (schema size, effort) and re-measure; output was 63% of perception cost.
+- [ ] Check `trace.jsonl` for the fused text "coolpale" in a style descriptor: model or parsing?
+- [ ] Decide whether gap detection should be conservative; "media unit or TV" was a doubtful gap beside a fireplace.
+- [ ] Compare the Console usage for the `room-redesign-agent` key with the run's $0.0762 estimate to validate the cost code.
 - [ ] Expect to need concurrent retrieval slots: Claim Verification saw 10 to 17 s per search-using call, so 3 sequential slots would likely break the 30 s sub-target. Add a `--parallel` option (and make `Budget` thread-safe) before the measured 3-room run.
 - [ ] Perception schema v2 candidates (image-space boxes, camera view type, per-item confidence, unknown positions, unseen regions): decide after the exploratory live run.
 - [ ] Add one tape-measured room as an eval case to score plan-view dimension error.
