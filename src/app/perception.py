@@ -14,11 +14,31 @@ PERCEPTION_MAX_TOKENS = 6000
 PERCEPTION_USER_TEXT = "Analyse the attached room photo and return the structured description."
 
 
+def output_stats(p: RoomPerception) -> dict[str, int]:
+    """Size of the answer, to see whether a prompt's length instructions were followed."""
+    notes = [
+        p.dimensions.derivation,
+        *(o.note for o in p.openings),
+        *(f.note for f in p.fixed_items),
+        *(f.note for f in p.furniture),
+        *(g.reason for g in p.furniture_gaps),
+        *(d.note for d in p.art_and_decor),
+    ]
+    return {
+        "art_and_decor": len(p.art_and_decor),
+        "uncertainties": len(p.uncertainties),
+        "style_descriptors": len(p.style_descriptors),
+        "furniture_gaps": len(p.furniture_gaps),
+        "longest_note_words": max((len(n.split()) for n in notes), default=0),
+    }
+
+
 @dataclass
 class PerceptionResult:
     perception: RoomPerception
     completion: Completion
     prompt_version: str
+    output_stats: dict[str, int]
 
 
 def perceive(
@@ -29,7 +49,7 @@ def perceive(
     Raises `BudgetExceededError`, `SchemaError` or `LLMOutputError`.
     """
     config = budget.config
-    prompt = load_prompt("perception")
+    prompt = load_prompt("perception", config.perception_prompt_version)
     with span(
         "stage.perception",
         config=config,
@@ -52,7 +72,10 @@ def perceive(
             stream=True,
         )
         perception = parse_model(RoomPerception, completion.text, what="perception")
+        stats = output_stats(perception)
         rec.update(
+            output_stats=stats,
+            time_to_first_token_s=completion.time_to_first_token_s,
             cost_usd=round(completion.cost_usd, 5),
             input_tokens=completion.input_tokens,
             output_tokens=completion.output_tokens,
@@ -61,4 +84,4 @@ def perceive(
             living_things=len(perception.living_things),
             dimensions_confidence=perception.dimensions.confidence,
         )
-    return PerceptionResult(perception, completion, prompt.version)
+    return PerceptionResult(perception, completion, prompt.version, stats)

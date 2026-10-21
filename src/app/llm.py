@@ -25,6 +25,8 @@ template will).
 from __future__ import annotations
 
 import json
+import threading
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Protocol, cast
@@ -57,21 +59,33 @@ class LLMOutputError(RuntimeError):
 
 
 class Budget:
-    """Step and cost accounting for one `pipeline.run` call."""
+    """Step and cost accounting for one `pipeline.run` call. Safe to share across threads.
+
+    Under concurrency the step cap is exact (a step is reserved atomically before its request goes
+    out). The cost cap cannot be: requests already in flight when the cap trips still complete and
+    bill, so a concurrent run can overshoot `max_cost_usd` by up to the in-flight calls' cost.
+    """
 
     def __init__(self, config: Config) -> None:
         self.config = config
         self.steps = 0
         self.cost_usd = 0.0
+        self._lock = threading.Lock()
 
-    def start_step(self) -> None:
-        """Reserve a step before making a request, so the cap is hit before spending."""
-        check_budget(self.config, self.steps + 1, self.cost_usd)
-        self.steps += 1
+    def start_step(self) -> int:
+        """Reserve a step before making a request, so the cap is hit before spending.
+
+        Returns the reserved step number (1-based), read under the lock.
+        """
+        with self._lock:
+            check_budget(self.config, self.steps + 1, self.cost_usd)
+            self.steps += 1
+            return self.steps
 
     def add_cost(self, usd: float) -> None:
-        self.cost_usd += usd
-        check_budget(self.config, self.steps, self.cost_usd)
+        with self._lock:
+            self.cost_usd += usd
+            check_budget(self.config, self.steps, self.cost_usd)
 
 
 @dataclass
@@ -87,6 +101,9 @@ class Completion:
     web_searches: int = 0
     cost_usd: float = 0.0
     steps: int = 0
+    # Seconds from sending the first request to its first streamed content delta; None when the
+    # call was not streamed. First request only (a pause_turn resume does not reset it).
+    time_to_first_token_s: float | None = None
     # Search log across requests: {"query": ...}, {"results": n} or {"error": code} entries.
     searches: list[dict[str, Any]] = field(default_factory=list)
 
@@ -126,18 +143,30 @@ def _inspect_tool_blocks(content: list[Any]) -> tuple[list[dict[str, Any]], set[
 
 def _create_message(
     client: _MessagesClient, config: Config, params: dict[str, Any], stream: bool
-) -> Message:
+) -> tuple[Message, float | None]:
     """Issue one request, streaming it on the live client when `stream` is set.
 
-    Only the live client streams: a mock client that only implements `.create()` is unaffected by
-    `stream` either way. `.get_final_message()` returns the same `Message` shape `.create()` does,
-    so nothing downstream (usage/tool-block inspection, pause_turn handling, text extraction)
-    needs to know which path was taken.
+    Returns `(message, time_to_first_token_s)`. Only the live client streams: a mock client that
+    only implements `.create()` is unaffected by `stream`; it reports a deterministic fake
+    time-to-first-token from the response's `_ttft_seconds` attribute when it has one.
+    `.get_final_message()` returns the same `Message` shape `.create()` does, so nothing downstream
+    (usage/tool-block inspection, pause_turn handling, text extraction) needs to know which path
+    was taken.
+
+    "First token" is the first `content_block_delta` event of any kind: with thinking on, the
+    visible text may start later, so this is a lower bound on when the user could see output.
     """
     if stream and config.llm_mode == "live":
+        started = time.perf_counter()
+        first: float | None = None
         with client.messages.stream(**params) as stream_ctx:
-            return cast(Message, stream_ctx.get_final_message())
-    return cast(Message, client.messages.create(**params))
+            for event in stream_ctx:
+                if first is None and getattr(event, "type", None) == "content_block_delta":
+                    first = time.perf_counter() - started
+            return cast(Message, stream_ctx.get_final_message()), first
+    message = cast(Message, client.messages.create(**params))
+    ttft = getattr(message, "_ttft_seconds", None) if stream else None
+    return message, ttft
 
 
 def complete(
@@ -196,9 +225,11 @@ def complete(
             prompt_name=prompt.name,
             model=model,
         ) as rec:
-            budget.start_step()
-            rec["step"] = budget.steps
-            response = _create_message(client, config, params, stream)
+            step = budget.start_step()
+            rec["step"] = step
+            response, ttft = _create_message(client, config, params, stream)
+            if done.steps == 0:
+                done.time_to_first_token_s = ttft
             searches, urls = _inspect_tool_blocks(list(response.content))
             retrieved |= urls
             cost = estimate_cost(model, response.usage, web_search_usd=config.web_search_usd)
@@ -218,6 +249,7 @@ def complete(
                 web_searches=web_searches(response.usage),
                 searches=searches,
                 cost_usd=round(cost, 5),
+                time_to_first_token_s=None if ttft is None else round(ttft, 4),
                 request_id=getattr(response, "_request_id", None),
             )
             budget.add_cost(cost)

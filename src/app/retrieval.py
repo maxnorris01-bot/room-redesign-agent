@@ -9,12 +9,13 @@ Claim Verification repo, ADR 0003 there).
 from __future__ import annotations
 
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urldefrag
+from urllib.parse import parse_qs, urldefrag, urlsplit
 
 from app.llm import Budget, Completion, complete, web_search_tool
-from app.prompts import load_prompt
+from app.prompts import Prompt, load_prompt
 from app.schemas import Candidate, RoomPerception, SlotCandidates, parse_model, to_output_schema
 from app.tracing import span
 
@@ -111,20 +112,67 @@ def _norm_url(url: str) -> str:
     return urldefrag(url.strip())[0].rstrip("/")
 
 
+# Path segments that mark a listing, category or search page rather than one product.
+_LISTING_SEGMENTS = {
+    "collections", "category", "categories", "search", "browse", "s", "cat",
+}  # fmt: skip
+# Segments that introduce a single item. A Shopify product reached through a collection
+# (/collections/sofas/products/slug) is still a product page, so these override "collections".
+_ITEM_SEGMENTS = {"products", "product", "p", "pdp", "dp", "item", "items"}
+_SEARCH_QUERY_KEYS = {"keyword", "q", "query", "search", "filter"}
+
+
+def product_page_rejection(url: str) -> str | None:
+    """Why `url` is not a product page (a short rule name), or None if it looks like one.
+
+    This is a deliberately cheap, retailer-agnostic filter on the URL alone: it rejects listing,
+    category, collection and search URLs. Passing it does not prove the page is a product page.
+    """
+    parts = urlsplit(url.strip())
+    segments = [s.lower() for s in parts.path.split("/") if s]
+    if not segments:
+        return "no_path"
+    if parts.path.lower().endswith("keyword.php"):
+        return "keyword.php"
+    query_keys = {k.lower() for k in parse_qs(parts.query, keep_blank_values=True)}
+    hit = query_keys & _SEARCH_QUERY_KEYS
+    if hit:
+        return f"search_query_key:{sorted(hit)[0]}"
+    for index, segment in enumerate(segments):
+        if segment in _LISTING_SEGMENTS:
+            if segment == "collections" and _ITEM_SEGMENTS & set(segments[index + 1 :]):
+                continue  # Shopify: /collections/<collection>/products/<handle>
+            return f"listing_segment:{segment}"
+        if segment == "c" and index == len(segments) - 1:
+            return "listing_segment:c"  # /c/ with no item segment after it
+    return None
+
+
+def is_product_page_url(url: str) -> bool:
+    return product_page_rejection(url) is None
+
+
 def verify_candidates(
     candidates: list[Candidate], retrieved_urls: set[str]
 ) -> tuple[list[Candidate], list[dict[str, Any]]]:
-    """Keep only candidates whose URL the search tool returned (modulo fragment/trailing slash)."""
+    """Keep candidates whose URL the search tool returned AND that looks like a product page.
+
+    The first rule (URL present in the search results, modulo fragment/trailing slash) guards
+    against URLs recalled from memory. The second (`product_page_rejection`) guards against
+    listing, collection and search-results URLs, which do appear in search results.
+    """
     allowed = {_norm_url(u) for u in retrieved_urls}
     kept: list[Candidate] = []
     dropped: list[dict[str, Any]] = []
     for cand in candidates:
-        if _norm_url(cand.url) in allowed:
-            kept.append(cand)
+        if _norm_url(cand.url) not in allowed:
+            reason = "url_not_in_search_results"
+        elif (rule := product_page_rejection(cand.url)) is not None:
+            reason = f"not_a_product_page:{rule}"
         else:
-            dropped.append(
-                {"name": cand.name, "url": cand.url, "reason": "url_not_in_search_results"}
-            )
+            kept.append(cand)
+            continue
+        dropped.append({"name": cand.name, "url": cand.url, "reason": reason})
     return kept, dropped
 
 
@@ -145,6 +193,43 @@ def _slot_user_text(slot: Slot, perception: RoomPerception, style: str, max_uses
     return "\n".join(lines)
 
 
+def _run_slot(
+    slot: Slot, perception: RoomPerception, style: str, budget: Budget, prompt: Prompt
+) -> tuple[SlotResult, dict[str, Any]]:
+    """One slot's search call, run in a worker thread. Shares only the thread-safe `budget`."""
+    config = budget.config
+    started = time.perf_counter()
+    completion = complete(
+        span_name="llm.retrieval",
+        prompt=prompt,
+        model=config.model_retrieval,
+        user_text=_slot_user_text(slot, perception, style, config.max_searches_per_slot),
+        budget=budget,
+        max_tokens=RETRIEVAL_MAX_TOKENS,
+        schema=to_output_schema(SlotCandidates),
+        tools=[web_search_tool(config.max_searches_per_slot, config.web_search_tool)],
+        effort=config.effort_retrieval,
+        stream=True,
+    )
+    parsed = parse_model(SlotCandidates, completion.text, what=f"retrieval[{slot.category}]")
+    kept, dropped = verify_candidates(parsed.candidates, completion.retrieved_urls)
+    result = SlotResult(
+        slot, kept, dropped, parsed.note, completion, round(time.perf_counter() - started, 3)
+    )
+    summary = {
+        "slot": slot.category,
+        "queries": [s["query"] for s in completion.searches if "query" in s],
+        "result_counts": [s["results"] for s in completion.searches if "results" in s],
+        "search_errors": [s["error"] for s in completion.searches if "error" in s],
+        "candidates_returned": len(parsed.candidates),
+        "candidates_kept": len(kept),
+        "dropped_unverified_urls": len(dropped),
+        "dropped_reasons": [d["reason"] for d in dropped],
+        "seconds": result.seconds,
+    }
+    return result, summary
+
+
 def retrieve(
     perception: RoomPerception,
     *,
@@ -154,7 +239,13 @@ def retrieve(
     budget: Budget,
     run_id: str | None = None,
 ) -> RetrievalResult:
-    """Run web-search retrieval for each derived slot, sequentially, under `budget`'s caps."""
+    """Run web-search retrieval for each derived slot concurrently, under `budget`'s caps.
+
+    One worker thread per slot (the SDK client is synchronous). Results are returned in slot
+    order regardless of which call finishes first. If any slot raises (for example
+    `BudgetExceededError`), the first failure in slot order is re-raised once the calls already in
+    flight have finished; they cannot be cancelled, and they bill.
+    """
     config = budget.config
     prompt = load_prompt("retrieval")
     slots = derive_slots(perception, budget_usd, max_slots)
@@ -167,53 +258,27 @@ def retrieve(
         model=config.model_retrieval,
         run_id=run_id,
         slots=[s.category for s in slots],
+        concurrent=True,
         web_search_tool=config.web_search_tool,
         max_searches_per_slot=config.max_searches_per_slot,
     ) as rec:
         per_slot: list[dict[str, Any]] = []
-        for slot in slots:
-            started = time.perf_counter()
-            completion = complete(
-                span_name="llm.retrieval",
-                prompt=prompt,
-                model=config.model_retrieval,
-                user_text=_slot_user_text(slot, perception, style, config.max_searches_per_slot),
-                budget=budget,
-                max_tokens=RETRIEVAL_MAX_TOKENS,
-                schema=to_output_schema(SlotCandidates),
-                tools=[web_search_tool(config.max_searches_per_slot, config.web_search_tool)],
-                effort=config.effort_retrieval,
-                stream=True,
-            )
-            parsed = parse_model(
-                SlotCandidates, completion.text, what=f"retrieval[{slot.category}]"
-            )
-            kept, dropped = verify_candidates(parsed.candidates, completion.retrieved_urls)
-            result.slots.append(
-                SlotResult(
-                    slot,
-                    kept,
-                    dropped,
-                    parsed.note,
-                    completion,
-                    round(time.perf_counter() - started, 3),
-                )
-            )
-            queries = [s["query"] for s in completion.searches if "query" in s]
-            counts = [s["results"] for s in completion.searches if "results" in s]
-            errors = [s["error"] for s in completion.searches if "error" in s]
-            per_slot.append(
-                {
-                    "slot": slot.category,
-                    "queries": queries,
-                    "result_counts": counts,
-                    "search_errors": errors,
-                    "candidates_returned": len(parsed.candidates),
-                    "candidates_kept": len(kept),
-                    "dropped_unverified_urls": len(dropped),
-                }
-            )
+        if slots:
+            with ThreadPoolExecutor(max_workers=len(slots), thread_name_prefix="slot") as pool:
+                futures: list[Future[tuple[SlotResult, dict[str, Any]]]] = [
+                    pool.submit(_run_slot, slot, perception, style, budget, prompt)
+                    for slot in slots
+                ]
+                outcomes = [f.exception() for f in futures]  # waits for every slot to finish
+            for future, error in zip(futures, outcomes, strict=True):
+                if error is not None:
+                    raise error
+                slot_result, summary = future.result()
+                result.slots.append(slot_result)
+                per_slot.append(summary)
         rec.update(
-            per_slot=per_slot, cost_usd=round(sum(r.completion.cost_usd for r in result.slots), 5)
+            per_slot=per_slot,
+            cost_usd=round(sum(r.completion.cost_usd for r in result.slots), 5),
+            slowest_slot_seconds=max((r.seconds for r in result.slots), default=0.0),
         )
     return result

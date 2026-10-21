@@ -45,6 +45,8 @@ class StageRow:
     web_searches: int
     cost_usd: float
     seconds: float
+    # Streamed calls only; first content_block_delta, see llm._create_message. None = not measured.
+    time_to_first_token_seconds: float | None = None
 
 
 @dataclass
@@ -63,6 +65,12 @@ class SpikeResult:
     retrieval: list[dict[str, Any]] = field(default_factory=list)
     steps: int = 0
     unpriced_models: list[str] = field(default_factory=list)
+    perception_only: bool = False
+    perception_output_stats: dict[str, int] = field(default_factory=dict)
+    # The model's JSON exactly as returned (before pydantic), so a odd token can be traced to
+    # the model or to our code. It is the same data as `perception`, not extra personal data.
+    perception_raw_text: str = ""
+    wall_clock_seconds: float = 0.0
 
     @property
     def total_cost_usd(self) -> float:
@@ -72,29 +80,56 @@ class SpikeResult:
     def total_seconds(self) -> float:
         return sum(r.seconds for r in self.rows)
 
+    @property
+    def critical_path_seconds(self) -> float:
+        """Wall time if stages are sequential and retrieval slots run concurrently.
+
+        prepare_image + perception + the slowest retrieval slot. `total_seconds` (the plain sum)
+        double-counts the concurrent slots and is kept alongside it.
+        """
+        sequential = sum(r.seconds for r in self.rows if not r.stage.startswith("retrieval"))
+        slots = [r.seconds for r in self.rows if r.stage.startswith("retrieval")]
+        return sequential + max(slots, default=0.0)
+
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
-        data["totals"] = {"cost_usd": self.total_cost_usd, "seconds": self.total_seconds}
+        data["totals"] = {
+            "cost_usd": self.total_cost_usd,
+            "seconds": self.total_seconds,  # plain sum of stage seconds
+            "critical_path_seconds": self.critical_path_seconds,
+            "wall_clock_seconds": self.wall_clock_seconds,  # measured end to end
+        }
         data["proposed_targets_informational"] = PROPOSED_TARGETS
         return data
 
 
 def _row(stage: str, c: Completion, seconds: float) -> StageRow:
     return StageRow(
-        stage, c.model, c.input_tokens, c.output_tokens, c.web_searches, c.cost_usd, seconds
+        stage,
+        c.model,
+        c.input_tokens,
+        c.output_tokens,
+        c.web_searches,
+        c.cost_usd,
+        seconds,
+        c.time_to_first_token_s,
     )
 
 
 def run_spike(
     photo: Path | bytes,
     *,
-    budget_usd: float,
-    style: str,
+    budget_usd: float = 0.0,
+    style: str = "",
     slots: int | None = None,
     config: Config | None = None,
     run_id: str | None = None,
+    perception_only: bool = False,
 ) -> SpikeResult:
-    """Run the three stages under one shared `Budget` (step + cost caps apply to the whole run)."""
+    """Run the stages under one shared, thread-safe `Budget` (step + cost caps cover the run).
+
+    Retrieval slots run concurrently. With `perception_only`, retrieval is skipped.
+    """
     config = config or Config.from_env()
     budget = Budget(config)
     run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
@@ -110,11 +145,14 @@ def run_spike(
         prompt_versions={},
         models={"perception": config.model_perception, "retrieval": config.model_retrieval},
         image={},
+        perception_only=perception_only,
     )
+    if perception_only:
+        result.models.pop("retrieval")
     result.unpriced_models = [m for m in set(result.models.values()) if not is_priced(m)]
 
     with span("spike.run", config=config, run_id=run_id, llm_mode=config.llm_mode) as run_rec:
-        t0 = time.perf_counter()
+        run_started = t0 = time.perf_counter()
         with span("stage.prepare_image", config=config, run_id=run_id) as img_rec:
             prepared: PreparedImage = prepare_image(photo, max_edge=config.image_max_edge)
             img_rec.update(prepared.summary())
@@ -126,6 +164,19 @@ def run_spike(
         result.rows.append(_row("perception", perceived.completion, time.perf_counter() - t0))
         result.prompt_versions["perception"] = perceived.prompt_version
         result.perception = perceived.perception.model_dump()
+        result.perception_output_stats = perceived.output_stats
+        result.perception_raw_text = perceived.completion.text
+
+        if perception_only:
+            result.steps = budget.steps
+            result.wall_clock_seconds = time.perf_counter() - run_started
+            run_rec.update(
+                total_cost_usd=round(result.total_cost_usd, 5),
+                critical_path_seconds=round(result.critical_path_seconds, 3),
+                steps=budget.steps,
+                perception_only=True,
+            )
+            return result
 
         retrieved: RetrievalResult = retrieve(
             perceived.perception,
@@ -148,9 +199,12 @@ def run_spike(
                 }
             )
         result.steps = budget.steps
+        result.wall_clock_seconds = time.perf_counter() - run_started
         run_rec.update(
             total_cost_usd=round(result.total_cost_usd, 5),
             total_seconds=round(result.total_seconds, 3),
+            critical_path_seconds=round(result.critical_path_seconds, 3),
+            wall_clock_seconds=round(result.wall_clock_seconds, 3),
             steps=budget.steps,
         )
     return result
@@ -158,10 +212,14 @@ def run_spike(
 
 def format_table(result: SpikeResult) -> str:
     """Per-stage table, totals, and the informational comparison to the proposed targets."""
-    headers = ["stage", "model", "in tok", "out tok", "searches", "dollars", "seconds"]
+    headers = [
+        "stage", "model", "in tok", "out tok", "searches", "dollars", "seconds",
+        "time_to_first_token",
+    ]  # fmt: skip
     body = [
         [r.stage, r.model, str(r.input_tokens), str(r.output_tokens), str(r.web_searches),
-         f"${r.cost_usd:.4f}", f"{r.seconds:.2f}"]
+         f"${r.cost_usd:.4f}", f"{r.seconds:.2f}",
+         "-" if r.time_to_first_token_seconds is None else f"{r.time_to_first_token_seconds:.2f}"]
         for r in result.rows
     ]  # fmt: skip
     totals = [
@@ -169,7 +227,7 @@ def format_table(result: SpikeResult) -> str:
         str(sum(r.input_tokens for r in result.rows)),
         str(sum(r.output_tokens for r in result.rows)),
         str(sum(r.web_searches for r in result.rows)),
-        f"${result.total_cost_usd:.4f}", f"{result.total_seconds:.2f}",
+        f"${result.total_cost_usd:.4f}", f"{result.total_seconds:.2f}", "",
     ]  # fmt: skip
     rows = [headers, *body, totals]
     widths = [max(len(r[i]) for r in rows) for i in range(len(headers))]
@@ -188,7 +246,8 @@ def format_table(result: SpikeResult) -> str:
         ]
     lines += [
         f"run {result.run_id}  mode={result.llm_mode}  photo={result.photo_name}  "
-        f"budget=${result.budget_usd:.0f}  style={result.style!r}",
+        f"budget=${result.budget_usd:.0f}  style={result.style!r}"
+        + ("  [perception only]" if result.perception_only else ""),
         f"prompts: {result.prompt_versions}  image: {result.image.get('width')}x"
         f"{result.image.get('height')} (from {result.image.get('original_width')}x"
         f"{result.image.get('original_height')})  steps: {result.steps}",
@@ -201,16 +260,32 @@ def format_table(result: SpikeResult) -> str:
             f"WARNING: no price for {result.unpriced_models}; costed at the highest known rate",
         ]
 
+    lines += [
+        "",
+        "Timing (seconds): the TOTAL row is the plain sum of stage seconds; retrieval slots run",
+        "concurrently, so the real wait is the critical path.",
+        f"  sum of stage seconds : {result.total_seconds:.2f}",
+        f"  critical path        : {result.critical_path_seconds:.2f}  "
+        "(prepare_image + perception + slowest retrieval slot)",
+        f"  wall clock (measured): {result.wall_clock_seconds:.2f}",
+    ]
+    if result.perception_output_stats:
+        lines.append(f"  perception output    : {result.perception_output_stats}")
+    if result.perception_only:
+        return "\n".join(lines)
+
     pr = [r for r in result.rows if r.stage == "perception" or r.stage.startswith("retrieval")]
     pr_cost = sum(r.cost_usd for r in pr)
-    pr_secs = sum(r.seconds for r in pr)
+    pr_secs = result.critical_path_seconds - sum(
+        r.seconds for r in result.rows if r.stage == "prepare_image"
+    )
     t = PROPOSED_TARGETS
     lines += [
         "",
         "Proposed targets, informational only (not locked, not enforced; SPEC.md):",
         f"  perception+retrieval cost : ${pr_cost:.4f}  "
         f"vs proposed <= ${t['perception_plus_retrieval_cost_usd']:.2f}",
-        f"  perception+retrieval time : {pr_secs:.1f}s  "
+        f"  perception+retrieval time : {pr_secs:.1f}s (critical path)  "
         f"vs proposed <= {t['perception_plus_retrieval_seconds']:.0f}s",
         f"  full-run mean cost / p95  : n/a for one run "
         f"(proposed <= ${t['full_run_mean_cost_usd']:.2f} mean, "

@@ -34,6 +34,10 @@ from typing import Any
 # need exact control over a specific response.
 
 
+# Deterministic fake time-to-first-token reported by every mock response (never a measurement).
+MOCK_TTFT_SECONDS = 0.25
+
+
 def text_block(payload: dict[str, Any] | str) -> SimpleNamespace:
     text = payload if isinstance(payload, str) else json.dumps(payload)
     return SimpleNamespace(type="text", text=text)
@@ -67,6 +71,7 @@ def response(
             server_tool_use=SimpleNamespace(web_search_requests=searches),
         ),
         _request_id="req_mock",
+        _ttft_seconds=MOCK_TTFT_SECONDS,
     )
 
 
@@ -153,8 +158,8 @@ def mock_perception_payload() -> dict[str, Any]:
              "note": "MOCK armchair, marked keepable"},
         ],
         "furniture_gaps": [
-            {"category": "coffee table", "reason": "MOCK gap"},
-            {"category": "floor lamp", "reason": "MOCK gap"},
+            {"category": "coffee table", "reason": "MOCK: bare floor in front of sofa"},
+            {"category": "floor lamp", "reason": "MOCK: dark corner beside armchair"},
         ],
         "living_things": [
             {"kind": "pet", "description": "MOCK pet, never furniture",
@@ -163,8 +168,8 @@ def mock_perception_payload() -> dict[str, Any]:
         "art_and_decor": [
             {"kind": "wall art", "location": "north wall", "note": "MOCK decor"},
         ],
-        "style_descriptors": ["MOCK style"],
-        "uncertainties": ["MOCK: this is placeholder data from the mock client, not a real room"],
+        "style_descriptors": ["mock modern", "mock warm wood", "mock bright"],
+        "uncertainties": ["MOCK: placeholder data, not a real room"],
     }  # fmt: skip
 
 
