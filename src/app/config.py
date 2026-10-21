@@ -45,6 +45,9 @@ class Config:
     # measured: thinking tokens bill as output tokens, so effort is a direct cost lever.
     effort_perception: str = "medium"
     effort_retrieval: str = "low"
+    # Which perception prompt file to load (prompts/perception.md is current; older ones are kept
+    # as perception.v<N>.md for comparison). Set per run via scripts/spike.py, not from the env.
+    perception_prompt_version: str = "2"
     # Per-search cost estimate (USD); the API returns no dollar figure. Default: pricing.py.
     web_search_usd: float = WEB_SEARCH_USD_PER_REQUEST
 

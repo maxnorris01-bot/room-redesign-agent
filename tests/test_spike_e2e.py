@@ -41,7 +41,7 @@ def test_mock_run_end_to_end(tmp_path: Path) -> None:
         "retrieval: floor lamp",
     ]
     assert result.models == {"perception": "claude-sonnet-5-5", "retrieval": "claude-haiku-5-5"}
-    assert result.prompt_versions == {"perception": "1", "retrieval": "1"}
+    assert result.prompt_versions == {"perception": "2", "retrieval": "1"}
     assert max(result.image["width"], result.image["height"]) <= 1568
     for slot in result.retrieval:
         assert {c["retailer"] for c in slot["candidates"]} == {"MOCK"}
@@ -63,7 +63,7 @@ def test_trace_records_stages_prompt_versions_and_searches(tmp_path: Path) -> No
     run_spike(synthetic_room_image(), budget_usd=500, style="x", slots=1, config=Config())
     lines = [json.loads(x) for x in tracing.TRACE_PATH.read_text().splitlines()]
     by_name = {rec["name"]: rec for rec in lines}
-    assert by_name["stage.perception"]["prompt_version"] == "1"
+    assert by_name["stage.perception"]["prompt_version"] == "2"
     assert by_name["stage.retrieval"]["prompt_version"] == "1"
     per_slot = by_name["stage.retrieval"]["per_slot"][0]
     assert per_slot["queries"] and per_slot["result_counts"] == [1]

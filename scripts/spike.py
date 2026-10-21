@@ -1,6 +1,7 @@
 """Cost-and-latency spike: photo in, perception + retrieval out, per-stage table printed.
 
     python scripts/spike.py spike-photos/living-room.jpg --budget 800 --style "warm minimalist"
+    python scripts/spike.py spike-photos/living-room.jpg --perception-only --perception-effort low
 
 Defaults to mock (APP_LLM_MODE=mock): no network, no API key. The same script runs live with only
 an env change (`make spike-live ARGS=...`, Max's call). Output goes to the gitignored
@@ -13,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -35,12 +37,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--synthetic", action="store_true", help="use a generated placeholder image"
     )
-    parser.add_argument("--budget", type=float, required=True, help="total furniture budget, USD")
-    parser.add_argument("--style", required=True, help='style goal, e.g. "warm minimalist"')
+    parser.add_argument("--budget", type=float, help="total furniture budget, USD")
+    parser.add_argument("--style", help='style goal, e.g. "warm minimalist"')
     parser.add_argument(
         "--slots", type=int, default=None, help="furniture slots to search (default: config)"
     )
+    parser.add_argument(
+        "--perception-only", action="store_true", help="skip retrieval; time perception alone"
+    )
+    parser.add_argument("--perception-model", help="override APP_MODEL_PERCEPTION for this run")
+    parser.add_argument(
+        "--perception-effort", help="override APP_EFFORT_PERCEPTION (low|medium|high|xhigh|max)"
+    )
+    parser.add_argument(
+        "--image-long-edge", type=int, help="override APP_IMAGE_MAX_EDGE (default 1568)"
+    )
+    parser.add_argument(
+        "--perception-prompt-version",
+        default=None,
+        help="perception prompt version to load (default: config, currently 2; 1 is kept)",
+    )
     args = parser.parse_args(argv)
+    if not args.perception_only and (args.budget is None or args.style is None):
+        parser.error("--budget and --style are required unless --perception-only is given")
     if (args.photo is None) == (not args.synthetic):
         parser.error("give exactly one of: a photo path, or --synthetic")
     if args.photo is not None and not args.photo.is_file():
@@ -48,14 +67,22 @@ def main(argv: list[str] | None = None) -> int:
 
     load_env()
     config = Config.from_env()
+    overrides = {
+        "model_perception": args.perception_model,
+        "effort_perception": args.perception_effort,
+        "image_max_edge": args.image_long_edge,
+        "perception_prompt_version": args.perception_prompt_version,
+    }
+    config = replace(config, **{k: v for k, v in overrides.items() if v is not None})
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
     trace_path = point_trace_at(OUT_ROOT, run_id)
     photo = synthetic_room_image() if args.synthetic else args.photo
     try:
         result = run_spike(
             photo,
-            budget_usd=args.budget,
-            style=args.style,
+            budget_usd=args.budget or 0.0,
+            style=args.style or "",
+            perception_only=args.perception_only,
             slots=args.slots,
             config=config,
             run_id=run_id,
