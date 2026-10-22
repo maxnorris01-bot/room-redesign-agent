@@ -1,0 +1,104 @@
+{
+ "search_parameters": {
+  "engine": "google_product",
+  "product_id": "7810752583849448260",
+  "gl": "us",
+  "hl": "en"
+ },
+ "product_results": {
+  "title": "IKEA GUTTANE side table",
+  "brand": "IKEA",
+  "price_range": "$150-$150",
+  "stores": [
+   {
+    "name": "IKEA",
+    "link": "https://www.ikea.com/us/en/p/guttane-side-table-oak-80587718/?utm_source=google&utm_medium=organic-shopping&utm_campaign=shopping_feed&utm_content=free_google_shopping_clicks_Living_room_seating",
+    "title": "IKEA GUTTANE side table, oak, 22 7/8x15 3/8 \"",
+    "rating": 4.0,
+    "reviews": 1533,
+    "details_and_offers": [
+     "In stock online",
+     "Delivery between Oct 23 – 27 $10",
+     "365-day returns"
+    ],
+    "price": "$109.99",
+    "extracted_price": 109.99,
+    "additional_costs": "+tax",
+    "shipping": "+ $10.00",
+    "shipping_extracted": 10.0,
+    "total": "$119.99",
+    "extracted_total": 119.99
+   }
+  ],
+  "about_the_product": {
+   "description": "The IKEA GUTTANE Side Table is a stylish and functional addition to any living space. Made from particleboard with an oak finish, this table measures 58 cm in width, 39 cm in depth, and 32 cm in height. Originally introduced in 1963 as NOVETTE, it features a simple yet elegant design, now revitalized in the Nytillverkad collection. Perfect for placing drinks, books, or decorative items, it combines classic aesthetics with modern utility.",
+   "features": [
+    {
+     "title": "Material Type",
+     "value": "Particleboard (Table top)"
+    },
+    {
+     "title": "Depth",
+     "value": "39 cm"
+    },
+    {
+     "title": "Height",
+     "value": "12 5/8 \""
+    },
+    {
+     "title": "Width",
+     "value": "58 cm"
+    },
+    {
+     "title": "Assembly Required",
+     "value": "Yes (Check regularly that all assembly fastenings are properly tightened and retighten when necessary)"
+    },
+    {
+     "title": "Finish Type",
+     "value": "Oil-acrylic"
+    },
+    {
+     "title": "Color",
+     "value": "Oak"
+    },
+    {
+     "title": "Product Type",
+     "value": "Accent Table"
+    },
+    {
+     "title": "Design Style",
+     "value": "Vintage (debuted in 1963)"
+    },
+    {
+     "title": "Mirrored",
+     "value": "No"
+    },
+    {
+     "title": "Base Type",
+     "value": "Legs"
+    },
+    {
+     "title": "Subtype",
+     "value": "Side table"
+    },
+    {
+     "title": "Intended Use",
+     "value": "Home"
+    },
+    {
+     "title": "Top Use Cases",
+     "value": "Living room"
+    },
+    {
+     "title": "Typical Users",
+     "value": "Adults"
+    },
+    {
+     "title": "Age Range",
+     "value": "ADULT"
+    }
+   ]
+  },
+  "product_attributes": []
+ }
+}

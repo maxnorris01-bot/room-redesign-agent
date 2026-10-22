@@ -20,6 +20,10 @@ from app.retrieval import retrieve
 from app.schemas import RoomPerception
 
 
+def _web_config(**kw: Any) -> Config:
+    return Config(retrieval_mode="web_search", **kw)
+
+
 def _perception(n_gaps: int) -> RoomPerception:
     payload = copy.deepcopy(mock_perception_payload())
     payload["furniture"] = []
@@ -51,7 +55,7 @@ def test_slots_run_concurrently_with_exact_totals_and_stable_order(
     n = 6
     client = BarrierClient(n)
     monkeypatch.setattr(llm, "get_client", lambda mode, max_retries=1: client)
-    budget = Budget(Config(max_steps=n, max_cost_usd=10.0))
+    budget = Budget(_web_config(max_steps=n, max_cost_usd=10.0))
 
     result = retrieve(_perception(n), budget_usd=600, style="x", max_slots=n, budget=budget)
 
@@ -60,7 +64,7 @@ def test_slots_run_concurrently_with_exact_totals_and_stable_order(
     assert budget.steps == n  # exact, no lost updates
     per_call = result.slots[0].completion.cost_usd
     assert budget.cost_usd == pytest.approx(n * per_call)
-    assert budget.cost_usd == pytest.approx(sum(r.completion.cost_usd for r in result.slots))
+    assert budget.cost_usd == pytest.approx(sum(r.cost_usd for r in result.slots))
     assert all(r.completion.steps == 1 for r in result.slots)
 
 
@@ -93,7 +97,7 @@ def test_order_is_slot_order_even_when_calls_finish_out_of_order(
     watcher = threading.Thread(target=release_after_all_started)
     watcher.start()
     result = retrieve(
-        _perception(n), budget_usd=300, style="x", max_slots=n, budget=Budget(Config())
+        _perception(n), budget_usd=300, style="x", max_slots=n, budget=Budget(_web_config())
     )
     watcher.join(timeout=10)
     assert [r.slot.category for r in result.slots] == ["item0", "item1", "item2"]
@@ -102,7 +106,7 @@ def test_order_is_slot_order_even_when_calls_finish_out_of_order(
 def test_step_cap_is_exact_under_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
     client = MockAnthropicClient()
     monkeypatch.setattr(llm, "get_client", lambda mode, max_retries=1: client)
-    budget = Budget(Config(max_steps=2, max_cost_usd=10.0))
+    budget = Budget(_web_config(max_steps=2, max_cost_usd=10.0))
 
     with pytest.raises(BudgetExceededError, match="step cap"):
         retrieve(_perception(5), budget_usd=500, style="x", max_slots=5, budget=budget)
@@ -114,7 +118,9 @@ def test_step_cap_is_exact_under_concurrency(monkeypatch: pytest.MonkeyPatch) ->
 def test_cost_cap_trips_under_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
     client = MockAnthropicClient()
     monkeypatch.setattr(llm, "get_client", lambda mode, max_retries=1: client)
-    budget = Budget(Config(max_steps=20, max_cost_usd=0.015))  # a mock call costs about $0.0104
+    budget = Budget(
+        _web_config(max_steps=20, max_cost_usd=0.015)
+    )  # a mock call costs about $0.0104
 
     with pytest.raises(BudgetExceededError, match="cost cap"):
         retrieve(_perception(4), budget_usd=400, style="x", max_slots=4, budget=budget)
@@ -123,7 +129,7 @@ def test_cost_cap_trips_under_concurrency(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_budget_counters_survive_hammering_from_many_threads() -> None:
-    budget = Budget(Config(max_steps=100_000, max_cost_usd=1e9))
+    budget = Budget(_web_config(max_steps=100_000, max_cost_usd=1e9))
 
     def work() -> None:
         for _ in range(500):
@@ -152,4 +158,6 @@ def test_a_failed_slot_surfaces_after_the_others_finish(monkeypatch: pytest.Monk
     from app.schemas import SchemaError
 
     with pytest.raises(SchemaError, match="item1"):
-        retrieve(_perception(3), budget_usd=300, style="x", max_slots=3, budget=Budget(Config()))
+        retrieve(
+            _perception(3), budget_usd=300, style="x", max_slots=3, budget=Budget(_web_config())
+        )

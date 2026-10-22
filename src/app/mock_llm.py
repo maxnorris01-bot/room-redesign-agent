@@ -26,6 +26,7 @@ domain-specific keywords.
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -188,6 +189,29 @@ def mock_retrieval_payload(slot: str) -> dict[str, Any]:
     }  # fmt: skip
 
 
+MOCK_INVENTED_ID = "mock-invented-id"
+
+
+def mock_rank_payload(request_text: str) -> dict[str, Any]:
+    """Finalists for a rank request: the first N real ids from its list, plus one invented id.
+
+    The invented id is deliberate: the id-validation step visibly drops it in every mock run.
+    """
+    ids = re.findall(r"^- id: (\S+) \|", request_text, flags=re.MULTILINE)
+    match = re.search(r"Pick at most (\d+) finalists", request_text)
+    n = int(match.group(1)) if match else 2
+    finalists = [{"id": i, "reason": "MOCK pick: first on the list"} for i in ids[:n]]
+    finalists.append({"id": MOCK_INVENTED_ID, "reason": "MOCK: id not in the candidate list"})
+    return {"finalists": finalists}
+
+
+def _request_text(kwargs: dict[str, Any]) -> str:
+    content = kwargs["messages"][0]["content"]
+    if isinstance(content, str):
+        return content
+    return " ".join(b.get("text", "") for b in content if b.get("type") == "text")
+
+
 def _slot_from_request(kwargs: dict[str, Any]) -> str:
     """The retrieval user message names its slot on a line starting 'Slot: '."""
     content = kwargs["messages"][0]["content"]
@@ -225,6 +249,12 @@ class MockAnthropicClient:
             # No structured-output schema on this request - just echo something schema-free.
             return response([text_block("mock response")], input_tokens=100, output_tokens=20)
         title = schema.get("title")
+        if title == "RankedFinalists":
+            return response(
+                [text_block(mock_rank_payload(_request_text(kwargs)))],
+                input_tokens=900,
+                output_tokens=80,
+            )
         if title == "RoomPerception":
             return response(
                 [text_block(mock_perception_payload())], input_tokens=1800, output_tokens=700

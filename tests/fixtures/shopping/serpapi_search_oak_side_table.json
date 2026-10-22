@@ -1,0 +1,109 @@
+{
+ "search_parameters": {
+  "engine": "google_shopping",
+  "q": "oak side table",
+  "google_domain": "google.com",
+  "hl": "en",
+  "gl": "us",
+  "device": "desktop"
+ },
+ "shopping_results": [
+  {
+   "position": 1,
+   "title": "IKEA GUTTANE side table",
+   "product_id": "7810752583849448260",
+   "product_link": "https://www.google.com/search?ibp=oshop&q=oak side table&prds=catalogid:7810752583849448260,productid:9421067923061030576,headlineOfferDocid:18258982429885554376,rds:PC_9689460316618161833|PROD_PC_9689460316618161833,gpcid:9689460316618161833,mid:576462810763806609,pvt:hg&hl=en&gl=us&udm=28",
+   "source": "IKEA",
+   "price": "$109.99",
+   "extracted_price": 109.99,
+   "old_price": "$150",
+   "extracted_old_price": 150,
+   "rating": 4.7,
+   "reviews": 45,
+   "tag": "26% OFF"
+  },
+  {
+   "position": 2,
+   "title": "Mainstays Parsons End Table",
+   "product_id": "16642385544929688749",
+   "product_link": "https://www.google.com/search?ibp=oshop&q=oak side table&prds=catalogid:16642385544929688749,productid:12098229118040820549,headlineOfferDocid:6294837329812098484,imageDocid:12164030290074765276,rds:PC_11525685416255881539|PROD_PC_11525685416255881539,gpcid:11525685416255881539,mid:576462510802928575,pvt:hg&hl=en&gl=us&udm=28",
+   "source": "Walmart",
+   "price": "$20.88",
+   "extracted_price": 20.88,
+   "rating": 4.3,
+   "reviews": 1300,
+   "delivery": "Next-day delivery $20"
+  },
+  {
+   "position": 3,
+   "title": "Article Wood C Side Table",
+   "product_id": "6965038339607673363",
+   "product_link": "https://www.google.com/search?ibp=oshop&q=oak side table&prds=catalogid:6965038339607673363,productid:1853353142599184784,headlineOfferDocid:3502355443096042120,imageDocid:6091271095581695412,rds:PC_6951683606421887897|PROD_PC_6951683606421887897,gpcid:6951683606421887897,mid:576462855052633705,pvt:hg&hl=en&gl=us&udm=28",
+   "source": "Article",
+   "price": "$249.00",
+   "extracted_price": 249.0,
+   "rating": 4.8,
+   "reviews": 57
+  },
+  {
+   "position": 4,
+   "title": "IKEA HOLMERUD side table",
+   "product_id": "3515022197411126141",
+   "product_link": "https://www.google.com/search?ibp=oshop&q=oak side table&prds=catalogid:3515022197411126141,productid:8822261560338341349,headlineOfferDocid:13042733583717251840,rds:PC_6993889209560942029|PROD_PC_6993889209560942029,gpcid:6993889209560942029,mid:576462854686983151,pvt:hg&hl=en&gl=us&udm=28",
+   "source": "IKEA",
+   "price": "$59.99",
+   "extracted_price": 59.99,
+   "rating": 4.7,
+   "reviews": 695
+  },
+  {
+   "position": 5,
+   "title": "Nathan James Harper 2-Drawer Mid-Century Side Table",
+   "product_id": "16715075421929744561",
+   "product_link": "https://www.google.com/search?ibp=oshop&q=oak side table&prds=catalogid:16715075421929744561,productid:2709096532863351621,headlineOfferDocid:14578207885285756585,imageDocid:13582506314260117641,rds:PC_8129443894383579985|PROD_PC_8129443894383579985,gpcid:8129443894383579985,mid:576462533918651290,pvt:hg&hl=en&gl=us&udm=28",
+   "source": "Home Depot",
+   "price": "$140.99",
+   "extracted_price": 140.99,
+   "rating": 4.8,
+   "reviews": 253,
+   "delivery": "Free delivery"
+  },
+  {
+   "position": 6,
+   "title": "Threshold 20\" Turned Wood Drink Table Brown",
+   "product_id": "5341427764394416195",
+   "product_link": "https://www.google.com/search?ibp=oshop&q=oak side table&prds=catalogid:5341427764394416195,productid:12453951766355674348,headlineOfferDocid:15824284904493846518,rds:PC_15936937807156464960|PROD_PC_15936937807156464960,gpcid:15936937807156464960,mid:576462562942651856,pvt:hg&hl=en&gl=us&udm=28",
+   "source": "Target",
+   "price": "$100.00",
+   "extracted_price": 100.0,
+   "rating": 5.0,
+   "reviews": 2
+  },
+  {
+   "position": 7,
+   "title": "IKEA LACK side table",
+   "product_id": "4374072672541677006",
+   "product_link": "https://www.google.com/search?ibp=oshop&q=oak side table&prds=catalogid:4374072672541677006,productid:12186144982550328136,headlineOfferDocid:7989847321100549780,rds:PC_1550354692972575375|PROD_PC_1550354692972575375,gpcid:1550354692972575375,mid:576462304948615302,pvt:hg&hl=en&gl=us&udm=28",
+   "source": "IKEA",
+   "price": "$16.99",
+   "extracted_price": 16.99,
+   "rating": 4.7,
+   "reviews": 7900
+  },
+  {
+   "position": 8,
+   "title": "Oubayajia Small Side Table, Accent Table for Small Spaces, Wood Fluted Nightstand for Bedroom, Oak, Size: 13.6, Brown",
+   "product_id": "3228588211018347245",
+   "product_link": "https://www.google.com/search?ibp=oshop&q=oak side table&prds=productid:3228588211018347245,headlineOfferDocid:3228588211018347245,imageDocid:15451753121782238498,rds:PC_10739970497149904641|PROD_PC_10739970497149904641,pvt:hg&hl=en&gl=us&udm=28",
+   "source": "Walmart - Oubayajia",
+   "price": "$59.89",
+   "extracted_price": 59.89,
+   "old_price": "$110",
+   "extracted_old_price": 110,
+   "rating": 3.5,
+   "reviews": 16,
+   "delivery": "Free delivery",
+   "tag": "45% OFF"
+  }
+ ]
+}
