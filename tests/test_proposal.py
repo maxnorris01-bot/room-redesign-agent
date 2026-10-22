@@ -244,7 +244,7 @@ def test_fit_pass_fail_by_side_fail_by_footprint_and_unknown() -> None:
     long_side = _item("console", _cand("2", 1, dims=_dims(3.0, 0.5)))  # 3.0 > 2.4
     big_footprint = _item("bed", _cand("3", 1, dims=_dims(2.3, 1.2)))  # 2.76 m2 > 2.4
     no_dims = _item("lamp", _cand("4", 1))
-    half = _item("desk", _cand("5", 1, dims=_dims(1.0, None)))  # depth missing: not enough
+    half = _item("desk", _cand("5", 1, dims=_dims(1.0, None)))  # width only: longest-side rule
     results = {
         r.item: r for r in check_fit([ok, long_side, big_footprint, no_dims, half], room, cfg)
     }
@@ -255,7 +255,8 @@ def test_fit_pass_fail_by_side_fail_by_footprint_and_unknown() -> None:
     assert results["bed"].status == "fail" and "footprint 2.76 m2" in results["bed"].message
     assert results["lamp"].status == "unknown"
     assert results["lamp"].message == "no size found; check the product page"
-    assert results["desk"].status == "unknown"
+    # a width alone still gets the longest-side rule; the footprint rule is skipped
+    assert results["desk"].status == "pass" and "longest side 1.00 m" in results["desk"].message
 
 
 def test_fit_boundaries_are_inclusive() -> None:

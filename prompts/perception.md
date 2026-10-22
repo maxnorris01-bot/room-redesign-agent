@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 ---
 You analyse a single photo of a room and return structured data describing it. Your output will be
 drawn as a 2D top-down floor plan and used to choose furniture to shop for, so accuracy about what is
@@ -29,7 +29,10 @@ actually visible matters more than completeness. Never invent things you cannot 
   built-in shelving or cabinets, kitchen counters, stairs, pillars.
 - `furniture`: movable furniture only, each with a short id (f1, f2, ...), category, position,
   rough size, and whether it looks keepable: "likely" (good condition, suits the room), "unlikely"
-  (worn, mismatched or poorly sized), or "unclear".
+  (worn, mismatched or poorly sized), or "unclear". `matches_id`: the id of another furniture item
+  that is visibly part of the same set (a sofa and armchair in the same fabric and colour, a matching
+  table pair); null when the item stands alone. Name the colour or material in `note` ("pale blue
+  leather, matches sofa f1") so the set can be checked later.
 - `furniture_gaps`: a category only when it is clearly absent from the photo AND not already covered
   by an item in `furniture` or `fixed_items` (a nesting side table already in the room means no
   side-table gap; a fireplace with no TV does not by itself mean a media unit is missing). The

@@ -59,6 +59,9 @@ class SearchCandidate:
     rating: float | None
     rating_count: int | None
     google_panel_url: str | None
+    # One product thumbnail (Serper `imageUrl`, SerpApi `thumbnail`: an https gstatic URL). Fetched
+    # only by `app.thumbnails`, under its safety rules, for the image-based style check.
+    thumbnail_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -308,6 +311,7 @@ def parse_serper_search(payload: dict[str, Any]) -> list[SearchCandidate]:
                 rating=_as_float(item.get("rating")),
                 rating_count=_as_int(item.get("ratingCount")),
                 google_panel_url=_usable_str(item.get("link")),  # absent on some items
+                thumbnail_url=_usable_str(item.get("imageUrl")),
             )
         )
     return out
@@ -332,6 +336,7 @@ def parse_serpapi_search(payload: dict[str, Any]) -> list[SearchCandidate]:
                 rating=_as_float(item.get("rating")),
                 rating_count=_as_int(item.get("reviews")),
                 google_panel_url=_usable_str(item.get("product_link")),
+                thumbnail_url=_usable_str(item.get("thumbnail")),
             )
         )
     return out
@@ -519,14 +524,19 @@ def _load_fixture(name: str) -> dict[str, Any]:
 
 
 def _tag(candidates: list[SearchCandidate]) -> list[SearchCandidate]:
-    """Label fixture results so nothing in a mock run can be mistaken for live data."""
+    """Label fixture results so nothing in a mock run can be mistaken for live data.
+
+    The trimmed fixtures carry no thumbnail URLs; each result gets a mock one (never fetched: mock
+    mode serves a generated image, see `app.thumbnails`).
+    """
     return [
-        SearchCandidate(
-            c.product_id, FIXTURE_TITLE_PREFIX + c.title, c.seller, c.price, c.currency,
-            c.rating, c.rating_count, c.google_panel_url,
+        replace(
+            c,
+            title=FIXTURE_TITLE_PREFIX + c.title,
+            thumbnail_url=c.thumbnail_url or f"https://mock.example/thumb/{c.product_id}.jpg",
         )
         for c in candidates
-    ]  # fmt: skip
+    ]
 
 
 class FixtureSearch:

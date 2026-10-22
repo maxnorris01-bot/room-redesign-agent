@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
+from app.images import PreparedImage
 from app.llm import Budget, LLMOutputError, complete
 from app.prompts import load_prompt
 from app.retrieval import CallRecord, RetrievalResult
@@ -33,6 +35,7 @@ from app.schemas import (
 )
 from app.selfcheck import (
     SelfCheckRun,
+    StyleContext,
     apply_results,
     grounded_problems,
     item_shipping,
@@ -43,6 +46,9 @@ from app.selfcheck import (
 from app.tracing import span
 
 PROPOSAL_MAX_TOKENS = 3000
+# A replacement whose longest side differs from the old piece's width by more than this gets a
+# note (never a failure). UNTUNED GUESS.
+REPLACE_SIZE_TOLERANCE = 0.25
 
 
 @dataclass
@@ -99,9 +105,15 @@ def slot_inputs(
 
 def _size(c: ProductCandidate) -> str:
     d = c.dimensions_m
-    if d is not None and d.width_m is not None and d.depth_m is not None:
+    if d is None:
+        return "unknown"
+    if d.width_m is not None and d.depth_m is not None:
         return f"{d.width_m:.2f} x {d.depth_m:.2f} m"
-    return "unknown"
+    longest = max((v for v in (d.width_m, d.depth_m, d.length_m) if v is not None), default=None)
+    if longest is None:
+        return "unknown"
+    approx = "approximate, from the URL" if c.size_confidence == "low" else "stated"
+    return f"longest side {longest:.2f} m ({approx})"
 
 
 def _link(c: ProductCandidate) -> str:
@@ -127,6 +139,7 @@ def proposal_user_text(
     previous: list[ProposalItem] | None = None,
     failed: list[CheckResult] | None = None,
     kept: list[tuple[str, str]] | None = None,
+    set_notes: list[str] | None = None,
 ) -> str:
     d = perception.dimensions
     lines = [
@@ -144,6 +157,8 @@ def proposal_user_text(
     ]
     if kept:
         lines.append("Keeping (stays in the room): " + ", ".join(f"{c} ({i})" for i, c in kept))
+    for note in set_notes or []:  # data, not instructions: the summary should acknowledge it
+        lines.append(f"Set note: {note}")
     for slot in slots:
         lines += ["", f"Slot: {slot.name}", f"Why this slot: {slot.reason}"]
         if slot.replaces is not None:
@@ -281,6 +296,47 @@ def _totals(items: list[ProposalItem], budget_usd: float | None) -> ProposalTota
     )
 
 
+def seller_concentration(items: list[ProposalItem]) -> dict[str, Any]:
+    """Picks per seller and the largest seller's share (reported, never enforced across slots:
+    slots run concurrently and each looks up only its top finalist, so balancing them would need a
+    barrier before the lookups; ADR 0010)."""
+    counts: dict[str, int] = {}
+    for item in items:
+        if item.pick is not None:
+            name = item.pick.retailer or "?"
+            counts[name] = counts.get(name, 0) + 1
+    picks = sum(counts.values())
+    largest = max(counts.items(), key=lambda kv: kv[1], default=("", 0))
+    return {
+        "picks": picks,
+        "picks_by_seller": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
+        "largest_seller": largest[0],
+        "largest_share": round(largest[1] / picks, 2) if picks else 0.0,
+    }
+
+
+def annotate_replacements(items: list[ProposalItem]) -> None:
+    """Note (never fail) when a replacement is much longer or shorter than the piece it replaces."""
+    for item in items:
+        if item.replaces is None or item.pick is None or item.pick.dimensions_m is None:
+            continue
+        d = item.pick.dimensions_m
+        sides = [v for v in (d.width_m, d.depth_m, d.length_m) if v is not None]
+        old = item.replaces.width_m
+        if not sides or old <= 0:
+            continue
+        new = max(sides)
+        change = (new - old) / old
+        if abs(change) > REPLACE_SIZE_TOLERANCE:
+            approx = (
+                " (approximate, from the listing URL)" if item.pick.size_confidence == "low" else ""
+            )
+            item.replace_size_note = (
+                f"new piece is about {new:.2f} m long{approx} vs your old {item.replaces.category} "
+                f"at {old:.2f} m ({abs(change):.0%} {'longer' if change > 0 else 'shorter'})"
+            )
+
+
 def _describe_change(before: list[ProposalItem], after: list[ProposalItem]) -> list[str]:
     old = {i.slot: i for i in before}
     changes: list[str] = []
@@ -313,6 +369,7 @@ def _call_model(
     previous: list[ProposalItem] | None = None,
     failed: list[CheckResult] | None = None,
     kept: list[tuple[str, str]] | None = None,
+    set_notes: list[str] | None = None,
 ) -> tuple[list[ProposalItem], str, list[dict[str, str]], CallRecord, str]:
     config = budget.config
     prompt = load_prompt("proposal", config.proposal_version_for(budget_usd is None))
@@ -321,7 +378,9 @@ def _call_model(
         span_name=f"llm.{kind}",
         prompt=prompt,
         model=config.model_proposal,
-        user_text=proposal_user_text(perception, budget_usd, style, slots, previous, failed, kept),
+        user_text=proposal_user_text(
+            perception, budget_usd, style, slots, previous, failed, kept, set_notes
+        ),
         budget=budget,
         max_tokens=PROPOSAL_MAX_TOKENS,
         schema=to_output_schema(ProposalOutput),
@@ -349,11 +408,12 @@ def _check(
     group: str,
     prefix: str,
     run_id: str | None,
+    ctx: StyleContext | None = None,
 ) -> SelfCheckRun:
     ids = {s.name: set(s.finalists) for s in slots}
     return run_self_check(
         items, perception, style, budget_usd, ids, budget,
-        group=group, label_prefix=prefix, run_id=run_id,
+        group=group, label_prefix=prefix, run_id=run_id, style_context=ctx,
     )  # fmt: skip
 
 
@@ -366,12 +426,24 @@ def propose_and_check(
     budget: Budget,
     run_id: str | None = None,
     kept: list[tuple[str, str]] | None = None,
+    set_notes: list[str] | None = None,
+    room_image: PreparedImage | None = None,
+    thumbnails: dict[tuple[str, str], PreparedImage] | None = None,
 ) -> ProposalRun:
     """Proposal, self-check, and up to `max_revisions` revisions. Raises on Budget/schema errors
     in the first proposal; a failed revision keeps the previous proposal and says so. `kept` is
     (id, category) of existing furniture that stays, shown to the model so it does not duplicate."""
     config = budget.config
     slots = slot_inputs(retrieved, perception)
+    # What the style check may look at: the room photo, prefetched thumbnails, the furniture that
+    # stays (with the colours perception noted) and any set notes.
+    kept_ids = {k[0] for k in kept or []}
+    ctx = StyleContext(
+        room_image=room_image,
+        thumbnails=dict(thumbnails or {}),
+        kept=[(f.id, f.category, f.note) for f in perception.furniture if f.id in kept_ids],
+        set_notes=list(set_notes or []),
+    )
     calls: list[CallRecord] = []
     dropped: list[dict[str, str]] = []
     versions: dict[str, str] = {}
@@ -388,17 +460,26 @@ def propose_and_check(
             items = [ProposalItem(slot=s.name, note=s.note or "no finalists found") for s in slots]
             summary = "No candidates were found for any slot."
             check = _check(items, perception, style, budget_usd, slots, budget,
-                           group="selfcheck", prefix="", run_id=run_id)  # fmt: skip
+                           group="selfcheck", prefix="", run_id=run_id, ctx=ctx)  # fmt: skip
             calls += check.calls
         else:
             items, summary, dropped, record, versions["proposal"] = _call_model(
-                perception, budget_usd, style, slots, budget, kind="proposal", kept=kept
+                perception,
+                budget_usd,
+                style,
+                slots,
+                budget,
+                kind="proposal",
+                kept=kept,
+                set_notes=set_notes,
             )
             calls.append(record)
             check = _check(items, perception, style, budget_usd, slots, budget,
-                           group="selfcheck", prefix="", run_id=run_id)  # fmt: skip
+                           group="selfcheck", prefix="", run_id=run_id, ctx=ctx)  # fmt: skip
             calls += check.calls
-            versions["style_check"] = load_prompt("style_check").version
+            versions["style_check"] = load_prompt(
+                "style_check", config.style_prompt_version
+            ).version
 
             for n in range(1, config.max_revisions + 1):
                 if not check.failures:
@@ -406,7 +487,7 @@ def propose_and_check(
                 try:
                     new_items, new_summary, new_dropped, record, _ = _call_model(
                         perception, budget_usd, style, slots, budget, kind="revision",
-                        previous=items, failed=check.failures, kept=kept,
+                        previous=items, failed=check.failures, kept=kept, set_notes=set_notes,
                     )  # fmt: skip
                 except (SchemaError, LLMOutputError) as exc:  # BudgetExceededError propagates
                     revised = True
@@ -419,6 +500,7 @@ def propose_and_check(
                 new_check = _check(
                     new_items, perception, style, budget_usd, slots, budget,
                     group=f"recheck{suffix.strip()}", prefix=f"revision{suffix} / ", run_id=run_id,
+                    ctx=ctx,
                 )  # fmt: skip
                 calls += new_check.calls
                 if len(new_check.failures) > len(check.failures):
@@ -431,6 +513,7 @@ def propose_and_check(
                 items, summary, check = new_items, new_summary or summary, new_check
 
         warnings += apply_results(items, check.results)
+        annotate_replacements(items)
         proposal = Proposal(
             items=items,
             totals=_totals(items, budget_usd),

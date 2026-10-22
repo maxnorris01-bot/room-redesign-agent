@@ -16,10 +16,12 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from typing import Literal
 from urllib.parse import urlsplit
 
 from app.categories import is_flat_item
 from app.config import Config
+from app.images import PreparedImage
 from app.llm import Budget, Completion, LLMOutputError, complete
 from app.prompts import load_prompt
 from app.retrieval import CallRecord, is_product_page_url
@@ -30,6 +32,9 @@ from app.schemas import (
     RoomPerception,
     SchemaError,
     StyleCheckOutput,
+    StyleCheckOutputV1,
+    StyleItem,
+    StyleItemV1,
     parse_model,
     to_output_schema,
 )
@@ -206,27 +211,38 @@ def check_fit(
             )
             continue
         dims = cand.dimensions_m
-        if dims is None or dims.width_m is None or dims.depth_m is None:
+        horizontal = sorted(
+            (v for v in (dims.width_m, dims.depth_m, dims.length_m) if v is not None)
+            if dims is not None
+            else [],
+            reverse=True,
+        )
+        if not horizontal:  # no size, or a height alone: nothing to compare with the room
             results.append(
                 CheckResult(check="fit", status="unknown", item=item.slot, message=NO_SIZE_NOTE)
             )
             continue
-        longer = max(dims.width_m, dims.depth_m)
-        footprint = dims.width_m * dims.depth_m
+        longer = horizontal[0]
         reasons: list[str] = []
         if longer > config.fit_max_side_fraction * shorter + EPS:
             reasons.append(
                 f"longer side {longer:.2f} m is over {config.fit_max_side_fraction:.0%} of the "
                 f"room's shorter side ({shorter:.2f} m)"
             )
-        if footprint > config.fit_max_footprint_fraction * area + EPS:
+        footprint = horizontal[0] * horizontal[1] if len(horizontal) >= 2 else None
+        if footprint is not None and footprint > config.fit_max_footprint_fraction * area + EPS:
             reasons.append(
                 f"footprint {footprint:.2f} m2 is over {config.fit_max_footprint_fraction:.0%} of "
                 f"the floor area ({area:.1f} m2)"
             )
-        message = "; ".join(reasons) if reasons else (
-            f"{dims.width_m:.2f} x {dims.depth_m:.2f} m fits the room's proportions"
-        )  # fmt: skip
+        if reasons:
+            message = "; ".join(reasons)
+        elif footprint is not None:
+            message = f"{horizontal[0]:.2f} x {horizontal[1]:.2f} m fits the room's proportions"
+        else:  # only a longest side is known: the footprint rule is skipped
+            message = f"longest side {longer:.2f} m fits the room's proportions"
+        if cand.size_confidence == "low":
+            message += " (size from the listing URL; approximate)"
         if low:
             message += f" ({LOW_CONFIDENCE_NOTE}: confidence {room.confidence:.1f})"
         results.append(
@@ -289,42 +305,100 @@ def check_grounded(
 # ---- style (model) ------------------------------------------------------------------------------
 
 
-def _style_user_text(items: list[ProposalItem], perception: RoomPerception, style: str) -> str:
+MAX_STYLE_THUMBNAILS = 10
+
+
+@dataclass
+class StyleContext:
+    """What the style check may look at besides titles (ADR 0010)."""
+
+    room_image: PreparedImage | None = None
+    # (slot, product id) -> thumbnail of that product, prefetched during retrieval
+    thumbnails: dict[tuple[str, str], PreparedImage] = field(default_factory=dict)
+    kept: list[tuple[str, str, str]] = field(
+        default_factory=list
+    )  # (id, category, perception note)
+    set_notes: list[str] = field(default_factory=list)
+
+
+def _style_user_text(
+    items: list[ProposalItem],
+    perception: RoomPerception,
+    style: str,
+    ctx: StyleContext,
+    image_index: dict[str, int],
+    v2: bool,
+) -> str:
     lines = [
         f"Style goal: {style}",
         f"Room's current style: {', '.join(perception.style_descriptors) or 'unknown'}",
-        "",
-        "Items:",
     ]
+    if v2:
+        if ctx.room_image is not None:
+            lines.append("Image 1 is the room photo.")
+        lines.append(
+            "Furniture that STAYS: "
+            + ("; ".join(f"{c} ({i}): {n}" for i, c, n in ctx.kept) if ctx.kept else "nothing")
+        )
+        lines += [f"Set note: {n}" for n in ctx.set_notes]
+    lines += ["", "Items:"]
     for item, cand in _picked(items):
+        where = (
+            f" | image: {image_index[item.slot]}" if item.slot in image_index else " | image: none"
+        )
         lines.append(
             f"- slot: {item.slot} | {cand.name[:100]} | retailer: {cand.retailer or '?'} "
-            f"| category: {item.slot}"
+            f"| category: {item.slot}{where if v2 else ''}"
         )
     return "\n".join(lines)
 
 
 def check_style(
-    items: list[ProposalItem], perception: RoomPerception, style: str, budget: Budget
+    items: list[ProposalItem],
+    perception: RoomPerception,
+    style: str,
+    budget: Budget,
+    ctx: StyleContext | None = None,
 ) -> tuple[list[CheckResult], Completion | None]:
+    """One model call. Prompt v2 (default) also sees the room photo and product thumbnails and
+    reports clashes with furniture that stays; v1 is the text-only original. A thumbnail the call
+    did not get (fetch failed, none supplied) is judged on its title: basis "text"."""
     picked = _picked(items)
     if not picked:
         return [], None
     config = budget.config
-    prompt = load_prompt("style_check")
+    ctx = ctx or StyleContext()
+    v2 = config.style_prompt_version != "1"
+    prompt = load_prompt("style_check", config.style_prompt_version)
+    images: list[PreparedImage] = []
+    image_index: dict[str, int] = {}
+    if v2:
+        if ctx.room_image is not None:
+            images.append(ctx.room_image)
+        for item, cand in picked:
+            thumb = ctx.thumbnails.get((item.slot, cand.product_id))
+            if thumb is not None and len(image_index) < MAX_STYLE_THUMBNAILS:
+                images.append(thumb)
+                image_index[item.slot] = len(images)  # 1-based position among the images
+    schema = to_output_schema(StyleCheckOutput if v2 else StyleCheckOutputV1)
     try:
         completion = complete(
             span_name="llm.style_check",
             prompt=prompt,
             model=config.model_stylecheck,
-            user_text=_style_user_text(items, perception, style),
+            user_text=_style_user_text(items, perception, style, ctx, image_index, v2),
             budget=budget,
             max_tokens=STYLE_MAX_TOKENS,
-            schema=to_output_schema(StyleCheckOutput),
+            schema=schema,
+            images=images or None,
             effort=config.effort_stylecheck,
             stream=True,
         )
-        parsed = parse_model(StyleCheckOutput, completion.text, what="style_check")
+        parsed_items: list[StyleItemV1] = (
+            list(parse_model(StyleCheckOutput, completion.text, what="style_check").items)
+            if v2
+            else list(parse_model(StyleCheckOutputV1, completion.text, what="style_check").items)
+        )
     except (SchemaError, LLMOutputError) as exc:  # BudgetExceededError is not caught: it propagates
         return [
             CheckResult(
@@ -335,7 +409,7 @@ def check_style(
             )  # fmt: skip
             for i, _ in picked
         ], None
-    by_slot = {s.slot: s for s in parsed.items}
+    by_slot = {s.slot: s for s in parsed_items}
     results: list[CheckResult] = []
     for item, _ in picked:
         s = by_slot.get(item.slot)
@@ -348,16 +422,25 @@ def check_style(
                     message="style check did not return this item",
                 )  # fmt: skip
             )
-        else:
-            results.append(
-                CheckResult(
-                    check="style",
-                    status="fail" if s.match == "poor" else "pass",
-                    item=item.slot,
-                    message=f"{s.match}: {s.note}",
-                    value=s.match,
-                )
+            continue
+        clash: Literal["none", "mild", "strong"] = s.clash if isinstance(s, StyleItem) else "none"
+        clash_with = s.clash_with if isinstance(s, StyleItem) else ""
+        message = f"{s.match}: {s.note}"
+        if clash != "none":
+            message += f"; {clash} clash with {clash_with or 'a kept item'}"
+        basis: Literal["image", "text"] = "image" if item.slot in image_index else "text"
+        results.append(
+            CheckResult(
+                check="style",
+                status="fail" if s.match == "poor" or clash == "strong" else "pass",
+                item=item.slot,
+                message=message,
+                value=s.match,
+                clash=clash,
+                clash_with=clash_with,
+                basis=basis,
             )
+        )
     return results, completion
 
 
@@ -385,13 +468,14 @@ def run_self_check(
     group: str = "selfcheck",
     label_prefix: str = "",
     run_id: str | None = None,
+    style_context: StyleContext | None = None,
 ) -> SelfCheckRun:
     """All four checks. The style call runs in a worker thread while the code checks run here."""
     config = budget.config
     with span("stage.self_check", config=config, run_id=run_id, group=group) as rec:
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="style") as pool:
             started = time.perf_counter()
-            style_future = pool.submit(check_style, items, perception, style, budget)
+            style_future = pool.submit(check_style, items, perception, style, budget, style_context)
 
             code_started = time.perf_counter()
             code_results = [
@@ -462,6 +546,9 @@ def apply_results(items: list[ProposalItem], results: list[CheckResult]) -> list
         elif r.check == "style" and r.value in ("good", "ok", "poor"):
             item.style_match = r.value  # type: ignore[assignment]
             item.style_note = r.message.split(":", 1)[-1].strip()
+            item.style_basis = r.basis
+            item.style_clash = r.clash
+            item.style_clash_with = r.clash_with
         elif r.check == "style":
             item.style_note = r.message
         if r.status == "fail":

@@ -105,7 +105,8 @@ def test_live_stream_ttft_is_first_content_delta(monkeypatch: pytest.MonkeyPatch
 
 
 def test_prompt_versions_load_and_unknown_version_raises() -> None:
-    assert load_prompt("perception").version == "2"
+    assert load_prompt("perception").version == "3"
+    assert load_prompt("perception", "3").version == "3"
     assert load_prompt("perception", "2").version == "2"
     v1 = load_prompt("perception", "1")
     assert v1.version == "1" and v1.text != load_prompt("perception").text

@@ -14,9 +14,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, urldefrag, urlsplit
 
-from app.categories import already_covered, norm
+from app.categories import already_covered, family_of, norm
 from app.categories import canonical_category as canonical_category  # re-exported
 from app.config import Config
+from app.images import PreparedImage
 from app.llm import Budget, Completion, complete, web_search_tool
 from app.preferences import Preferences, resolve_preferences
 from app.prompts import Prompt, load_prompt
@@ -31,6 +32,7 @@ from app.schemas import (
     to_output_schema,
 )
 from app.shopping import ProductLookup, SearchProvider
+from app.thumbnails import Thumbnailer
 from app.tracing import span
 
 RETRIEVAL_MAX_TOKENS = 3000
@@ -113,6 +115,8 @@ class SlotResult:
     # Finalists that were ranked but not looked up (freeplay lookup economy): Google product link
     # only. Shown as alternates "(retailer link on request)"; never picks.
     unverified_alternates: list[ProductCandidate] = field(default_factory=list)
+    # Prefetched thumbnail of the top-ranked finalist, by product id (for the style check)
+    thumbnails: dict[str, PreparedImage] = field(default_factory=dict)
 
     @property
     def cost_usd(self) -> float:
@@ -141,6 +145,9 @@ class SlotPlan:
     dropped_by_cap: list[str] = field(default_factory=list)  # wanted but over max_slots
     skipped: list[str] = field(default_factory=list)  # not wanted after all (already covered, ...)
     notes: list[str] = field(default_factory=list)  # for example fewer slots than asked for
+    # What the item-count message needs (ADR 0010): the standard categories for the room type,
+    # which of them the furniture that stays covers (and by what), and the family duplicates.
+    report: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -148,6 +155,8 @@ class SlotPlan:
             "dropped_by_cap": self.dropped_by_cap,
             "skipped": self.skipped,
             "notes": self.notes,
+            "families": {s.category: family_of(s.category) for s in self.slots},
+            "report": self.report,
         }
 
 
@@ -187,12 +196,17 @@ def plan_slots(
     )
     tier = config.price_tier if freeplay else None
     by_id = {f.id: f for f in perception.furniture}
-    kept_categories = [norm(by_id[r.id].category) for r in prefs.decided("keep") if r.id in by_id]
-    owned = [
-        *kept_categories,
-        *(norm(d.kind) for d in perception.art_and_decor),
-        *(norm(x.category) for x in perception.fixed_items),
+    labelled = [  # (what to call it, normalised category)
+        *(
+            (f"{by_id[r.id].category} ({r.id})", norm(by_id[r.id].category))
+            for r in prefs.decided("keep")
+            if r.id in by_id
+        ),
+        *((f"{d.kind} (decor)", norm(d.kind)) for d in perception.art_and_decor),
+        *((f"{x.category} (fixed)", norm(x.category)) for x in perception.fixed_items),
     ]
+    owned = [n for _, n in labelled]
+    covered_by_stays: list[dict[str, str]] = []
     replaced_categories = [norm(r.category) for r in prefs.decided("replace")]
 
     wanted: list[Slot] = []
@@ -232,26 +246,38 @@ def plan_slots(
     accents = next((v for k, v in _ACCENT_SLOTS.items() if k in room), _GENERIC_SLOTS)
     planned = [norm(w.category) for w in wanted]  # slots already planned (for example a gap)
     for category in accents:
-        if (
-            already_covered(category, owned)
-            or already_covered(category, replaced_categories)
-            or already_covered(category, planned)
-        ):
+        if already_covered(category, owned):
+            by = next(lbl for lbl, n in labelled if already_covered(category, [n]))
+            covered_by_stays.append({"category": category, "by": by})
+            continue
+        if already_covered(category, replaced_categories) or already_covered(category, planned):
             continue
         wanted.append(slot(category, "accent piece for this room type", "accent"))
 
     chosen: list[Slot] = []
     taken: list[str] = []
     dropped: list[str] = []
+    family_owner: dict[str, str] = {}  # family -> the category that took its one slot
+    duplicates: list[dict[str, str]] = []
     for s in wanted:
+        family = family_of(s.category)
         if already_covered(s.category, taken):
             if s.source != "accent":  # accents are filler, not wishes: no need to report them
                 skipped.append(f"{s.source} {s.category!r}: same kind as an earlier slot")
+            same_as = next((t for t in taken if already_covered(s.category, [t])), s.category)
+            duplicates.append({"category": s.category, "same_as": same_as})
+        elif s.source != "replace_requested" and family in family_owner:
+            # One slot per family (media unit and console table are the same purchase), unless the
+            # visitor explicitly asked to replace something in it. The next category fills the gap.
+            by = family_owner[family]
+            skipped.append(f"{s.source} {s.category!r}: same family ({family}) as {by!r}")
+            duplicates.append({"category": s.category, "same_as": by})
         elif len(chosen) >= max_slots:
             dropped.append(f"{s.source}: {s.category}")
         else:
             chosen.append(s)
             taken.append(norm(s.category))
+            family_owner.setdefault(family, s.category)
     # Accents are a filler, not a wish: only report dropped requests, gaps and suggestions.
     dropped = [d for d in dropped if not d.startswith("accent:")]
     notes: list[str] = []
@@ -260,7 +286,39 @@ def plan_slots(
             f"asked for {max_slots} pieces but only {len(chosen)} slots are available: this room "
             f"type has {len(accents)} standard slots and the rest are covered by what stays"
         )
-    return SlotPlan(chosen, dropped, skipped, notes)
+    report = {
+        "requested": max_slots,
+        "planned": len(chosen),
+        "room_type": perception.room_type,
+        "standard_categories": list(accents),
+        "covered_by_what_stays": covered_by_stays,
+        "skipped_as_duplicates": duplicates,
+    }
+    return SlotPlan(chosen, dropped, skipped, notes, report)
+
+
+def item_count_message(plan_report: dict[str, Any], found: int, empty: list[str]) -> str:
+    """A plain explanation for a run that delivered fewer pieces than asked for."""
+    r = plan_report
+    parts = [
+        f"You asked for {r['requested']} pieces and {found} were found.",
+        f"Standard slots for a {r['room_type']}: {', '.join(r['standard_categories'])}.",
+    ]
+    covered = r["covered_by_what_stays"]
+    if covered:
+        named = "; ".join(f"{c['by']} covers {c['category']}" for c in covered)
+        parts.append(f"Already covered by what stays: {named}.")
+    dupes = r["skipped_as_duplicates"]
+    if dupes:
+        named = ", ".join(f"{d['category']} (same as {d['same_as']})" for d in dupes)
+        parts.append(f"{len(dupes)} skipped as duplicates of another pick: {named}.")
+    if empty:
+        parts.append(f"Slots that found nothing: {', '.join(empty)}.")
+    parts.append(
+        "To open more slots, mark furniture you would replace, for example --replace sofa "
+        "(or the id, such as --replace f1)."
+    )
+    return " ".join(parts)
 
 
 def derive_slots(
@@ -430,6 +488,7 @@ def retrieve(
     run_id: str | None = None,
     providers: tuple[SearchProvider, ProductLookup] | None = None,
     preferences: Preferences | None = None,
+    thumbnailer: Thumbnailer | None = None,
 ) -> RetrievalResult:
     """Retrieve candidates for each derived slot concurrently, under `budget`'s caps.
 
@@ -454,6 +513,7 @@ def retrieve(
     slots = plan.slots
     result = RetrievalResult(prompt_version=prompt.version, mode=config.retrieval_mode, plan=plan)
     pair = (providers or shopping_retrieval.build_providers(config)) if shopping else None
+    thumbs = (thumbnailer or shopping_retrieval.build_thumbnailer(config)) if shopping else None
     with span(
         "stage.retrieval",
         config=config,
@@ -483,6 +543,7 @@ def retrieve(
                                 prompt,
                                 pair[0],
                                 pair[1],
+                                thumbs,
                             )  # fmt: skip
                         )
                     else:

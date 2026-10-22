@@ -85,6 +85,8 @@ overshot by calls already in flight.
 - The proposal prompt is v2 (v1 kept): a slot may replace an existing item, the budget is for the
   whole list, kept items are not duplicated.
 
+- **Amended 2026-10-22:** sizes are no longer limited to the lookup's feature text: titles and URL slugs give partial, confidence-marked sizes (ADR 0009), and the style check can see the room photo and product thumbnails and reports clashes with furniture that stays (ADR 0010). The "fit needs a product page" exclusion above still holds: no pages are fetched.
+
 ## Consequences
 
 - **Latency.** Two more model hops (proposal, then style check in parallel with code checks), and a

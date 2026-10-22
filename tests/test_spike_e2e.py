@@ -47,7 +47,7 @@ def test_mock_run_end_to_end_web_search_mode(tmp_path: Path) -> None:
     assert result.models["perception"] == "claude-sonnet-5-5"
     assert result.models["retrieval"] == "claude-haiku-5-5"
     assert (
-        result.prompt_versions["perception"] == "2" and result.prompt_versions["retrieval"] == "1"
+        result.prompt_versions["perception"] == "3" and result.prompt_versions["retrieval"] == "1"
     )
     assert max(result.image["width"], result.image["height"]) <= 1568
     for slot in result.retrieval:
@@ -86,7 +86,7 @@ def test_mock_run_end_to_end_shopping_mode(tmp_path: Path) -> None:
     assert "retrieval: sofa / rank (over limit)" in stages
     assert "retrieval: sofa / lookup 1 (over limit)" in stages
     assert result.prompt_versions == {
-        "perception": "2", "rank": "3", "proposal": "2", "style_check": "1",
+        "perception": "3", "rank": "3", "proposal": "2", "style_check": "2",
     }  # fmt: skip
     provider_rows = [r for r in result.rows if r.kind in ("search", "lookup")]
     assert provider_rows and all(r.cost_estimated for r in provider_rows)
@@ -118,9 +118,10 @@ def test_serpapi_mock_run_shows_dimensions() -> None:
     result = run_spike(synthetic_room_image(), budget_usd=900, style="x", slots=1, config=cfg)
     cands = result.retrieval[0]["candidates"]
     ikea = next(c for c in cands if "GUTTANE" in c["name"])
-    assert ikea["dimensions_m"]["width_m"] == pytest.approx(0.58)
-    assert ikea["dimensions_m"]["depth_m"] == pytest.approx(0.39)
-    assert ikea["dimensions_m"]["height_m"] == pytest.approx(0.3207, abs=1e-4)
+    # the lookup states 58 x 39 cm, but a 58 cm "coffee table" is implausible (it is a side table):
+    # the size is discarded and noted rather than trusted
+    assert ikea["dimensions_m"] is None and ikea["size_source"] == "none"
+    assert "outside the plausible range" in ikea["size_note"]
 
 
 def test_trace_records_stages_prompt_versions_and_searches_web_mode(tmp_path: Path) -> None:
@@ -129,7 +130,7 @@ def test_trace_records_stages_prompt_versions_and_searches_web_mode(tmp_path: Pa
     run_spike(synthetic_room_image(), budget_usd=500, style="x", slots=1, config=_web())
     lines = [json.loads(x) for x in tracing.TRACE_PATH.read_text().splitlines()]
     by_name = {rec["name"]: rec for rec in lines}
-    assert by_name["stage.perception"]["prompt_version"] == "2"
+    assert by_name["stage.perception"]["prompt_version"] == "3"
     assert by_name["stage.retrieval"]["prompt_version"] == "1"
     per_slot = by_name["stage.retrieval"]["per_slot"][0]
     assert per_slot["queries"] and per_slot["result_counts"] == [1]

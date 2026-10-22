@@ -50,7 +50,7 @@ class Config:
     effort_retrieval: str = "low"
     # Which perception prompt file to load (prompts/perception.md is current; older ones are kept
     # as perception.v<N>.md for comparison). Set per run via scripts/spike.py, not from the env.
-    perception_prompt_version: str = "2"
+    perception_prompt_version: str = "3"
     # Retrieval: "shopping" (default) = structured Google Shopping data, ranked by a model that only
     # picks ids (ADR 0005); "web_search" = Claude's web search tool reading pages (ADR 0003 in the
     # claim-verification repo; kept selectable). API keys are NOT config fields: they are read
@@ -92,7 +92,7 @@ class Config:
     rank_prompt_version: str = "3"
     # Freeplay (no --budget, ADR 0008): its own prompt versions; budget mode keeps the two above.
     # A CLI version flag overrides both modes.
-    freeplay_rank_prompt_version: str = "4"
+    freeplay_rank_prompt_version: str = "5"
     freeplay_proposal_prompt_version: str = "3"
     # Freeplay price tier: value (cheapest third of the search results), mid, or premium.
     price_tier: str = "mid"
@@ -107,6 +107,11 @@ class Config:
     lookups_per_slot: int | None = None
     # Eagerly look up the unverified alternates too (testing; the UI will do it on demand).
     lookup_alternates: bool = False
+    # Fetch one product thumbnail per slot for the image-based style check (ADR 0010).
+    thumbnails: bool = True
+    # Which style-check prompt to load: 2 (default) sees the room photo and thumbnails; 1 is the
+    # text-only original. Per run via the CLI, not the env.
+    style_prompt_version: str = "2"
     # Fit (coarse, code-only): fail if an item's longer side is over this fraction of the room's
     # shorter side, or its footprint is over `fit_max_footprint_fraction` of the floor area.
     # UNTUNED GUESSES. Rugs and other large flat items will trip them; see ADR 0006.
@@ -210,6 +215,7 @@ class Config:
             item_cap_fraction=float(os.environ.get("APP_ITEM_CAP_FRACTION", cls.item_cap_fraction)),
             shipping_buffer=float(os.environ.get("APP_SHIPPING_BUFFER", cls.shipping_buffer)),
             price_tier=os.environ.get("APP_PRICE_TIER", cls.price_tier),
+            thumbnails=os.environ.get("APP_THUMBNAILS", "1") != "0",
             default_items_freeplay=int(
                 os.environ.get("APP_DEFAULT_ITEMS_FREEPLAY", cls.default_items_freeplay)
             ),

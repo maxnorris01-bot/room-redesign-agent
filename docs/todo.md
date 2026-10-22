@@ -20,6 +20,13 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 ## Later
 
+- [ ] A product-page size source, only if title and slug hints turn out not to be enough (measure how often `size_source` is `none` and how often a hint is wrong in live runs).
+- [ ] Stream slot results to the UI as they finish (each slot already completes independently).
+- [ ] A hedged second lookup when the first is slow (start the fallback finalist's lookup after a delay instead of after a failure).
+- [ ] Perception variance across runs: the same photo gave different room sizes, `keepable` flips and now `matches_id` may vary; measure with repeats and decide on tolerances or averaging.
+- [ ] Measure picks that sit low in their tier band (does the cheapest third of a tier hide the best products, and does the seller cap or variety prompt help or hurt quality?).
+- [ ] Live check of the image style check: is it better than the title check on real products, how often do thumbnails fail to fetch, how well does perception fill `matches_id`?
+- [ ] Revisit the family groupings and the per-room-type maximum (living 8, bedroom 9, office 7, dining 8) against live runs.
 - [ ] Spike to find a size source for the fit check: fit has been "unknown" in every live run (provider stores rarely state dimensions). Candidates: parse sizes from titles and URL slugs, read product pages, a different lookup source.
 - [ ] Total and per-item budget modes, reusing the tier stats (p33, p67, median) so a ceiling is relative to the category instead of a flat number.
 - [ ] UI: decor, and a minimalist-to-maximalist slider (maps to the item count and to decor slots).
@@ -83,6 +90,7 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- Move items here when done, newest first, with a one-line note on what happened. -->
 
+- [x] 2026-10-22 Pick quality (ADR 0009 and 0010, proposed): size hints from titles and slugs with confidence and plausibility ranges, partial-size fit and a replacement size note, matching-set warnings and `--replace-matching`, category families and item-count messaging, seller cap and rank v5, image-based style check v2 with a guarded thumbnail prefetch. Mock-verified only; see `docs/sessions/2026-10-22-pick-quality.md`.
 - [x] 2026-10-22 Freeplay mode (ADR 0008, proposed): optional `--budget`, `--price-tier`, `--items` 2 to 10, accent lists to 10, price tiers from search stats, rank v4 and proposal v3, lookup economy with unverified alternates, shipping status fix. Mock-verified only; see `docs/sessions/2026-10-22-freeplay-mode.md`.
 - [x] 2026-10-22 Over-budget options and link hygiene (ADR 0007 amended): price stats per slot, explained empty slots with up to 2 over-limit options (never picks), link-less finalists and bad alternates dropped, lookup failure reasons, media unit accent, shipping wording. Mock-verified only; see `docs/sessions/2026-10-22-over-budget-options-and-link-hygiene.md`.
 - [x] 2026-10-21 Keep-or-replace and cleanup (ADR 0007, proposed): `--keep` / `--replace`, slot policy (requested replacements, gaps, suggested, accents; up to 3), per-item budget ceiling, proposal prompt v2, title/page mismatch check, flat-goods fit exemption, lookup failure warnings (401 exits 4). Mock-verified only; see `docs/sessions/2026-10-21-keep-or-replace-and-cleanup.md`.

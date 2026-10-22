@@ -25,8 +25,8 @@ from app.llm import Budget, Completion
 from app.perception import PerceptionResult, perceive
 from app.preferences import resolve_preferences
 from app.pricing import is_priced
-from app.proposal import propose_and_check
-from app.retrieval import RetrievalResult, retrieve
+from app.proposal import propose_and_check, seller_concentration
+from app.retrieval import RetrievalResult, item_count_message, retrieve
 from app.tracing import span
 
 # Freeplay cap scaling (UNTUNED GUESSES), see run_spike.
@@ -98,6 +98,8 @@ class SpikeResult:
     kept_items: list[dict[str, str]] = field(default_factory=list)  # existing items that stay
     slot_plan: dict[str, Any] = field(default_factory=dict)  # slots chosen, dropped by cap, skipped
     warnings: list[str] = field(default_factory=list)  # run-level, shown after the table
+    item_count_report: dict[str, Any] = field(default_factory=dict)  # set when fewer than asked
+    seller_concentration: dict[str, Any] = field(default_factory=dict)
     proposal: dict[str, Any] = field(default_factory=dict)
     proposal_dropped: list[dict[str, str]] = field(default_factory=list)
 
@@ -194,6 +196,7 @@ def run_spike(
     with_proposal: bool = True,
     keep: list[str] | None = None,
     replace: list[str] | None = None,
+    replace_matching: bool = False,
 ) -> SpikeResult:
     """Run the stages under one shared, thread-safe `Budget` (step + cost caps cover the run).
 
@@ -279,8 +282,10 @@ def run_spike(
             )
             return result
 
-        prefs = resolve_preferences(perceived.perception, keep, replace)
+        prefs = resolve_preferences(perceived.perception, keep, replace, replace_matching)
         result.preferences = prefs.to_json()
+        set_notes = [str(w["text"]) for w in prefs.set_warnings]
+        result.warnings.extend(set_notes)
         result.kept_items = [{"id": r.id, "category": r.category} for r in prefs.decided("keep")]
 
         retrieved: RetrievalResult = retrieve(
@@ -363,6 +368,13 @@ def run_spike(
                 budget=budget,
                 run_id=run_id,
                 kept=[(k["id"], k["category"]) for k in result.kept_items],
+                set_notes=set_notes,
+                room_image=prepared,
+                thumbnails={
+                    (sr.slot.category, pid): img
+                    for sr in retrieved.slots
+                    for pid, img in sr.thumbnails.items()
+                },
             )
             result.prompt_versions.update(ran.prompt_versions)
             for call in ran.calls:
@@ -382,6 +394,15 @@ def run_spike(
                 )
             result.proposal = ran.proposal.model_dump()
             result.proposal_dropped = ran.dropped
+            result.seller_concentration = seller_concentration(ran.proposal.items)
+            picks = sum(1 for i in ran.proposal.items if i.pick is not None)
+            if retrieved.plan is not None and picks < n_slots:
+                empty = [i.slot for i in ran.proposal.items if i.pick is None]
+                message = item_count_message(retrieved.plan.report, picks, empty)
+                result.item_count_report = {
+                    **retrieved.plan.report, "found": picks, "empty_slots": empty,
+                    "message": message,
+                }  # fmt: skip
         result.steps = budget.steps
         result.wall_clock_seconds = time.perf_counter() - run_started
         run_rec.update(
@@ -482,13 +503,21 @@ def format_final_list(
             f"     fit: {item['fit_status']}"
             + (f" - {item['fit_note']}" if item["fit_note"] else "")
             + f"   style: {item['style_match']}"
-            + (f" - {item['style_note']}" if item["style_note"] else ""),
+            + (f" ({item['style_basis']})" if item.get("style_basis", "none") != "none" else "")
+            + (f" - {item['style_note']}" if item["style_note"] else "")
+            + (
+                f"; clash {item['style_clash']} with {item['style_clash_with'] or 'a kept item'}"
+                if item.get("style_clash", "none") != "none"
+                else ""
+            ),
         ]
         if replaced:
             lines.insert(
                 len(lines) - 3,
                 f"     Replaces: {replaced['category']} ({replaced['id']})",
             )
+        if item.get("replace_size_note"):
+            lines.append(f"     size note: {item['replace_size_note']}")
         for alt in item.get("unverified_alternates") or []:
             lines.append(
                 f"     alternate (retailer link on request): {alt['name']} - {alt['retailer']}, "
@@ -522,6 +551,19 @@ def format_final_list(
             f"Total: ${totals['total']:.2f} of ${totals['budget']:.2f} budget "
             f"(${totals['remaining']:.2f} remaining; items ${totals['items_total']:.2f}, "
             f"shipping ${totals['shipping_total']:.2f})"
+        )
+    sellers: dict[str, int] = {}
+    for item in proposal["items"]:
+        if item["pick"] is not None:
+            name = item["pick"]["retailer"] or "?"
+            sellers[name] = sellers.get(name, 0) + 1
+    if sellers:
+        total_picks = sum(sellers.values())
+        top, top_n = max(sellers.items(), key=lambda kv: kv[1])
+        others = ", ".join(f"{k} {v}" for k, v in sellers.items() if k != top)
+        lines.append(
+            f"Sellers: {top} {top_n} of {total_picks} picks ({top_n / total_picks:.0%})"
+            + (f"; others: {others}" if others else "")
         )
     if proposal["summary"]:
         lines.append(f"Summary: {proposal['summary']}")
@@ -594,8 +636,11 @@ def format_table(result: SpikeResult) -> str:
     for w in result.warnings:
         lines += ["", f"WARNING {w}"]
     plan = result.slot_plan
-    for note in (plan or {}).get("notes", []):
-        lines += ["", f"NOTE {note}"]
+    if result.item_count_report:
+        lines += ["", f"NOTE {result.item_count_report['message']}"]
+    elif plan and plan.get("notes"):
+        for note in plan["notes"]:
+            lines += ["", f"NOTE {note}"]
     if plan and plan.get("dropped_by_cap"):
         lines += [
             "",

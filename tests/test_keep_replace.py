@@ -148,7 +148,10 @@ def test_the_same_item_in_both_flags_is_an_error() -> None:
 
 def test_resolution_serializes_for_result_json() -> None:
     prefs = resolve_preferences(_perception(), keep=["armchair"], replace=["sofa"])
-    assert prefs.to_json() == {
+    out = prefs.to_json()
+    # the kept armchair is a matching piece of the sofa being replaced: reported as a warning
+    assert [w["kept_id"] for w in out.pop("set_warnings")] == ["f2"]  # type: ignore[attr-defined]
+    assert out == {
         "keep": ["armchair"],
         "replace": ["sofa"],
         "resolved": [
@@ -206,8 +209,11 @@ def test_accents_skip_what_stays_using_the_last_live_room() -> None:
     plan = plan_slots(p, 800, 3)
     categories = [s.category for s in plan.slots]
     # the gap comes first, then accents; everything the room already has is skipped
-    assert categories == ["media unit or TV", "bookshelf", "console table"]
-    assert [s.source for s in plan.slots] == ["gap", "accent", "accent"]
+    # console table is the gap's storage family and the pouf (furniture) covers the ottoman, so the
+    # list stops at two and says why
+    assert categories == ["media unit or TV", "bookshelf"]
+    assert [s.source for s in plan.slots] == ["gap", "accent"]
+    assert plan.notes and "only 2 slots are available" in plan.notes[0]
     covered = {"sofa", "coffee table", "area rug", "floor lamp", "armchair", "side table"}
     assert not covered & set(categories) and "media unit" not in categories
     assert any("side table beside sofa" in s for s in plan.skipped)  # covered by the kept one
@@ -523,11 +529,11 @@ def test_lookup_429_warns_after_the_table_and_in_the_final_list(
     )
     monkeypatch.setattr(shopping_retrieval, "build_providers", lambda config: (search, lookup))
     result = run_spike(synthetic_room_image(), budget_usd=800, style="x", config=Config())
-    assert result.warnings and "product lookup(s) failed" in result.warnings[0]
-    assert "HTTP 429" in result.warnings[0] and "Google page link" in result.warnings[0]
+    lookup_warning = next(w for w in result.warnings if "product lookup(s) failed" in w)
+    assert "HTTP 429" in lookup_warning and "Google page link" in lookup_warning
     table = (write_outputs(result, tmp_path) / "table.txt").read_text()
     assert table.index("WARNING 6 product lookup") < table.index("FINAL LIST")
-    assert "[WARNING: 1 run warning(s) above]" in table
+    assert "run warning(s) above]" in table
     cands = [c for r in result.retrieval for c in r["candidates"]]
     assert cands and all(c["url_kind"] == "google_panel" for c in cands)
 
@@ -612,7 +618,10 @@ def test_end_to_end_with_flags_prints_replaces_and_keeping_and_writes_the_shape(
     )  # fmt: skip
     out = write_outputs(result, tmp_path)
     data = json.loads((out / "result.json").read_text())
-    assert data["preferences"] == {
+    prefs = data["preferences"]
+    # the kept sofa matches the armchair being replaced: reported as a warning
+    assert [w["kept_id"] for w in prefs.pop("set_warnings")] == ["f1"]
+    assert prefs == {
         "keep": ["sofa"],
         "replace": ["armchair"],
         "resolved": [
