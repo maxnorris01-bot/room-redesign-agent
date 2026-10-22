@@ -62,14 +62,18 @@ class Budget:
     """Step and cost accounting for one `pipeline.run` call. Safe to share across threads.
 
     Under concurrency the step cap is exact (a step is reserved atomically before its request goes
-    out). The cost cap cannot be: requests already in flight when the cap trips still complete and
-    bill, so a concurrent run can overshoot `max_cost_usd` by up to the in-flight calls' cost.
+    out). The cost caps cannot be: requests already in flight when a cap trips still complete and
+    bill, so a concurrent run can overshoot by up to the in-flight calls' cost.
+
+    Two dollar totals, each with its own cap: `cost_usd` (Anthropic, `max_cost_usd`) and
+    `provider_cost_usd` (estimated Serper/SerpApi calls, `max_provider_cost_usd`).
     """
 
     def __init__(self, config: Config) -> None:
         self.config = config
         self.steps = 0
         self.cost_usd = 0.0
+        self.provider_cost_usd = 0.0
         self._lock = threading.Lock()
 
     def start_step(self) -> int:
@@ -78,14 +82,20 @@ class Budget:
         Returns the reserved step number (1-based), read under the lock.
         """
         with self._lock:
-            check_budget(self.config, self.steps + 1, self.cost_usd)
+            check_budget(self.config, self.steps + 1, self.cost_usd, self.provider_cost_usd)
             self.steps += 1
             return self.steps
 
     def add_cost(self, usd: float) -> None:
         with self._lock:
             self.cost_usd += usd
-            check_budget(self.config, self.steps, self.cost_usd)
+            check_budget(self.config, self.steps, self.cost_usd, self.provider_cost_usd)
+
+    def add_provider_cost(self, usd: float) -> None:
+        """Add estimated provider dollars (counted against `max_provider_cost_usd` only)."""
+        with self._lock:
+            self.provider_cost_usd += usd
+            check_budget(self.config, self.steps, self.cost_usd, self.provider_cost_usd)
 
 
 @dataclass

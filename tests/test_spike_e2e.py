@@ -37,15 +37,18 @@ def test_mock_run_end_to_end_web_search_mode(tmp_path: Path) -> None:
         run_id="t1",
     )
     assert result.llm_mode == "mock" and result.retrieval_mode == "web_search"
-    assert [r.stage for r in result.rows] == [
+    assert [r.stage for r in result.rows][:5] == [
         "prepare_image",
         "perception",
         "retrieval: sofa / web_search",
         "retrieval: coffee table / web_search",
         "retrieval: floor lamp / web_search",
     ]
-    assert result.models == {"perception": "claude-sonnet-5-5", "retrieval": "claude-haiku-5-5"}
-    assert result.prompt_versions == {"perception": "2", "retrieval": "1"}
+    assert result.models["perception"] == "claude-sonnet-5-5"
+    assert result.models["retrieval"] == "claude-haiku-5-5"
+    assert (
+        result.prompt_versions["perception"] == "2" and result.prompt_versions["retrieval"] == "1"
+    )
     assert max(result.image["width"], result.image["height"]) <= 1568
     for slot in result.retrieval:
         assert {c["retailer"] for c in slot["candidates"]} == {"MOCK"}
@@ -79,7 +82,9 @@ def test_mock_run_end_to_end_shopping_mode(tmp_path: Path) -> None:
         assert (
             f"retrieval: {slot} / lookup 1" in stages and f"retrieval: {slot} / lookup 2" in stages
         )
-    assert result.prompt_versions == {"perception": "2", "rank": "1"}
+    assert result.prompt_versions == {
+        "perception": "2", "rank": "1", "proposal": "1", "style_check": "1",
+    }  # fmt: skip
     provider_rows = [r for r in result.rows if r.kind in ("search", "lookup")]
     assert provider_rows and all(r.cost_estimated for r in provider_rows)
     assert {r.model for r in provider_rows} == {"serper", "serpapi"}

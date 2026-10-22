@@ -349,19 +349,34 @@ def test_provider_costs_are_estimated_from_settings_and_counted_in_the_budget(
     assert [c.cost_usd for c in by_kind["lookup"]] == [0.01, 0.01]
     assert all(c.estimated for k in ("search", "lookup") for c in by_kind[k])
     assert not by_kind["rank"][0].estimated
-    assert budget.cost_usd == pytest.approx(slot.cost_usd)
+    provider = sum(c.cost_usd for c in slot.calls if c.estimated)
+    assert budget.provider_cost_usd == pytest.approx(provider)  # kept apart from Anthropic dollars
+    assert budget.cost_usd == pytest.approx(slot.cost_usd - provider)
     assert budget.steps == 1  # only the rank call is an LLM step
 
     cfg_serpapi = Config(search_provider="serpapi", serpapi_usd_per_search=0.02)
     assert shopping_retrieval._estimated_cost(Budget(cfg_serpapi), "serpapi") == 0.02
 
 
-def test_provider_spend_trips_the_cost_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = Config(max_cost_usd=0.03)  # one search + two lookups at the default $0.025 each
+def test_provider_spend_trips_only_the_provider_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     search = FakeSearch([_cand("p1", 5.0), _cand("p2", 6.0)])
-    client = _rank_client({"id": "p1", "reason": "a"}, {"id": "p2", "reason": "b"})
-    with pytest.raises(BudgetExceededError, match="cost cap"):
-        _run(monkeypatch, search, FakeLookup({}), client, config=cfg)
+    rank = ({"id": "p1", "reason": "a"}, {"id": "p2", "reason": "b"})
+    # one search + two lookups at the default $0.025 each is about $0.05 of provider dollars
+    tight_provider = Config(max_provider_cost_usd=0.03)
+    with pytest.raises(BudgetExceededError, match="provider cost cap"):
+        _run(monkeypatch, search, FakeLookup({}), _rank_client(*rank), config=tight_provider)
+
+    # a tiny Anthropic cap is not touched by provider dollars: the run reaches the rank call and
+    # trips on Anthropic dollars instead, with the other message
+    tight_anthropic = Config(max_cost_usd=0.00001)
+    with pytest.raises(BudgetExceededError) as info:
+        _run(monkeypatch, search, FakeLookup({}), _rank_client(*rank), config=tight_anthropic)
+    assert "provider" not in str(info.value) and "cost cap" in str(info.value)
+
+    # generous provider cap, default Anthropic cap: fine even though provider dollars exceed 0.25
+    roomy = Config(max_provider_cost_usd=5.0, serpapi_usd_per_search=0.2)
+    _, budget = _run(monkeypatch, search, FakeLookup({}), _rank_client(*rank), config=roomy)
+    assert budget.provider_cost_usd > roomy.max_cost_usd and budget.cost_usd < roomy.max_cost_usd
 
 
 def test_lookups_run_concurrently_and_results_keep_rank_order(
@@ -381,7 +396,8 @@ def test_lookups_run_concurrently_and_results_keep_rank_order(
     result, budget = _run(monkeypatch, search, BarrierLookup({}), client)
     assert len(threads) == 2
     assert [c.product_id for c in result.slots[0].candidates] == ["p2", "p1"]
-    assert budget.cost_usd == pytest.approx(result.slots[0].cost_usd)
+    total = budget.cost_usd + budget.provider_cost_usd
+    assert total == pytest.approx(result.slots[0].cost_usd)
 
 
 def test_many_slots_run_concurrently_with_exact_budget_totals(
@@ -408,7 +424,8 @@ def test_many_slots_run_concurrently_with_exact_budget_totals(
     )  # fmt: skip
     assert [r.slot.category for r in result.slots] == [f"item{i}" for i in range(n)]
     assert budget.steps == n
-    assert budget.cost_usd == pytest.approx(sum(r.cost_usd for r in result.slots))
+    total = budget.cost_usd + budget.provider_cost_usd
+    assert total == pytest.approx(sum(r.cost_usd for r in result.slots))
     assert len(search.queries) == n
 
 

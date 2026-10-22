@@ -164,6 +164,85 @@ class RankedFinalists(_Strict):
     finalists: list[Finalist]
 
 
+# ---- proposal and self-check (ADR 0006) ----------------------------------------------------
+# The first four are what the model returns (sent as API schemas). The rest are what the pipeline
+# reports: items are built by code from real ProductCandidates, never from model text.
+
+
+class ProposedSlot(_Strict):
+    slot: str = Field(description="The slot name exactly as given")
+    pick_id: str = Field(
+        description="Chosen finalist id, or an empty string to leave the slot empty"
+    )
+    alternate_ids: list[str] = Field(description="Other finalist ids worth showing, best first")
+    rationale: str = Field(description="At most 25 words")
+    fit_note: str = Field(description="At most 15 words on how it fits the room")
+
+
+class ProposalOutput(_Strict):
+    slots: list[ProposedSlot]
+    summary: str = Field(description="At most 60 words")
+
+
+class StyleItem(_Strict):
+    slot: str = Field(description="The slot name exactly as given")
+    match: Literal["good", "ok", "poor"]
+    note: str = Field(description="At most 15 words")
+
+
+class StyleCheckOutput(_Strict):
+    items: list[StyleItem]
+
+
+CheckName = Literal["budget", "fit", "style", "grounded"]
+CheckStatus = Literal["pass", "fail", "unknown"]
+
+
+class CheckResult(_Strict):
+    check: CheckName
+    status: CheckStatus
+    message: str
+    item: str | None = None  # the slot it concerns; None = the whole proposal
+    warning: str | None = None  # something worth showing that is not a failure
+    value: str | None = None  # style check only: the match word (good, ok, poor)
+
+
+class ProposalItem(_Strict):
+    slot: str
+    pick_id: str = ""  # the finalist id (scoped to this slot) the pick was built from
+    pick: ProductCandidate | None = None  # real candidate data; None = slot left empty
+    alternate_ids: list[str] = []
+    alternates: list[ProductCandidate] = []
+    rationale: str = ""
+    model_fit_note: str = ""  # the model's own words; the code check below is the verdict
+    note: str = ""  # why the slot is empty, when it is
+    item_total: float | None = None  # price plus shipping, shipping unknown counted as 0
+    fit_status: CheckStatus = "unknown"
+    fit_note: str = ""
+    style_match: Literal["good", "ok", "poor", "unknown"] = "unknown"
+    style_note: str = ""
+    warnings: list[str] = []
+
+
+class ProposalTotals(_Strict):
+    items_total: float  # sum of picked prices
+    shipping_total: float  # sum of known shipping
+    total: float  # items plus shipping
+    budget: float
+    remaining: float  # budget minus total (negative = over)
+
+
+class Proposal(_Strict):
+    items: list[ProposalItem]
+    totals: ProposalTotals
+    summary: str = ""
+    checks: list[CheckResult]
+    check_summary: dict[str, str]  # worst status per check: fail > unknown > pass
+    revised: bool = False
+    revision_changes: list[str] = []
+    warnings: list[str] = []  # proposal-level warnings (for example a failed total)
+
+
 # ---- JSON Schema for structured output ---------------------------------------------------
 
 # Keywords the API rejects (maxItems) or does not enforce (maxLength), plus numeric/size bounds

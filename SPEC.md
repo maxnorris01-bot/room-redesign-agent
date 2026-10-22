@@ -10,9 +10,9 @@ A tab on the portfolio site where a visitor uploads a room photo and gives budge
 2. **Builds a blank 2D room canvas** from that structured data (top-down, editable later). Photo-real empty-room generation is a gated experiment, not v1 (ADR 0003).
 3. **Asks the user for preferences** (style, must-keep items, priorities) before proposing.
 4. **Retrieves** real furniture options. Default: structured Google Shopping data (search, a model that only picks ids, then a per-product lookup for the direct retailer URL; ADR 0005, proposed). Claude's web search tool stays selectable. Prices and URLs always come from provider data, never from a model.
-5. **Proposes** a furniture set and layout with a running budget total.
-6. **Self-checks** the proposal against constraints (budget, style match, must-keep items, fits the room), revises and retries within a step cap.
-7. **Outputs** a final furniture list with links, prices and a written rationale.
+5. **Proposes** a furniture set with a running budget total: one structured model call picks from each slot's finalists; code builds every item from the real candidate data (the model never supplies a price, seller or URL). Layout is not part of the proposal yet (it needs the canvas). ADR 0006, proposed.
+6. **Self-checks** the proposal: budget (total and per-item cap), fit against room dimensions (code, coarse; unknown when a product states no size), style match (one text-only model call), and grounded links and prices (code). One automatic revision on failure, then the list is shown with any remaining failures flagged as warnings. Never hidden. Must-keep items wait for the preference questions.
+7. **Outputs** a final furniture list with links, prices, shipping, a written rationale per item, the totals against the budget, the four check results and any warnings.
 
 An evaluation harness of 10-15 room/constraint cases scores the pipeline after every prompt or logic change.
 

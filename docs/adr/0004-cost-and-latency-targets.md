@@ -41,7 +41,7 @@ Quality targets belong to the eval design in SPEC.md, not here.
 
 ## Consequences
 
-- `APP_MAX_COST_USD` (0.25) counts estimated provider cost too; a default shopping run estimates about $0.16. Either raise it, or give provider estimates their own cap, before the measured run.
+- Anthropic and estimated provider dollars now have separate caps (ADR 0006): `APP_MAX_COST_USD` (0.25) bounds Anthropic dollars only, and `APP_MAX_PROVIDER_COST_USD` (0.30) bounds estimated provider dollars. A default shopping run estimates about $0.15 of provider dollars (six lookups at the assumed price), which no longer competes with the Anthropic budget. Both caps are enforced; the table and `result.json` show the two subtotals. (This replaces the earlier note that provider estimates counted toward `APP_MAX_COST_USD`.)
 - The full-run wait cannot be judged until proposal and self-check exist; the first full-pipeline run may force a change of this ADR, written before the measured run.
 - If the wait feels too long in practice, the first lever is the parked idea of asking the visitor questions while perception runs; others are a smaller image (`--image-long-edge`), lower effort, fewer finalists, and streaming partial results.
 

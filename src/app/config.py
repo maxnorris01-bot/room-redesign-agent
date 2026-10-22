@@ -66,6 +66,28 @@ class Config:
     serpapi_usd_per_search: float = 0.025
     # Per-search cost estimate (USD); the API returns no dollar figure. Default: pricing.py.
     web_search_usd: float = WEB_SEARCH_USD_PER_REQUEST
+    # Cap on ESTIMATED provider dollars (Serper/SerpApi calls), separate from `max_cost_usd`, which
+    # now bounds Anthropic dollars only (ADR 0004/0006). Provider dollars are assumptions and are
+    # $0 on free tiers, so they must not eat the Anthropic budget (or the reverse).
+    max_provider_cost_usd: float = 0.30
+    # Proposal and self-check (ADR 0006). One structured call picks the final list; a text-only
+    # style call checks it; up to `max_revisions` automatic revisions fix failed checks.
+    model_proposal: str = "claude-sonnet-5-5"
+    effort_proposal: str = "low"
+    model_stylecheck: str = "claude-haiku-5-5"
+    effort_stylecheck: str = "low"
+    max_revisions: int = 1
+    # No single item's total may exceed this fraction of the budget (unless it is the only item).
+    # UNTUNED GUESS, like the three fit constants below: change them only from evidence.
+    item_cap_fraction: float = 0.6
+    # Fit (coarse, code-only): fail if an item's longer side is over this fraction of the room's
+    # shorter side, or its footprint is over `fit_max_footprint_fraction` of the floor area.
+    # UNTUNED GUESSES. Rugs and other large flat items will trip them; see ADR 0006.
+    fit_max_side_fraction: float = 0.6
+    fit_max_footprint_fraction: float = 0.12
+    # Below this perception confidence, fit messages say the room size is a low-confidence estimate.
+    # UNTUNED GUESS.
+    fit_low_confidence: float = 0.5
 
     def __post_init__(self) -> None:
         if self.llm_mode not in LLM_MODES:
@@ -81,6 +103,8 @@ class Config:
             )
         if self.finalists_per_slot < 1:
             raise ValueError("APP_FINALISTS_PER_SLOT must be >= 1")
+        if self.max_revisions < 0:
+            raise ValueError("APP_MAX_REVISIONS must be >= 0")
 
     @property
     def rank_model(self) -> str:
@@ -117,6 +141,15 @@ class Config:
             serpapi_usd_per_search=float(
                 os.environ.get("APP_SERPAPI_USD_PER_SEARCH", cls.serpapi_usd_per_search)
             ),
+            max_provider_cost_usd=float(
+                os.environ.get("APP_MAX_PROVIDER_COST_USD", cls.max_provider_cost_usd)
+            ),
+            model_proposal=os.environ.get("APP_MODEL_PROPOSAL", cls.model_proposal),
+            effort_proposal=os.environ.get("APP_EFFORT_PROPOSAL", cls.effort_proposal),
+            model_stylecheck=os.environ.get("APP_MODEL_STYLECHECK", cls.model_stylecheck),
+            effort_stylecheck=os.environ.get("APP_EFFORT_STYLECHECK", cls.effort_stylecheck),
+            max_revisions=int(os.environ.get("APP_MAX_REVISIONS", cls.max_revisions)),
+            item_cap_fraction=float(os.environ.get("APP_ITEM_CAP_FRACTION", cls.item_cap_fraction)),
         )
 
 
@@ -129,10 +162,21 @@ class BudgetExceededError(RuntimeError):
     """Raised when an agent run exceeds its step or cost cap."""
 
 
-def check_budget(config: Config, steps: int, cost_usd: float) -> None:
+def check_budget(
+    config: Config, steps: int, cost_usd: float, provider_cost_usd: float = 0.0
+) -> None:
+    """Raise `BudgetExceededError` past the step cap, the Anthropic cost cap, or the provider cap.
+
+    `cost_usd` is Anthropic dollars only; `provider_cost_usd` is estimated Serper/SerpApi dollars.
+    """
     if steps > config.max_steps:
         raise BudgetExceededError(f"step cap exceeded: {steps} > {config.max_steps}")
     if cost_usd > config.max_cost_usd:
         raise BudgetExceededError(
             f"cost cap exceeded: ${cost_usd:.3f} > ${config.max_cost_usd:.3f}"
+        )
+    if provider_cost_usd > config.max_provider_cost_usd:
+        raise BudgetExceededError(
+            f"provider cost cap exceeded: ${provider_cost_usd:.3f} > "
+            f"${config.max_provider_cost_usd:.3f}"
         )
