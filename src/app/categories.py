@@ -24,7 +24,19 @@ _SYNONYMS: list[tuple[str, tuple[str, ...]]] = [
     ("armchair", ("armchair", "accent chair", "lounge chair", "recliner")),
     ("coffee table", ("coffee table", "cocktail table")),
     ("side table", ("side table", "end table", "accent table", "nesting table")),
-    ("media unit", ("media unit", "media console", "tv stand", "tv unit", "tv console")),
+    (
+        "media unit",
+        (
+            "media unit",
+            "media console",
+            "tv stand",
+            "tv unit",
+            "tv console",
+            "entertainment center",
+            "entertainment centre",
+            "entertainment unit",
+        ),
+    ),  # fmt: skip
     ("bookshelf", ("bookshelf", "bookcase", "shelving unit", "shelf unit")),
     ("nightstand", ("nightstand", "bedside table", "night stand")),
 ]

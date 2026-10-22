@@ -154,6 +154,9 @@ def check_budget(items: list[ProposalItem], budget_usd: float, config: Config) -
                     status="pass",
                     item=slot,
                     message="only item; the per-item cap does not apply",
+                    warning=(
+                        f"shipping unknown for {slot}; counted as $0" if slot in unknown else None
+                    ),
                 )  # fmt: skip
             )
             continue
@@ -229,28 +232,38 @@ def check_fit(
 # ---- grounded -------------------------------------------------------------------------------
 
 
+def grounded_problems(cand: ProductCandidate) -> tuple[list[str], str | None]:
+    """Why a candidate's link or price is not grounded (failures), and a non-failure warning.
+
+    The same rules apply to picks and to alternates: a link must exist, look like a product page and
+    not contradict the search title, and the price must come from provider data.
+    """
+    problems: list[str] = []
+    warning: str | None = None
+    if cand.url_kind == "none":
+        problems.append("no link")
+    elif cand.url_kind == "google_panel":
+        warning = "link is a Google Shopping page, not the retailer"
+    elif not is_product_page_url(cand.url):
+        problems.append("link does not look like a product page")
+    if cand.url_kind == "retailer_product" and title_mismatch(
+        cand.name, cand.store_title, cand.url
+    ):
+        problems.append(MISMATCH_NOTE)
+    if cand.price_source not in ("search", "lookup"):
+        problems.append("price did not come from provider data")
+    return problems, warning
+
+
 def check_grounded(
     items: list[ProposalItem], finalist_ids: dict[str, set[str]]
 ) -> list[CheckResult]:
     """`finalist_ids` maps slot name to the ids of that slot's finalists."""
     results: list[CheckResult] = []
     for item, cand in _picked(items):
-        problems: list[str] = []
-        warning: str | None = None
+        problems, warning = grounded_problems(cand)
         if item.pick_id not in finalist_ids.get(item.slot, set()):
-            problems.append("pick is not among the slot's finalists")
-        if cand.url_kind == "none":
-            problems.append("no link")
-        elif cand.url_kind == "google_panel":
-            warning = "link is a Google Shopping page, not the retailer"
-        elif not is_product_page_url(cand.url):
-            problems.append("link does not look like a product page")
-        if cand.url_kind == "retailer_product" and title_mismatch(
-            cand.name, cand.store_title, cand.url
-        ):
-            problems.append(MISMATCH_NOTE)
-        if cand.price_source not in ("search", "lookup"):
-            problems.append("price did not come from provider data")
+            problems.insert(0, "pick is not among the slot's finalists")
         results.append(
             CheckResult(
                 check="grounded",
