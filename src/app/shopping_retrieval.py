@@ -55,7 +55,10 @@ from app.shopping import (
 )
 from app.tracing import span
 
-__all__ = ["build_providers", "build_query", "filter_candidates", "price_stats", "run_slot"]
+__all__ = [
+    "build_providers", "build_query", "filter_candidates", "lookup_alternate", "price_stats",
+    "run_slot", "tier_pool",
+]  # fmt: skip
 
 TOP_N = 25
 RANK_MAX_TOKENS = 1500
@@ -63,6 +66,9 @@ MAX_STYLE_WORDS = 4
 MAX_TITLE_CHARS = 100
 OVER_POOL = 8  # cheapest over-ceiling results considered for over-budget options
 OVER_OPTIONS = 2  # over-budget options shown per empty slot
+# Freeplay price tiers (ADR 0008). Both UNTUNED GUESSES.
+OUTLIER_FACTOR = 3.0  # results above this many medians are ignored when sizing the premium band
+MIN_BAND_RESULTS = 3  # a tier band with fewer results is widened to the adjacent tier
 
 
 def build_query(category: str, style: str) -> str:
@@ -103,10 +109,24 @@ def unique_priced(results: list[SearchCandidate]) -> list[SearchCandidate]:
     return out
 
 
+def _percentile(sorted_prices: list[float], q: float) -> float | None:
+    """Linear-interpolated percentile (q in 0..1) of an ascending list; None when empty."""
+    if not sorted_prices:
+        return None
+    pos = q * (len(sorted_prices) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_prices) - 1)
+    return round(sorted_prices[lo] + (sorted_prices[hi] - sorted_prices[lo]) * (pos - lo), 2)
+
+
 def price_stats(
-    results: list[SearchCandidate], ceiling_usd: float
+    results: list[SearchCandidate], ceiling_usd: float | None
 ) -> dict[str, float | int | None]:
-    """What the search saw for a slot, from the parsed numeric prices of the top 25 results."""
+    """What the search saw for a slot, from the parsed numeric prices of the top 25 results.
+
+    `ceiling_usd` is None in freeplay (nothing is over a ceiling). p33 and p67 are the tier
+    boundaries used by freeplay.
+    """
     top = results[:TOP_N]
     unique = unique_priced(results)
     prices = sorted(c.price for c in unique if c.price is not None)
@@ -114,11 +134,69 @@ def price_stats(
         "considered": len(top),
         "priced": len(prices),
         "unpriced": sum(1 for c in top if c.price is None),
-        "over_ceiling": sum(1 for p in prices if p > ceiling_usd),
+        "over_ceiling": 0 if ceiling_usd is None else sum(1 for p in prices if p > ceiling_usd),
         "min_usd": prices[0] if prices else None,
         "median_usd": round(statistics.median(prices), 2) if prices else None,
         "max_usd": prices[-1] if prices else None,
+        "p33_usd": _percentile(prices, 1 / 3),
+        "p67_usd": _percentile(prices, 2 / 3),
     }
+
+
+_WIDEN: dict[str, tuple[str, ...]] = {
+    "value": ("value", "mid"),
+    "premium": ("premium", "mid"),
+    "mid": ("value", "mid", "premium"),
+}
+
+
+def tier_pool(
+    results: list[SearchCandidate], tier: str
+) -> tuple[list[SearchCandidate], dict[str, Any]]:
+    """Freeplay: the results in a price tier band, from the slot's own price distribution.
+
+    value = at or below p33; mid = above p33, at or below p67; premium = above p67 and at or below
+    `OUTLIER_FACTOR` times the median (extreme outliers are ignored when sizing the premium band).
+    A band with fewer than `MIN_BAND_RESULTS` results is widened to the adjacent tier (mid widens
+    to everything). The band actually used is returned for the trace and `result.json`.
+    """
+    unique = unique_priced(results)
+    band: dict[str, Any] = {
+        "tier": tier, "low_usd": None, "high_usd": None, "kept": 0, "widened_to": None,
+    }  # fmt: skip
+    if not unique:
+        return [], band
+    prices = sorted(c.price for c in unique if c.price is not None)
+    p33 = _percentile(prices, 1 / 3) or 0.0
+    p67 = _percentile(prices, 2 / 3) or 0.0
+    limit = OUTLIER_FACTOR * statistics.median(prices)
+
+    def tier_of(price: float) -> str | None:
+        if price <= p33:
+            return "value"
+        if price <= p67:
+            return "mid"
+        return "premium" if price <= limit else None  # None: an outlier, never in any band
+
+    def in_tiers(tiers: tuple[str, ...]) -> list[SearchCandidate]:
+        return [c for c in unique if c.price is not None and tier_of(c.price) in tiers]
+
+    kept = in_tiers((tier,))
+    if len(kept) < MIN_BAND_RESULTS:
+        kept = in_tiers(_WIDEN[tier])
+        band["widened_to"] = "+".join(_WIDEN[tier])
+    if not kept:  # a tiny pool: widening found nothing, so use every non-outlier result
+        kept = in_tiers(("value", "mid", "premium"))
+        band["widened_to"] = "all"
+    kept_prices = [c.price for c in kept if c.price is not None]
+    band.update(
+        low_usd=min(kept_prices) if kept_prices else None,
+        high_usd=max(kept_prices) if kept_prices else None,
+        kept=len(kept),
+        p33_usd=p33,
+        p67_usd=p67,
+    )
+    return kept, band
 
 
 def _estimated_cost(budget: Budget, provider: str) -> float:
@@ -138,6 +216,23 @@ def _room_summary(p: RoomPerception) -> str:
     )
 
 
+def _price_line(slot: Slot, over_limit: bool, band: dict[str, Any] | None) -> str:
+    if slot.budget_usd is None:  # freeplay: no ceiling, no budget, a coarse tier as context only
+        low, high = (band or {}).get("low_usd"), (band or {}).get("high_usd")
+        span = f" (about ${low:.0f} to ${high:.0f} for this item)" if low is not None else ""
+        return (
+            f"Price tier: {slot.tier or 'mid'}{span}. Context only: choose by style fit, quality "
+            "signals and fit to the room, not by lowest price."
+        )
+    if over_limit:
+        return (
+            f"Per-item price ceiling: {slot.budget_usd:.0f} USD. EVERY candidate below is above "
+            "it: pick the closest matches anyway; they are shown to the buyer as over-limit "
+            "options."
+        )
+    return f"Per-item price ceiling: {slot.budget_usd:.0f} USD (shipping is added later)"
+
+
 def _rank_user_text(
     slot: Slot,
     perception: RoomPerception,
@@ -146,18 +241,13 @@ def _rank_user_text(
     n: int,
     *,
     over_limit: bool = False,
+    band: dict[str, Any] | None = None,
 ) -> str:
     lines = [
         f"Slot: {slot.category}",
         f"Why this slot: {slot.reason}",
         f"Requested style: {style}",
-        (
-            f"Per-item price ceiling: {slot.budget_usd:.0f} USD. EVERY candidate below is above "
-            "it: pick the closest matches anyway; they are shown to the buyer as over-limit "
-            "options."
-            if over_limit
-            else f"Per-item price ceiling: {slot.budget_usd:.0f} USD (shipping is added later)"
-        ),
+        _price_line(slot, over_limit, band),
         f"Room: {_room_summary(perception)}",
     ]
     if slot.size_hint:
@@ -250,6 +340,7 @@ def _lookup_one(
                 url=url,
                 url_kind="retailer_product",
                 shipping=store.shipping,
+                shipping_status=store.shipping_status,
                 total=store.total,
                 price_source="lookup" if store.price is not None else "search",
                 store_title=store.title,
@@ -308,6 +399,7 @@ def _rank_round(
     rank_prompt: Prompt,
     *,
     over_limit: bool = False,
+    band: dict[str, Any] | None = None,
 ) -> tuple[
     list[tuple[SearchCandidate, str]], Completion, CallRecord, dict[str, int], list[dict[str, Any]]
 ]:
@@ -319,7 +411,9 @@ def _rank_round(
         span_name="llm.rank",
         prompt=rank_prompt,
         model=config.rank_model,
-        user_text=_rank_user_text(slot, perception, style, pool, n, over_limit=over_limit),
+        user_text=_rank_user_text(
+            slot, perception, style, pool, n, over_limit=over_limit, band=band
+        ),
         budget=budget,
         max_tokens=RANK_MAX_TOKENS,
         schema=to_output_schema(RankedFinalists),
@@ -353,6 +447,44 @@ def _option(c: ProductCandidate, reason: str, slot: Slot) -> OverBudgetOption:
         shipping_known=item_shipping(c) is not None,
         also_over_total_budget=slot.total_budget_usd is not None and total > slot.total_budget_usd,
     )
+
+
+def _unverified(c: SearchCandidate, reason: str) -> ProductCandidate:
+    """A finalist that was not looked up: search data and the Google product link, nothing else.
+
+    `url_kind` is `google_panel` (never a retailer claim); with no Google link at all it is `none`
+    and the caller drops it. Price and rating are the search's own (`price_source: search`).
+    """
+    return ProductCandidate(
+        name=c.title,
+        retailer=c.seller,
+        price=c.price if c.price is not None else 0.0,
+        currency=c.currency,
+        url=c.google_panel_url or "",
+        url_kind="google_panel" if c.google_panel_url else "none",
+        rating=c.rating,
+        rating_count=c.rating_count,
+        reason=reason,
+        product_id=c.product_id,
+        price_source="search",
+    )
+
+
+def lookup_alternate(
+    alt: ProductCandidate, lookup: ProductLookup, budget: Budget
+) -> tuple[ProductCandidate | None, CallRecord]:
+    """Look up one unverified alternate on demand (the UI's "get the retailer link").
+
+    Returns the candidate with a verified retailer URL, shipping and total, or None when the lookup
+    finds no retailer product page. One real lookup: counted in the provider cost cap and returned
+    as a call row. A 401/403 or budget error propagates, like any other lookup.
+    """
+    search_like = SearchCandidate(
+        alt.product_id, alt.name, alt.retailer, alt.price, alt.currency, alt.rating,
+        alt.rating_count, alt.url or None,
+    )  # fmt: skip
+    candidate, record, _, _ = _lookup_one(search_like, alt.reason, lookup, budget)
+    return (candidate if candidate.url_kind == "retailer_product" else None), record
 
 
 def run_slot(
@@ -393,7 +525,23 @@ def run_slot(
             ok=True,
         )  # fmt: skip
     )
-    pool_, counts = filter_candidates(results, slot.budget_usd)
+    freeplay = slot.budget_usd is None
+    band: dict[str, Any] | None = None
+    if slot.budget_usd is None:  # freeplay: a price tier band from this slot's own results
+        pool_, band = tier_pool(results, slot.tier or config.price_tier)
+        priced = unique_priced(results)
+        counts = {
+            "returned": len(results),
+            "considered": len(results[:TOP_N]),
+            "unpriced": len(results[:TOP_N])
+            - sum(1 for c in results[:TOP_N] if c.price is not None),
+            "duplicates": sum(1 for c in results[:TOP_N] if c.price is not None) - len(priced),
+            "over_budget": 0,
+            "kept": len(pool_),
+        }
+        summary["tier_band"] = band
+    else:
+        pool_, counts = filter_candidates(results, slot.budget_usd)
     summary["search"] = counts
     summary["price_stats"] = price_stats(results, slot.budget_usd)
 
@@ -424,7 +572,9 @@ def run_slot(
             out.append(candidate)
         return out
 
-    if not pool_:
+    if not pool_ and freeplay:
+        return finish("no priced shopping results", [], Completion(text=""))
+    if not pool_ and slot.budget_usd is not None:
         # Nothing at or under the ceiling. Look for the closest over-limit products to show.
         over = sorted(
             (
@@ -455,7 +605,7 @@ def run_slot(
 
     # Stage 2: rank (ids only).
     chosen, completion, rank_record, rank_counts, rank_drops = _rank_round(
-        slot, perception, style, pool_, config.finalists_per_slot, budget, rank_prompt
+        slot, perception, style, pool_, config.finalists_per_slot, budget, rank_prompt, band=band
     )
     calls.append(rank_record)
     dropped.extend(rank_drops)
@@ -463,11 +613,17 @@ def run_slot(
     if not chosen:
         return finish("the ranker returned no valid finalist", [], completion)
 
-    # Stage 3: lookups, concurrently. A BudgetExceededError propagates; provider errors degrade.
+    # Stage 3: lookups. A BudgetExceededError or a 401/403 propagates; other provider errors
+    # degrade. With fewer lookups than finalists (freeplay: 1) the top finalist is looked up and
+    # the next is tried if that gives no retailer link (at most lookups+1 attempts); finalists
+    # without a verified retailer link stay as unverified alternates (Google link only).
+    lookups = len(chosen) if config.lookup_alternates else config.lookups_for(freeplay)
     candidates: list[ProductCandidate] = []
     over_cap: list[ProductCandidate] = []
     no_link: list[ProductCandidate] = []
-    for candidate in collect(_lookup_round(chosen, lookup, budget)):
+    unverified: list[ProductCandidate] = []
+
+    def classify(candidate: ProductCandidate) -> None:
         total, _ = item_total(candidate)
         if candidate.url_kind == "none":  # no verified link of any kind: never a finalist
             no_link.append(candidate)
@@ -484,9 +640,33 @@ def run_slot(
             )
         else:
             candidates.append(candidate)
+
+    if lookups >= len(chosen):
+        for candidate in collect(_lookup_round(chosen, lookup, budget)):
+            classify(candidate)
+    else:
+        verified = 0
+        attempts = 0
+        for sc, reason in chosen:
+            if verified >= lookups or attempts > lookups:
+                unverified.append(_unverified(sc, reason))
+                continue
+            attempts += 1
+            (candidate,) = collect(_lookup_round([(sc, reason)], lookup, budget))
+            if candidate.url_kind == "retailer_product":
+                verified += 1
+                classify(candidate)
+            elif candidate.url_kind == "google_panel":
+                unverified.append(candidate)
+            else:
+                classify(candidate)  # no link at all: dropped
+        summary["lookup_attempts"] = attempts
+    unverified = [u for u in unverified if u.url_kind == "google_panel"]  # no link: dropped
     summary["over_item_cap_after_lookup"] = len(over_cap)
     if candidates:
-        return finish("", candidates, completion)
+        result = finish("", candidates, completion)
+        result.unverified_alternates = unverified
+        return result
     # Every finalist was dropped. Finalists the total cap dropped become over-budget options
     # directly (they were already looked up); one with only a Google page link has no verified
     # retailer URL and is not shown.
@@ -495,12 +675,12 @@ def run_slot(
         key=lambda c: item_total(c)[0],
     )[:OVER_OPTIONS]
     options.extend(_option(c, "over_total_cap", slot) for c in cheapest)
-    if over_cap:
+    if over_cap and slot.total_cap_usd is not None:
         note = (
             f"every finalist's total (price plus shipping) is over the ${slot.total_cap_usd:.0f} "
             "per-item cap"
         )
     else:
-        titles = "; ".join(c.name for c in no_link)
+        titles = "; ".join(c.name for c in [*no_link, *unverified]) or "the finalists"
         note = f"lookup returned no store for {titles}"
     return finish(note, [], completion)

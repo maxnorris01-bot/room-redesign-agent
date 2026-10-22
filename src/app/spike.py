@@ -13,6 +13,7 @@ import json
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from dataclasses import replace as dc_replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,12 @@ from app.pricing import is_priced
 from app.proposal import propose_and_check
 from app.retrieval import RetrievalResult, retrieve
 from app.tracing import span
+
+# Freeplay cap scaling (UNTUNED GUESSES), see run_spike.
+FREEPLAY_STEP_OVERHEAD = 6  # perception, proposal, style, revision, style, and one spare
+FREEPLAY_PROVIDER_USD_PER_SLOT = (
+    0.06  # a search and two lookups at the assumed list prices, rounded up
+)
 
 # PROPOSED targets from SPEC.md, not locked. Informational only: never enforced, never in
 # evals/thresholds.yaml until an ADR locks them.
@@ -65,7 +72,7 @@ class SpikeResult:
     llm_mode: str
     started_at: str
     photo_name: str
-    budget_usd: float
+    budget_usd: float | None  # None = freeplay (no budget)
     style: str
     prompt_versions: dict[str, str]
     models: dict[str, str]
@@ -83,6 +90,9 @@ class SpikeResult:
     # the model or to our code. It is the same data as `perception`, not extra personal data.
     perception_raw_text: str = ""
     wall_clock_seconds: float = 0.0
+    mode: str = "budget"  # "budget" (--budget given) or "freeplay" (no budget)
+    price_tier: str | None = None  # freeplay only
+    items: int = 0  # pieces (slots) asked for
     caps: dict[str, float] = field(default_factory=dict)  # the dollar caps this run ran under
     preferences: dict[str, Any] = field(default_factory=dict)  # keep / replace and what resolved
     kept_items: list[dict[str, str]] = field(default_factory=list)  # existing items that stay
@@ -175,7 +185,7 @@ def _row(stage: str, c: Completion, seconds: float) -> StageRow:
 def run_spike(
     photo: Path | bytes,
     *,
-    budget_usd: float = 0.0,
+    budget_usd: float | None = None,
     style: str = "",
     slots: int | None = None,
     config: Config | None = None,
@@ -193,9 +203,21 @@ def run_spike(
     name raises `PreferenceError` once perception has run (the ids come from perception).
     """
     config = config or Config.from_env()
-    budget = Budget(config)
     run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
-    n_slots = slots if slots is not None else config.default_slots
+    freeplay = budget_usd is None
+    n_slots = slots if slots is not None else config.items_for(freeplay)
+    if freeplay:
+        # Caps scale with the number of pieces (never below the configured values): a rank call
+        # per slot plus proposal, style and a revision; a search and up to two lookups per slot.
+        # Untuned guesses; budget mode keeps the configured caps unchanged.
+        config = dc_replace(
+            config,
+            max_steps=max(config.max_steps, n_slots + FREEPLAY_STEP_OVERHEAD),
+            max_provider_cost_usd=max(
+                config.max_provider_cost_usd, round(n_slots * FREEPLAY_PROVIDER_USD_PER_SLOT, 2)
+            ),
+        )
+    budget = Budget(config)
 
     result = SpikeResult(
         run_id=run_id,
@@ -215,6 +237,9 @@ def run_spike(
         perception_only=perception_only,
         retrieval_mode=config.retrieval_mode,
         search_provider=config.search_provider if config.retrieval_mode == "shopping" else None,
+        mode="freeplay" if freeplay else "budget",
+        price_tier=config.price_tier if freeplay else None,
+        items=n_slots,
         caps={
             "max_cost_usd": config.max_cost_usd,
             "max_provider_cost_usd": config.max_provider_cost_usd,
@@ -273,6 +298,10 @@ def run_spike(
             result.slot_plan["price_stats"] = {
                 sr.slot.category: sr.summary.get("price_stats") for sr in retrieved.slots
             }
+            if freeplay:
+                result.slot_plan["tier_bands"] = {
+                    sr.slot.category: sr.summary.get("tier_band") for sr in retrieved.slots
+                }
         for sr in retrieved.slots:
             for issue in sr.summary.get("lookup_issues", []):
                 if not issue["why"].startswith("http error"):  # those are counted just below
@@ -322,6 +351,7 @@ def run_spike(
                     "searches": sr.completion.searches,
                     "summary": sr.summary,
                     "over_budget_options": [o.model_dump() for o in sr.over_budget_options],
+                    "unverified_alternates": [c.model_dump() for c in sr.unverified_alternates],
                 }
             )
         if with_proposal:
@@ -435,7 +465,13 @@ def format_final_list(
                 lines.append(f"     why: {item['rationale']}")
             continue
         shipping = pick["shipping"]
-        ship = "shipping unknown" if shipping is None else f"+ ${shipping:.2f} shipping"
+        status = pick.get("shipping_status", "unknown")
+        if status == "free":
+            ship = "free shipping"
+        elif status == "unknown" or shipping is None:
+            ship = "shipping unknown"
+        else:
+            ship = f"+ ${shipping:.2f} shipping"
         link = pick["url"] or "(no link)"
         kind = "" if pick["url_kind"] == "retailer_product" else f"  [{pick['url_kind']}]"
         replaced = item.get("replaces")
@@ -453,11 +489,28 @@ def format_final_list(
                 len(lines) - 3,
                 f"     Replaces: {replaced['category']} ({replaced['id']})",
             )
+        for alt in item.get("unverified_alternates") or []:
+            lines.append(
+                f"     alternate (retailer link on request): {alt['name']} - {alt['retailer']}, "
+                f"${alt['price']:.2f} at search   {alt['url']}  [{alt['url_kind']}]"
+            )
         lines += [f"     WARNING {w}" for w in item["warnings"]]
     if kept:
         lines.append("Keeping: " + ", ".join(f"{k['category']} ({k['id']})" for k in kept))
     unknown = totals.get("item_count", 0) - totals.get("shipping_known_count", 0)
-    if unknown > 0:
+    if totals.get("budget") is None:  # freeplay: no budget or remaining line
+        if unknown > 0:
+            lines.append(
+                f"Total: ${totals['total']:.2f} (items ${totals['items_total']:.2f}, shipping "
+                f"known for {totals['shipping_known_count']} of {totals['item_count']} items, "
+                "unknown excluded)"
+            )
+        else:
+            lines.append(
+                f"Total: ${totals['total']:.2f} (items ${totals['items_total']:.2f}, "
+                f"shipping ${totals['shipping_total']:.2f})"
+            )
+    elif unknown > 0:
         lines.append(
             f"Total: ${totals['total']:.2f} of ${totals['budget']:.2f} budget "
             f"(items ${totals['items_total']:.2f}, shipping known for "
@@ -516,7 +569,12 @@ def format_table(result: SpikeResult) -> str:
         ]
     lines += [
         f"run {result.run_id}  mode={result.llm_mode}  photo={result.photo_name}  "
-        f"budget=${result.budget_usd:.0f}  style={result.style!r}"
+        + (
+            f"freeplay tier={result.price_tier} items={result.items}"
+            if result.mode == "freeplay"
+            else f"budget=${(result.budget_usd or 0):.0f} items={result.items}"
+        )
+        + f"  style={result.style!r}"
         + ("" if result.perception_only else f"  retrieval={result.retrieval_mode}")
         + (f"/{result.search_provider}" if result.search_provider else "")
         + ("  [perception only]" if result.perception_only else ""),
@@ -536,6 +594,8 @@ def format_table(result: SpikeResult) -> str:
     for w in result.warnings:
         lines += ["", f"WARNING {w}"]
     plan = result.slot_plan
+    for note in (plan or {}).get("notes", []):
+        lines += ["", f"NOTE {note}"]
     if plan and plan.get("dropped_by_cap"):
         lines += [
             "",

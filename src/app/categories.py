@@ -39,6 +39,17 @@ _SYNONYMS: list[tuple[str, tuple[str, ...]]] = [
     ),  # fmt: skip
     ("bookshelf", ("bookshelf", "bookcase", "shelving unit", "shelf unit")),
     ("nightstand", ("nightstand", "bedside table", "night stand")),
+    ("ottoman", ("ottoman", "pouf", "footstool", "hassock")),
+    ("console table", ("console table", "entry table", "entryway table", "hall table")),
+    ("bed frame", ("bed frame", "bedstead", "platform bed", "bed base")),
+    ("dresser", ("dresser", "chest of drawers", "tallboy")),
+    ("wardrobe", ("wardrobe", "armoire")),
+    ("desk", ("desk", "writing table")),  # "desk lamp" is already a lamp: the lamp group is first
+    ("filing cabinet", ("filing cabinet", "file cabinet")),
+    ("sideboard", ("sideboard", "buffet", "credenza")),
+    ("cabinet", ("cabinet",)),  # after filing cabinet and sideboard
+    ("bar cart", ("bar cart", "drinks trolley", "serving cart")),
+    ("bench", ("bench",)),
 ]
 
 

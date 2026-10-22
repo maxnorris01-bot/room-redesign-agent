@@ -1,5 +1,7 @@
 """Cost-and-latency spike: photo in, perception + retrieval out, per-stage table printed.
 
+    python scripts/spike.py spike-photos/living-room.jpg --style "warm minimalist"
+    python scripts/spike.py spike-photos/living-room.jpg --style "warm minimalist" --items 7
     python scripts/spike.py spike-photos/living-room.jpg --budget 800 --style "warm minimalist"
     python scripts/spike.py spike-photos/living-room.jpg --perception-only --perception-effort low
 
@@ -39,7 +41,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--synthetic", action="store_true", help="use a generated placeholder image"
     )
-    parser.add_argument("--budget", type=float, help="total furniture budget, USD")
+    parser.add_argument(
+        "--budget",
+        type=float,
+        help="total furniture budget, USD (omit for freeplay: no budget, a price tier instead)",
+    )
+    parser.add_argument(
+        "--price-tier",
+        choices=("value", "mid", "premium"),
+        help="freeplay only: value, mid (default) or premium; an error together with --budget",
+    )
+    parser.add_argument(
+        "--items",
+        type=int,
+        help="pieces to shop for, 2 to APP_MAX_ITEMS (default 5 freeplay, 3 budget)",
+    )
+    parser.add_argument(
+        "--lookup-alternates",
+        action="store_true",
+        help="also look up the unverified alternates now (testing; costs one lookup each)",
+    )
     parser.add_argument("--style", help='style goal, e.g. "warm minimalist"')
     parser.add_argument(
         "--slots", type=int, default=None, help="furniture slots to search (default: config)"
@@ -96,8 +117,10 @@ def main(argv: list[str] | None = None) -> int:
         help="rank prompt version to load (default: config, currently 3; 2 is kept)",
     )
     args = parser.parse_args(argv)
-    if not args.perception_only and (args.budget is None or args.style is None):
-        parser.error("--budget and --style are required unless --perception-only is given")
+    if not args.perception_only and args.style is None:
+        parser.error("--style is required unless --perception-only is given")
+    if args.price_tier is not None and args.budget is not None:
+        parser.error("--price-tier only applies to freeplay: drop --budget, or drop --price-tier")
     if (args.photo is None) == (not args.synthetic):
         parser.error("give exactly one of: a photo path, or --synthetic")
     if args.photo is not None and not args.photo.is_file():
@@ -120,26 +143,40 @@ def main(argv: list[str] | None = None) -> int:
         "retrieval_mode": args.retrieval_mode,
         "search_provider": args.search_provider,
         "finalists_per_slot": args.finalists,
+        "price_tier": args.price_tier,
+        "lookup_alternates": True if args.lookup_alternates else None,
         "max_revisions": args.revisions,
         "model_proposal": args.proposal_model,
         "effort_proposal": args.proposal_effort,
         "proposal_prompt_version": args.proposal_prompt_version,
+        "freeplay_proposal_prompt_version": args.proposal_prompt_version,
         "rank_prompt_version": args.rank_prompt_version,
+        "freeplay_rank_prompt_version": args.rank_prompt_version,
     }
-    config = replace(config, **{k: v for k, v in overrides.items() if v is not None})
+    try:
+        config = replace(config, **{k: v for k, v in overrides.items() if v is not None})
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if args.items is not None and not 2 <= args.items <= config.max_items:
+        print(
+            f"ERROR: --items must be between 2 and {config.max_items}, got {args.items}",
+            file=sys.stderr,
+        )
+        return 2
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
     trace_path = point_trace_at(OUT_ROOT, run_id)
     photo = synthetic_room_image() if args.synthetic else args.photo
     try:
         result = run_spike(
             photo,
-            budget_usd=args.budget or 0.0,
+            budget_usd=args.budget,
             style=args.style or "",
             perception_only=args.perception_only,
             with_proposal=not args.no_proposal,
             keep=keep_names,
             replace=replace_names,
-            slots=args.slots,
+            slots=args.items if args.items is not None else args.slots,
             config=config,
             run_id=run_id,
         )

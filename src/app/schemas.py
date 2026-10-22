@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 PERCEPTION_SCHEMA_VERSION = 1
 
@@ -156,6 +156,18 @@ class ProductCandidate(Candidate):
     # The store page's own title from the lookup (not the search title): lets the grounded check
     # notice when the page behind a link is a different product than the search result.
     store_title: str = ""
+    # known = a shipping amount; free = stated free; unknown = nothing stated. When not given it
+    # is inferred from `shipping` and `total` (see `_infer_shipping_status`).
+    shipping_status: Literal["known", "free", "unknown"] = "unknown"
+
+    @model_validator(mode="after")
+    def _infer_shipping_status(self) -> ProductCandidate:
+        if "shipping_status" not in self.model_fields_set:
+            if self.shipping is not None:
+                self.shipping_status = "free" if self.shipping == 0 else "known"
+            elif self.total is not None and self.total > self.price + 0.005:
+                self.shipping_status = "known"
+        return self
 
 
 class Finalist(_Strict):
@@ -198,7 +210,7 @@ class StyleCheckOutput(_Strict):
 
 
 CheckName = Literal["budget", "fit", "style", "grounded"]
-CheckStatus = Literal["pass", "fail", "unknown"]
+CheckStatus = Literal["pass", "fail", "unknown", "n/a"]  # n/a: the check does not apply
 
 
 class CheckResult(_Strict):
@@ -248,6 +260,9 @@ class ProposalItem(_Strict):
     limit_usd: float | None = None  # the slot's per-item price ceiling
     price_stats: dict[str, float | int | None] | None = None  # search prices seen for the slot
     over_budget_options: list[OverBudgetOption] = []  # shown only; never picks, never totals
+    # Freeplay lookup economy: ranked but not looked up. Google product link, no retailer link;
+    # shown as "alternate (retailer link on request)". Never picks.
+    unverified_alternates: list[ProductCandidate] = []
     item_total: float | None = None  # price plus shipping, shipping unknown counted as 0
     fit_status: CheckStatus = "unknown"
     fit_note: str = ""
@@ -263,8 +278,8 @@ class ProposalTotals(_Strict):
     item_count: int = 0  # picked items
     shipping_known_count: int = 0  # picked items whose shipping (or total) is known
     shipping_note: str = ""  # set when some shipping is unknown: it is excluded, never shown as $0
-    budget: float
-    remaining: float  # budget minus total (negative = over)
+    budget: float | None  # None in freeplay (no budget set)
+    remaining: float | None  # budget minus total (negative = over); None in freeplay
 
 
 class Proposal(_Strict):

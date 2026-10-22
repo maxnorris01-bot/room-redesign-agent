@@ -105,18 +105,22 @@ def title_mismatch(search_title: str, store_title: str, url: str) -> bool:
 
 
 def item_total(c: ProductCandidate) -> tuple[float, bool]:
-    """(price plus shipping, shipping_unknown). Unknown shipping counts as 0."""
+    """(price plus shipping, shipping_unknown). Unknown shipping counts as 0 in the sum.
+
+    A stated total wins, but it does not make shipping known: a total equal to the price with no
+    shipping data means unknown (see `ProductCandidate.shipping_status`).
+    """
+    unknown = item_shipping(c) is None
     if c.total is not None:
-        return c.total, False
-    if c.shipping is not None:
-        return c.price + c.shipping, False
-    return c.price, True
+        return c.total, unknown
+    return c.price + (c.shipping or 0.0), unknown
 
 
 def item_shipping(c: ProductCandidate) -> float | None:
+    """Shipping in dollars when known (0.0 for free), else None. None means unknown, never free."""
     if c.shipping is not None:
         return c.shipping
-    if c.total is not None:
+    if c.shipping_status != "unknown" and c.total is not None:
         return max(c.total - c.price, 0.0)
     return None
 
@@ -128,7 +132,11 @@ def _picked(items: list[ProposalItem]) -> list[tuple[ProposalItem, ProductCandid
 # ---- budget ---------------------------------------------------------------------------------
 
 
-def check_budget(items: list[ProposalItem], budget_usd: float, config: Config) -> list[CheckResult]:
+def check_budget(
+    items: list[ProposalItem], budget_usd: float | None, config: Config
+) -> list[CheckResult]:
+    if budget_usd is None:  # freeplay: nothing to check against, and nothing can fail
+        return [CheckResult(check="budget", status="n/a", message="no budget set")]
     picked = _picked(items)
     if not picked:
         return [CheckResult(check="budget", status="pass", message="no items picked")]
@@ -370,7 +378,7 @@ def run_self_check(
     items: list[ProposalItem],
     perception: RoomPerception,
     style: str,
-    budget_usd: float,
+    budget_usd: float | None,
     finalist_ids: dict[str, set[str]],
     budget: Budget,
     *,
@@ -464,10 +472,17 @@ def apply_results(items: list[ProposalItem], results: list[CheckResult]) -> list
 
 
 def summarize(results: list[CheckResult]) -> dict[str, str]:
-    """Worst status per check (fail > unknown > pass); every check is present."""
+    """Worst status per check (fail > unknown > pass); every check is present.
+
+    A check whose results are all "n/a" (the budget check in freeplay) is "n/a".
+    """
     order = {"pass": 0, "unknown": 1, "fail": 2}
-    out = {name: "pass" for name in ("budget", "fit", "style", "grounded")}
-    for r in results:
-        if order[r.status] > order[out[r.check]]:
-            out[r.check] = r.status
+    out: dict[str, str] = {}
+    for name in ("budget", "fit", "style", "grounded"):
+        statuses = [r.status for r in results if r.check == name]
+        real = [s for s in statuses if s != "n/a"]
+        if statuses and not real:
+            out[name] = "n/a"
+        else:
+            out[name] = max(real, key=lambda s: order[s], default="pass")
     return out

@@ -55,6 +55,7 @@ class SlotInput:
     limit_usd: float | None = None  # the slot's per-item price ceiling
     price_stats: dict[str, float | int | None] | None = None
     over_budget_options: list[OverBudgetOption] = field(default_factory=list)  # display only
+    unverified_alternates: list[ProductCandidate] = field(default_factory=list)  # display only
 
 
 def slot_inputs(
@@ -90,6 +91,7 @@ def slot_inputs(
                 sr.slot.budget_usd,
                 sr.summary.get("price_stats"),
                 list(sr.over_budget_options),
+                list(sr.unverified_alternates),
             )
         )
     return out
@@ -119,7 +121,7 @@ def _candidate_line(cid: str, c: ProductCandidate) -> str:
 
 def proposal_user_text(
     perception: RoomPerception,
-    budget_usd: float,
+    budget_usd: float | None,
     style: str,
     slots: list[SlotInput],
     previous: list[ProposalItem] | None = None,
@@ -128,7 +130,11 @@ def proposal_user_text(
 ) -> str:
     d = perception.dimensions
     lines = [
-        f"Total budget: {budget_usd:.2f} USD (the sum of picked totals must stay within it)",
+        (
+            "No budget set: choose by style, quality and fit; do not mention money."
+            if budget_usd is None
+            else f"Total budget: {budget_usd:.2f} USD (picked totals must stay within it)"
+        ),
         f"Style goal: {style}",
         f"Room: {perception.room_type}, about {d.width_m:.1f} m x {d.length_m:.1f} m "
         f"(confidence {d.confidence:.1f}), ceiling {d.ceiling_height_m:.1f} m",
@@ -238,6 +244,7 @@ def validate_proposal(
                 replaces=slot.replaces,
                 limit_usd=slot.limit_usd,
                 price_stats=slot.price_stats,
+                unverified_alternates=slot.unverified_alternates if pick else [],
                 pick_id=pick_id,
                 pick=pick,
                 alternate_ids=alt_ids,
@@ -251,7 +258,7 @@ def validate_proposal(
     return items, dropped
 
 
-def _totals(items: list[ProposalItem], budget_usd: float) -> ProposalTotals:
+def _totals(items: list[ProposalItem], budget_usd: float | None) -> ProposalTotals:
     picks = [i.pick for i in items if i.pick is not None]
     items_total = sum(c.price for c in picks)
     shipping_total = sum(s for c in picks if (s := item_shipping(c)) is not None)
@@ -270,7 +277,7 @@ def _totals(items: list[ProposalItem], budget_usd: float) -> ProposalTotals:
             else ""
         ),
         budget=budget_usd,
-        remaining=round(budget_usd - total, 2),
+        remaining=None if budget_usd is None else round(budget_usd - total, 2),
     )
 
 
@@ -297,7 +304,7 @@ class ProposalRun:
 
 def _call_model(
     perception: RoomPerception,
-    budget_usd: float,
+    budget_usd: float | None,
     style: str,
     slots: list[SlotInput],
     budget: Budget,
@@ -308,7 +315,7 @@ def _call_model(
     kept: list[tuple[str, str]] | None = None,
 ) -> tuple[list[ProposalItem], str, list[dict[str, str]], CallRecord, str]:
     config = budget.config
-    prompt = load_prompt("proposal", config.proposal_prompt_version)
+    prompt = load_prompt("proposal", config.proposal_version_for(budget_usd is None))
     started = time.perf_counter()
     completion = complete(
         span_name=f"llm.{kind}",
@@ -335,7 +342,7 @@ def _check(
     items: list[ProposalItem],
     perception: RoomPerception,
     style: str,
-    budget_usd: float,
+    budget_usd: float | None,
     slots: list[SlotInput],
     budget: Budget,
     *,
@@ -354,7 +361,7 @@ def propose_and_check(
     perception: RoomPerception,
     retrieved: RetrievalResult,
     *,
-    budget_usd: float,
+    budget_usd: float | None,
     style: str,
     budget: Budget,
     run_id: str | None = None,

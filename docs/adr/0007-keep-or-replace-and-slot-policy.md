@@ -89,6 +89,20 @@ unknown shipping as $0.
   have known shipping and that unknown is excluded (`result.json` carries the counts and a note).
   The budget check still counts unknown shipping as 0 and warns, unchanged.
 
+## Amendment (2026-10-22, ADR 0008): slot lists scale to 10
+
+The accent lists now reach 10 distinct furniture categories per room type (living, bedroom, office,
+dining and the generic list), keeping every earlier entry in its order and adding sensible furniture
+only (armchair, side table, console table and ottoman for living; wardrobe, bench, armchair, desk and
+bookshelf for bedroom; filing cabinet, storage cabinet, armchair, side table and console table for
+office; bench, bar cart, display cabinet, console table and side table for dining), with synonyms in
+`categories.py`. The office entry "desk lamp" became "task lamp": the substring coverage rule treats
+"desk lamp" as covered by "desk", so it could never be chosen. The slot order is unchanged (requested
+replacements, gaps, suggested replacements, accents); covered categories are still skipped. When fewer
+than N slots exist the plan has what exists and a note ("this room type has K standard slots"); it
+never pads with duplicates. The default count is 3 in budget mode and 5 in freeplay; `--items`
+overrides it (2 to `APP_MAX_ITEMS`). The alternates rule was relaxed for freeplay in ADR 0008.
+
 ## Alternatives considered
 
 1. **A preferences file.** Reproducible, but a second artifact to maintain for a single-user spike and

@@ -535,7 +535,11 @@ def test_live_run_room_gets_no_default_rug_or_floor_lamp_slot() -> None:
     categories = [s.category for s in slots]
     assert "area rug" not in categories and "floor lamp" not in categories
     assert "sofa" not in categories and "coffee table" not in categories  # owned furniture
-    assert categories == ["bookshelf", "media unit"]  # no media unit in the room, no gap planned
+    assert categories[:2] == [
+        "bookshelf",
+        "media unit",
+    ]  # no media unit in the room, no gap planned
+    assert "console table" in categories  # the longer accent lists continue past media unit
 
 
 def test_fixed_items_count_as_covered_for_defaults() -> None:

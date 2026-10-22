@@ -122,7 +122,7 @@ def test_price_stats_cover_priced_unpriced_and_over_ceiling() -> None:
     results = [_sc("a", 10.0), _sc("b", 30.0), _sc("c", None), _sc("d", 50.0), _sc("e", 90.0)]
     assert price_stats(results, 40.0) == {
         "considered": 5, "priced": 4, "unpriced": 1, "over_ceiling": 2,
-        "min_usd": 10.0, "median_usd": 40.0, "max_usd": 90.0,
+        "min_usd": 10.0, "median_usd": 40.0, "max_usd": 90.0, "p33_usd": 30.0, "p67_usd": 50.0,
     }  # fmt: skip
 
 
@@ -578,9 +578,9 @@ def test_lookup_failure_reasons_reach_the_trace_without_any_key(
 
 def test_media_unit_follows_bookshelf_in_the_living_room_accents() -> None:
     p = _perception(furniture=[], furniture_gaps=[], art_and_decor=[], fixed_items=[])
-    assert [s.category for s in derive_slots(p, 800, 10)] == [
-        "sofa", "coffee table", "area rug", "floor lamp", "bookshelf", "media unit",
-    ]  # fmt: skip
+    cats = [s.category for s in derive_slots(p, 800, 10)]
+    assert cats[:6] == ["sofa", "coffee table", "area rug", "floor lamp", "bookshelf", "media unit"]
+    assert len(cats) == 10
 
 
 @pytest.mark.parametrize(
