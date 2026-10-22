@@ -21,6 +21,10 @@ from app.retrieval import derive_slots, retrieve, verify_candidates
 from app.schemas import Candidate, RoomPerception
 
 
+def _web_config() -> Config:
+    return Config(retrieval_mode="web_search")
+
+
 def _perception(**overrides: Any) -> RoomPerception:
     payload = copy.deepcopy(mock_perception_payload())
     payload.update(overrides)
@@ -118,7 +122,7 @@ def test_retrieve_drops_hallucinated_url_and_logs_queries(
     monkeypatch.setattr(llm, "get_client", lambda mode, max_retries=1: client)
     perception = _perception(furniture_gaps=[], furniture=[], room_type="sofa room")
     result = retrieve(
-        perception, budget_usd=300, style="modern", max_slots=1, budget=Budget(Config())
+        perception, budget_usd=300, style="modern", max_slots=1, budget=Budget(_web_config())
     )
     (slot,) = result.slots
     assert [c.url for c in slot.candidates] == ["https://shop.example/real"]
@@ -127,8 +131,8 @@ def test_retrieve_drops_hallucinated_url_and_logs_queries(
     # the request carried the search tool, capped by config, and the configured tool type
     (call,) = client.calls
     (tool,) = call["tools"]
-    assert tool["max_uses"] == Config().max_searches_per_slot
-    assert tool["type"] == Config().web_search_tool
+    assert tool["max_uses"] == _web_config().max_searches_per_slot
+    assert tool["type"] == _web_config().web_search_tool
 
 
 def test_first_text_block_is_the_json_not_a_join(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -144,6 +148,6 @@ def test_first_text_block_is_the_json_not_a_join(monkeypatch: pytest.MonkeyPatch
     )
     monkeypatch.setattr(llm, "get_client", lambda mode, max_retries=1: client)
     result = retrieve(
-        _perception(), budget_usd=100, style="x", max_slots=1, budget=Budget(Config())
+        _perception(), budget_usd=100, style="x", max_slots=1, budget=Budget(_web_config())
     )
     assert json.loads(result.slots[0].completion.text)["slot"] == "sofa"

@@ -24,21 +24,25 @@ def _no_network_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
     llm.get_client.cache_clear()
 
 
-def test_mock_run_end_to_end(tmp_path: Path) -> None:
+def _web() -> Config:
+    return Config(retrieval_mode="web_search")
+
+
+def test_mock_run_end_to_end_web_search_mode(tmp_path: Path) -> None:
     result = run_spike(
         synthetic_room_image(),
         budget_usd=900,
         style="warm minimalist",
-        config=Config(),
+        config=_web(),
         run_id="t1",
     )
-    assert result.llm_mode == "mock"
+    assert result.llm_mode == "mock" and result.retrieval_mode == "web_search"
     assert [r.stage for r in result.rows] == [
         "prepare_image",
         "perception",
-        "retrieval: sofa",
-        "retrieval: coffee table",
-        "retrieval: floor lamp",
+        "retrieval: sofa / web_search",
+        "retrieval: coffee table / web_search",
+        "retrieval: floor lamp / web_search",
     ]
     assert result.models == {"perception": "claude-sonnet-5-5", "retrieval": "claude-haiku-5-5"}
     assert result.prompt_versions == {"perception": "2", "retrieval": "1"}
@@ -57,10 +61,61 @@ def test_mock_run_end_to_end(tmp_path: Path) -> None:
     assert "proposed" in table.lower() and "not enforced" in table
 
 
-def test_trace_records_stages_prompt_versions_and_searches(tmp_path: Path) -> None:
+def test_mock_run_end_to_end_shopping_mode(tmp_path: Path) -> None:
+    """The default: structured shopping data from fixtures, a mock ranker, mock lookups."""
+    result = run_spike(
+        synthetic_room_image(),
+        budget_usd=900,
+        style="warm minimalist",
+        config=Config(),
+        run_id="s1",
+    )
+    assert result.retrieval_mode == "shopping" and result.search_provider == "serper"
+    stages = [r.stage for r in result.rows]
+    assert stages[:2] == ["prepare_image", "perception"]
+    for slot in ("sofa", "coffee table", "floor lamp"):
+        assert f"retrieval: {slot} / search" in stages
+        assert f"retrieval: {slot} / rank" in stages
+        assert (
+            f"retrieval: {slot} / lookup 1" in stages and f"retrieval: {slot} / lookup 2" in stages
+        )
+    assert result.prompt_versions == {"perception": "2", "rank": "1"}
+    provider_rows = [r for r in result.rows if r.kind in ("search", "lookup")]
+    assert provider_rows and all(r.cost_estimated for r in provider_rows)
+    assert {r.model for r in provider_rows} == {"serper", "serpapi"}
+    assert next(r for r in result.rows if r.kind == "rank").model == "claude-haiku-5-5"
+
+    for slot in result.retrieval:
+        cands = slot["candidates"]
+        assert len(cands) == 2  # the invented id was dropped
+        assert all(c["name"].startswith("[FIXTURE]") for c in cands)
+        assert {c["url_kind"] for c in cands} == {"retailer_product", "google_panel"}
+        assert all(c["price"] > 0 and c["price_source"] in ("search", "lookup") for c in cands)
+        assert [d["reason"] for d in slot["dropped_unverified"]] == ["id_not_in_candidates"]
+        retailer = next(c for c in cands if c["url_kind"] == "retailer_product")
+        assert "srsltid" not in retailer["url"] and "utm_" not in retailer["url"]
+
+    out_dir = write_outputs(result, tmp_path)
+    table = (out_dir / "table.txt").read_text()
+    assert "* estimated" in table and "retrieval=shopping/serper" in table
+    totals = json.loads((out_dir / "result.json").read_text())["totals"]
+    assert totals["critical_path_seconds"] <= totals["seconds"] + 1e-9
+
+
+def test_serpapi_mock_run_shows_dimensions() -> None:
+    cfg = Config(search_provider="serpapi")
+    result = run_spike(synthetic_room_image(), budget_usd=900, style="x", slots=1, config=cfg)
+    cands = result.retrieval[0]["candidates"]
+    ikea = next(c for c in cands if "GUTTANE" in c["name"])
+    assert ikea["dimensions_m"]["width_m"] == pytest.approx(0.58)
+    assert ikea["dimensions_m"]["depth_m"] == pytest.approx(0.39)
+    assert ikea["dimensions_m"]["height_m"] == pytest.approx(0.3207, abs=1e-4)
+
+
+def test_trace_records_stages_prompt_versions_and_searches_web_mode(tmp_path: Path) -> None:
     from app import tracing
 
-    run_spike(synthetic_room_image(), budget_usd=500, style="x", slots=1, config=Config())
+    run_spike(synthetic_room_image(), budget_usd=500, style="x", slots=1, config=_web())
     lines = [json.loads(x) for x in tracing.TRACE_PATH.read_text().splitlines()]
     by_name = {rec["name"]: rec for rec in lines}
     assert by_name["stage.perception"]["prompt_version"] == "2"
@@ -69,6 +124,24 @@ def test_trace_records_stages_prompt_versions_and_searches(tmp_path: Path) -> No
     assert per_slot["queries"] and per_slot["result_counts"] == [1]
     assert per_slot["dropped_unverified_urls"] == 1
     assert by_name["llm.perception"]["model"] == "claude-sonnet-5-5"
+
+
+def test_trace_records_provider_calls_and_rank_in_shopping_mode() -> None:
+    from app import tracing
+
+    run_spike(synthetic_room_image(), budget_usd=900, style="x", slots=1, config=Config())
+    lines = [json.loads(x) for x in tracing.TRACE_PATH.read_text().splitlines()]
+    names = [rec["name"] for rec in lines]
+    assert names.count("provider.search") == 1 and names.count("provider.lookup") == 2
+    assert "llm.rank" in names
+    for rec in lines:
+        if rec["name"].startswith("provider."):
+            assert rec["cost_estimated"] is True and rec["provider"] in ("serper", "serpapi")
+    stage = next(r for r in lines if r["name"] == "stage.retrieval")
+    assert stage["prompt_name"] == "rank" and stage["retrieval_mode"] == "shopping"
+    assert (
+        stage["per_slot"][0]["search"]["kept"] > 0 and stage["per_slot"][0]["rank"]["invented"] == 1
+    )
 
 
 def test_proposed_targets_are_informational_never_enforced(
@@ -82,15 +155,15 @@ def test_proposed_targets_are_informational_never_enforced(
 
 
 def test_step_cap_raises_instead_of_truncating() -> None:
-    cfg = Config(max_steps=2)  # perception + one slot, then the second slot must refuse
+    cfg = Config(max_steps=2)  # perception + one rank call; the other slots' rank calls must refuse
     with pytest.raises(BudgetExceededError, match="step cap"):
-        run_spike(synthetic_room_image(), budget_usd=100, style="x", slots=3, config=cfg)
+        run_spike(synthetic_room_image(), budget_usd=900, style="x", slots=3, config=cfg)
 
 
 def test_cost_cap_raises_instead_of_truncating() -> None:
     cfg = Config(max_cost_usd=0.005)
     with pytest.raises(BudgetExceededError, match="cost cap"):
-        run_spike(synthetic_room_image(), budget_usd=100, style="x", config=cfg)
+        run_spike(synthetic_room_image(), budget_usd=900, style="x", config=cfg)
 
 
 def test_image_block_precedes_text_and_pixels_are_prepared(monkeypatch: pytest.MonkeyPatch) -> None:

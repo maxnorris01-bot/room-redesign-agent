@@ -46,9 +46,10 @@ eval-nightly-live:
 
 # Cost/latency spike (SPEC.md "Session 1"). Pass arguments with ARGS, e.g.
 #   make spike ARGS='spike-photos/living-room.jpg --budget 800 --style "warm minimalist"'
-# Mock is forced: no network, no key required.
+# Mock is forced: no network, no key required. With no ARGS, a generated image is used.
+SPIKE_MOCK_DEFAULT_ARGS = --synthetic --budget 800 --style "warm minimalist"
 spike:
-	APP_LLM_MODE=mock uv run python scripts/spike.py $(ARGS)
+	APP_LLM_MODE=mock uv run python scripts/spike.py $(or $(ARGS),$(SPIKE_MOCK_DEFAULT_ARGS))
 
 # Costs real API money. Run deliberately (Max's call), after the Console spend limit exists.
 spike-live:

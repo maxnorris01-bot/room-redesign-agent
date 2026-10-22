@@ -22,6 +22,7 @@ from app.config import BudgetExceededError, Config, load_env
 from app.images import synthetic_room_image
 from app.llm import LLMOutputError
 from app.schemas import SchemaError
+from app.shopping import ProviderError
 from app.spike import format_table, point_trace_at, run_spike, write_outputs
 
 OUT_ROOT = Path("spike-output")
@@ -57,6 +58,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="perception prompt version to load (default: config, currently 2; 1 is kept)",
     )
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=("shopping", "web_search"),
+        help="override APP_RETRIEVAL_MODE (default shopping)",
+    )
+    parser.add_argument(
+        "--search-provider", choices=("serper", "serpapi"), help="override APP_SEARCH_PROVIDER"
+    )
+    parser.add_argument(
+        "--finalists", type=int, help="finalists per slot (override APP_FINALISTS_PER_SLOT)"
+    )
     args = parser.parse_args(argv)
     if not args.perception_only and (args.budget is None or args.style is None):
         parser.error("--budget and --style are required unless --perception-only is given")
@@ -72,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
         "effort_perception": args.perception_effort,
         "image_max_edge": args.image_long_edge,
         "perception_prompt_version": args.perception_prompt_version,
+        "retrieval_mode": args.retrieval_mode,
+        "search_provider": args.search_provider,
+        "finalists_per_slot": args.finalists,
     }
     config = replace(config, **{k: v for k, v in overrides.items() if v is not None})
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
@@ -93,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    except ProviderError as exc:  # message names the provider and HTTP status, never a key or URL
+        print(f"FAILED: shopping provider error: {exc}", file=sys.stderr)
+        return 4
     except (SchemaError, LLMOutputError) as exc:
         print(f"FAILED: unusable model output: {exc}", file=sys.stderr)
         return 3

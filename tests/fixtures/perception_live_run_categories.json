@@ -1,0 +1,249 @@
+{
+ "schema_version": 1,
+ "room_type": "living room with small home office nook",
+ "dimensions": {
+  "width_m": 6.0,
+  "length_m": 5.0,
+  "ceiling_height_m": 2.6,
+  "confidence": 0.35,
+  "derivation": "-"
+ },
+ "openings": [
+  {
+   "kind": "window",
+   "wall": "west",
+   "position_along_wall": 0.5,
+   "width_m": 3.0,
+   "note": "-"
+  },
+  {
+   "kind": "archway",
+   "wall": "north",
+   "position_along_wall": 0.2,
+   "width_m": 1.0,
+   "note": "-"
+  }
+ ],
+ "fixed_items": [
+  {
+   "category": "fireplace",
+   "position": {
+    "x": 0.55,
+    "y": 0.1
+   },
+   "size": {
+    "width_m": 1.3,
+    "depth_m": 0.4
+   },
+   "note": "-"
+  },
+  {
+   "category": "air vent",
+   "position": {
+    "x": 0.38,
+    "y": 0.05
+   },
+   "size": {
+    "width_m": 0.4,
+    "depth_m": 0.1
+   },
+   "note": "-"
+  },
+  {
+   "category": "recessed ceiling light",
+   "position": {
+    "x": 0.7,
+    "y": 0.4
+   },
+   "size": {
+    "width_m": 0.15,
+    "depth_m": 0.15
+   },
+   "note": "-"
+  }
+ ],
+ "furniture": [
+  {
+   "id": "f1",
+   "category": "sofa",
+   "position": {
+    "x": 0.85,
+    "y": 0.5
+   },
+   "size": {
+    "width_m": 2.1,
+    "depth_m": 0.9
+   },
+   "keepable": "likely",
+   "note": "-"
+  },
+  {
+   "id": "f2",
+   "category": "armchair",
+   "position": {
+    "x": 0.4,
+    "y": 0.65
+   },
+   "size": {
+    "width_m": 1.0,
+    "depth_m": 0.95
+   },
+   "keepable": "likely",
+   "note": "-"
+  },
+  {
+   "id": "f3",
+   "category": "coffee table",
+   "position": {
+    "x": 0.68,
+    "y": 0.55
+   },
+   "size": {
+    "width_m": 0.95,
+    "depth_m": 0.7
+   },
+   "keepable": "likely",
+   "note": "-"
+  },
+  {
+   "id": "f4",
+   "category": "nesting side table",
+   "position": {
+    "x": 0.75,
+    "y": 0.7
+   },
+   "size": {
+    "width_m": 0.7,
+    "depth_m": 0.5
+   },
+   "keepable": "likely",
+   "note": "-"
+  },
+  {
+   "id": "f5",
+   "category": "desk",
+   "position": {
+    "x": 0.17,
+    "y": 0.35
+   },
+   "size": {
+    "width_m": 1.2,
+    "depth_m": 0.6
+   },
+   "keepable": "likely",
+   "note": "-"
+  },
+  {
+   "id": "f6",
+   "category": "office chair",
+   "position": {
+    "x": 0.1,
+    "y": 0.45
+   },
+   "size": {
+    "width_m": 0.6,
+    "depth_m": 0.6
+   },
+   "keepable": "likely",
+   "note": "-"
+  },
+  {
+   "id": "f7",
+   "category": "pouf",
+   "position": {
+    "x": 0.06,
+    "y": 0.8
+   },
+   "size": {
+    "width_m": 0.8,
+    "depth_m": 0.8
+   },
+   "keepable": "unclear",
+   "note": "-"
+  },
+  {
+   "id": "f8",
+   "category": "storage basket",
+   "position": {
+    "x": 0.98,
+    "y": 0.75
+   },
+   "size": {
+    "width_m": 0.5,
+    "depth_m": 0.4
+   },
+   "keepable": "unclear",
+   "note": "-"
+  }
+ ],
+ "furniture_gaps": [
+  {
+   "category": "media unit or TV",
+   "reason": "-"
+  },
+  {
+   "category": "side table beside sofa",
+   "reason": "-"
+  }
+ ],
+ "living_things": [],
+ "art_and_decor": [
+  {
+   "kind": "wall art",
+   "location": "east wall above sofa",
+   "note": "-"
+  },
+  {
+   "kind": "wall clock",
+   "location": "north wall above fireplace",
+   "note": "-"
+  },
+  {
+   "kind": "rug",
+   "location": "under coffee tables and sofa front",
+   "note": "-"
+  },
+  {
+   "kind": "rug",
+   "location": "under desk",
+   "note": "-"
+  },
+  {
+   "kind": "floor lamp",
+   "location": "west window, behind the desk",
+   "note": "-"
+  },
+  {
+   "kind": "wall sconce",
+   "location": "east wall, right edge",
+   "note": "-"
+  },
+  {
+   "kind": "plant",
+   "location": "on desk and in the left corner",
+   "note": "-"
+  },
+  {
+   "kind": "plant",
+   "location": "behind sofa",
+   "note": "-"
+  },
+  {
+   "kind": "cushions and throw",
+   "location": "on sofa and armchair",
+   "note": "-"
+  },
+  {
+   "kind": "orchid",
+   "location": "on the coffee table or beside the sofa",
+   "note": "-"
+  }
+ ],
+ "style_descriptors": [
+  "contemporary",
+  "warm wood floor"
+ ],
+ "uncertainties": [
+  "-"
+ ]
+}

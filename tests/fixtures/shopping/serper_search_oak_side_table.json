@@ -1,0 +1,88 @@
+{
+ "searchParameters": {
+  "q": "oak side table",
+  "gl": "us",
+  "type": "shopping",
+  "num": 40,
+  "page": 1,
+  "engine": "google"
+ },
+ "shopping": [
+  {
+   "title": "Article Wood C Side Table",
+   "source": "Article",
+   "link": "https://www.google.com/search?ibp=oshop&q=oak+side+table&prds=localAnnotatedOfferId:1,catalogid:6965038339607673363,gpcid:6951683606421887897,pvo:2,pvt:hg&gl=us&udm=28&pvorigin=2",
+   "price": "$249.00",
+   "rating": 4.8,
+   "ratingCount": 57,
+   "productId": "6965038339607673363",
+   "position": 1
+  },
+  {
+   "title": "Leick Home Leick Oval Table",
+   "source": "Home Depot",
+   "link": "https://www.google.com/search?ibp=oshop&q=oak+side+table&prds=localAnnotatedOfferId:1,catalogid:10864444746448426599,gpcid:6062711181848165553,pvo:2,pvt:hg&gl=us&udm=28&pvorigin=2",
+   "price": "$136.31",
+   "rating": 4.6,
+   "ratingCount": 109,
+   "productId": "10864444746448426599",
+   "position": 2
+  },
+  {
+   "title": "IKEA HOLMERUD side table",
+   "source": "IKEA",
+   "link": "https://www.google.com/search?ibp=oshop&q=oak+side+table&prds=localAnnotatedOfferId:1,catalogid:3515022197411126141,gpcid:6993889209560942029,pvo:2,pvt:hg&gl=us&udm=28&pvorigin=2",
+   "price": "$59.99",
+   "rating": 4.7,
+   "ratingCount": 695,
+   "productId": "3515022197411126141",
+   "position": 3
+  },
+  {
+   "title": "Clairemont Natural Oak Wood Round End Table",
+   "source": "crateandbarrel.com",
+   "link": "https://www.google.com/search?ibp=oshop&q=oak+side+table&prds=localAnnotatedOfferId:1,catalogid:6089677810832156760,gpcid:15414452466565414717,pvo:2,pvt:hg&gl=us&udm=28&pvorigin=2",
+   "price": "$549.00",
+   "rating": 4.8,
+   "ratingCount": 23,
+   "productId": "6089677810832156760",
+   "position": 4
+  },
+  {
+   "title": "vidaXL End Table Solid Oak Wood 10.6\"x9.4\"x14.6",
+   "source": "Target",
+   "link": "https://www.google.com/search?ibp=oshop&q=oak+side+table&prds=localAnnotatedOfferId:1,catalogid:9599227523915108491,gpcid:11031755179163647146,pvo:2,pvt:hg&gl=us&udm=28&pvorigin=2",
+   "price": "$65.99",
+   "rating": 4.4,
+   "ratingCount": 93,
+   "productId": "9599227523915108491",
+   "position": 5
+  },
+  {
+   "title": "Oubayajia Small Side Table, Accent Table for Small Spaces, Wood Fluted Nightstand for Bedroom, Oak, Size: 13.6, Brown",
+   "source": "Walmart - Oubayajia",
+   "price": "$59.89",
+   "rating": 3.5,
+   "ratingCount": 16,
+   "productId": "3228588211018347245",
+   "position": 6
+  },
+  {
+   "title": "Oak Solid Wood Combination Shape Side Table",
+   "source": "GVAwood",
+   "link": "https://www.google.com/search?ibp=oshop&q=oak+side+table&prds=localAnnotatedOfferId:1,catalogid:8803484325351708291,gpcid:8194359801576200728,pvo:2,pvt:hg&gl=us&udm=28&pvorigin=2",
+   "price": "$142.41",
+   "productId": "8803484325351708291",
+   "position": 7
+  },
+  {
+   "title": "West Elm Miles 18\" Storage Side Table",
+   "source": "west elm",
+   "link": "https://www.google.com/search?ibp=oshop&q=oak+side+table&prds=localAnnotatedOfferId:1,catalogid:10520347972779774333,gpcid:526344961404420321,pvo:2,pvt:hg&gl=us&udm=28&pvorigin=2",
+   "price": "$299.00",
+   "productId": "10520347972779774333",
+   "position": 8
+  }
+ ],
+ "credits": 2
+}

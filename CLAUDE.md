@@ -25,6 +25,7 @@
   `evals/thresholds.yaml` until an ADR locks them.
 - Models are configuration (`APP_MODEL_PERCEPTION`, `APP_MODEL_RETRIEVAL` in `src/app/config.py`),
   never hardcoded in logic. Prices live only in `src/app/pricing.py`, with a source URL and date.
+- Provider keys (`SERPER_API_KEY`, `SERPAPI_API_KEY`) are environment-only: never read `.env`, never print or log a key, and keep keys and request URLs out of errors, traces, tables and `result.json` (tests enforce this).
 - Structured-output gotchas: JSON Schema `maxItems` is rejected and `maxLength` is not enforced, so
   never rely on either to bound output; parse the FIRST text block as the JSON; stream long or
   tool-using calls; don't leave SDK retries at default on expensive calls.

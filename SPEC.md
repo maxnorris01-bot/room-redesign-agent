@@ -9,7 +9,7 @@ A tab on the portfolio site where a visitor uploads a room photo and gives budge
 1. **Perceives** the room: a multimodal call returns structured data (rough dimensions, walls, windows, doors, fixed/structural items, movable furniture, art, living things such as pets or people, style descriptors).
 2. **Builds a blank 2D room canvas** from that structured data (top-down, editable later). Photo-real empty-room generation is a gated experiment, not v1 (ADR 0003).
 3. **Asks the user for preferences** (style, must-keep items, priorities) before proposing.
-4. **Retrieves** real furniture options (web search tool and/or a shopping API; chosen by the spike, not assumed).
+4. **Retrieves** real furniture options. Default: structured Google Shopping data (search, a model that only picks ids, then a per-product lookup for the direct retailer URL; ADR 0005, proposed). Claude's web search tool stays selectable. Prices and URLs always come from provider data, never from a model.
 5. **Proposes** a furniture set and layout with a running budget total.
 6. **Self-checks** the proposal against constraints (budget, style match, must-keep items, fits the room), revises and retries within a step cap.
 7. **Outputs** a final furniture list with links, prices and a written rationale.
@@ -30,12 +30,12 @@ Goal: exercise the real perception and retrieval call pattern on real rooms and 
 In scope:
 - `scripts/spike.py`: photo path in, structured perception out, then retrieval for a small set of furniture slots, printing a per-stage table (model, input/output tokens, searches, dollars, seconds) and writing a trace via `app.tracing`.
 - Perception as one multimodal call with schema-constrained structured output, via `app.llm.complete`, prompt as a versioned file in `prompts/`.
-- Retrieval configuration A: Claude's web search tool (see claim-verification-agent ADR 0003 for the tool-loop pattern). Configuration B (a shopping API) is added after Cowork's vendor research and a decision on terms; do not pick a vendor in the spike.
+- Retrieval has two modes, `APP_RETRIEVAL_MODE`. Configuration A, `web_search`: Claude's web search tool (see claim-verification-agent ADR 0003 for the tool-loop pattern); the first live run showed listing-page URLs and an invented price. Configuration B, `shopping` (now the default, ADR 0005, proposed): stage 1 searches a shopping provider (Serper by default, SerpApi selectable), stage 2 has a small model pick finalist ids from that data (no web search tool, ids validated), stage 3 looks each finalist up for its direct retailer URL, shipping, total and dimensions. Candidates carry `url_kind` (`retailer_product`, `google_panel` or `none`) and `price_source`; a URL is never invented. The two USD-per-call settings are assumptions until confirmed from the real dashboards.
 - Mock mode (default) works end to end with no API key. Live mode only via an explicit `make` target or env override.
 - Models are configuration, never hardcoded. Record the model used per stage so a cheaper tier for retrieval vs a stronger one for perception can be compared.
 - Photos live in a gitignored `spike-photos/` folder. Strip EXIF (GPS) before any photo is used or committed anywhere. No photo is committed until its rights are decided.
 
-Targets (proposal, not yet locked): perception plus retrieval for one room at or under $0.08 and 30 s. Full run at or under $0.20 mean and p95 at or under 60 s with streamed stage progress. Process: one exploratory room is run first and recorded, ungraded; targets are then locked in an ADR before the measured 3-room run (ADR 0004, to be written then). Targets are never loosened after seeing a result.
+Targets (proposal, not yet locked): perception plus retrieval for one room at or under $0.08 and 30 s. Full run at or under $0.20 mean and p95 at or under 60 s with streamed stage progress. Process: one exploratory room is run first and recorded, ungraded; targets are then locked in an ADR before the measured 3-room run (ADR 0004, drafted 2026-10-21 as proposed; the numbers there supersede this paragraph once accepted). Targets are never loosened after seeing a result.
 
 Measured run (after targets lock): 3 rooms of different difficulty (simple, cluttered with a pet in frame, poor lighting), retrieval configurations compared on price accuracy, link validity, style and budget match, latency and cost.
 

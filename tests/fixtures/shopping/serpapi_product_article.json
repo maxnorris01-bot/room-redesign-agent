@@ -1,0 +1,56 @@
+{
+ "search_parameters": {
+  "engine": "google_product",
+  "product_id": "6965038339607673363",
+  "gl": "us",
+  "hl": "en"
+ },
+ "product_results": {
+  "title": "Article Wood C Side Table",
+  "brand": "Article",
+  "price_range": "$249-$249",
+  "stores": [
+   {
+    "position": 1,
+    "name": "Article",
+    "link": "https://www.article.com/pla/23361/torme-c-side-table-white-oak?forceCurrencyId=1&srsltid=AU7gw4Wa6pGLmCt1YhrsFxu_nOGKwsAc5T0WzViSPwoo-JOWZUWKvkmQPN0",
+    "title": "White Oak Wood C Side Table, Scandinavian Design | Article Torme Modern Furniture",
+    "rating": 4.5,
+    "reviews": 336,
+    "details_and_offers": [
+     "In stock online",
+     "Delivery $59",
+     "30-day returns"
+    ],
+    "price": "$249.00",
+    "extracted_price": 249.0,
+    "additional_costs": "+tax",
+    "shipping": "+ $59.00",
+    "shipping_extracted": 59.0,
+    "total": "$308.00",
+    "extracted_total": 308.0
+   }
+  ],
+  "about_the_product": {
+   "description": "The Torme features simple lines and thoughtful details. This side table has softly rounded edges that are subtle yet impactful, making it a functional, beautiful addition to any space (especially moody Norwegian studies)."
+  },
+  "product_attributes": [
+   {
+    "name": "shape",
+    "value": "Rectangular / Square"
+   },
+   {
+    "name": "material",
+    "value": "Wood"
+   },
+   {
+    "name": "brand",
+    "value": "Article"
+   },
+   {
+    "name": "Color",
+    "value": "White Oak"
+   }
+  ]
+ }
+}

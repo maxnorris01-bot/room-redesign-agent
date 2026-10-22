@@ -42,8 +42,10 @@ def test_critical_path_uses_slowest_slot_not_the_sum(tmp_path: Path) -> None:
     result.rows = [
         StageRow("prepare_image", "-", 0, 0, 0, 0.0, 0.1),
         StageRow("perception", "m", 1, 1, 0, 0.01, 17.0),
-        StageRow("retrieval: a", "m", 1, 1, 1, 0.01, 11.0),
-        StageRow("retrieval: b", "m", 1, 1, 1, 0.01, 7.0),
+        StageRow(
+            "retrieval: a / web_search", "m", 1, 1, 1, 0.01, 11.0, slot="a", kind="web_search"
+        ),
+        StageRow("retrieval: b / web_search", "m", 1, 1, 1, 0.01, 7.0, slot="b", kind="web_search"),
     ]
     assert result.total_seconds == pytest.approx(35.1)
     assert result.critical_path_seconds == pytest.approx(0.1 + 17.0 + 11.0)

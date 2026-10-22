@@ -13,6 +13,8 @@ from dotenv import find_dotenv, load_dotenv
 from app.pricing import WEB_SEARCH_USD_PER_REQUEST
 
 LLM_MODES = ("mock", "live")
+RETRIEVAL_MODES = ("shopping", "web_search")
+SEARCH_PROVIDERS = ("serper", "serpapi")
 
 
 @dataclass(frozen=True)
@@ -48,12 +50,41 @@ class Config:
     # Which perception prompt file to load (prompts/perception.md is current; older ones are kept
     # as perception.v<N>.md for comparison). Set per run via scripts/spike.py, not from the env.
     perception_prompt_version: str = "2"
+    # Retrieval: "shopping" (default) = structured Google Shopping data, ranked by a model that only
+    # picks ids (ADR 0005); "web_search" = Claude's web search tool reading pages (ADR 0003 in the
+    # claim-verification repo; kept selectable). API keys are NOT config fields: they are read
+    # from SERPER_API_KEY / SERPAPI_API_KEY by app.shopping when a live provider is built.
+    retrieval_mode: str = "shopping"
+    search_provider: str = "serper"
+    finalists_per_slot: int = 2
+    # Model for the rank stage; empty means "same as model_retrieval". Use `rank_model`.
+    model_rank: str = ""
+    # Dollar estimates for provider calls. ASSUMPTIONS to set from the real plan (free-tier calls
+    # cost $0 in reality): Serper 2 credits per query at about $0.0003 a credit; SerpApi at its
+    # per-search plan rate. Lookups are always SerpApi, whichever provider searched.
+    serper_usd_per_query: float = 0.0006
+    serpapi_usd_per_search: float = 0.025
     # Per-search cost estimate (USD); the API returns no dollar figure. Default: pricing.py.
     web_search_usd: float = WEB_SEARCH_USD_PER_REQUEST
 
     def __post_init__(self) -> None:
         if self.llm_mode not in LLM_MODES:
             raise ValueError(f"APP_LLM_MODE must be one of {LLM_MODES}, got {self.llm_mode!r}")
+        if self.retrieval_mode not in RETRIEVAL_MODES:
+            raise ValueError(
+                f"APP_RETRIEVAL_MODE must be one of {RETRIEVAL_MODES}, got {self.retrieval_mode!r}"
+            )
+        if self.search_provider not in SEARCH_PROVIDERS:
+            raise ValueError(
+                f"APP_SEARCH_PROVIDER must be one of {SEARCH_PROVIDERS}, "
+                f"got {self.search_provider!r}"
+            )
+        if self.finalists_per_slot < 1:
+            raise ValueError("APP_FINALISTS_PER_SLOT must be >= 1")
+
+    @property
+    def rank_model(self) -> str:
+        return self.model_rank or self.model_retrieval
 
     @classmethod
     def from_env(cls) -> Config:
@@ -74,6 +105,18 @@ class Config:
             effort_perception=os.environ.get("APP_EFFORT_PERCEPTION", cls.effort_perception),
             effort_retrieval=os.environ.get("APP_EFFORT_RETRIEVAL", cls.effort_retrieval),
             web_search_usd=float(os.environ.get("APP_WEB_SEARCH_USD", cls.web_search_usd)),
+            retrieval_mode=os.environ.get("APP_RETRIEVAL_MODE", cls.retrieval_mode),
+            search_provider=os.environ.get("APP_SEARCH_PROVIDER", cls.search_provider),
+            finalists_per_slot=int(
+                os.environ.get("APP_FINALISTS_PER_SLOT", cls.finalists_per_slot)
+            ),
+            model_rank=os.environ.get("APP_MODEL_RANK", cls.model_rank),
+            serper_usd_per_query=float(
+                os.environ.get("APP_SERPER_USD_PER_QUERY", cls.serper_usd_per_query)
+            ),
+            serpapi_usd_per_search=float(
+                os.environ.get("APP_SERPAPI_USD_PER_SEARCH", cls.serpapi_usd_per_search)
+            ),
         )
 
 

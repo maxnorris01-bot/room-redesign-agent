@@ -47,6 +47,11 @@ class StageRow:
     seconds: float
     # Streamed calls only; first content_block_delta, see llm._create_message. None = not measured.
     time_to_first_token_seconds: float | None = None
+    # Retrieval rows only: which slot, and what kind of call (search|rank|lookup|web_search).
+    slot: str | None = None
+    kind: str | None = None
+    # True when the dollars are an estimate from the APP_*_USD settings (provider calls).
+    cost_estimated: bool = False
 
 
 @dataclass
@@ -66,6 +71,8 @@ class SpikeResult:
     steps: int = 0
     unpriced_models: list[str] = field(default_factory=list)
     perception_only: bool = False
+    retrieval_mode: str = "shopping"
+    search_provider: str | None = None
     perception_output_stats: dict[str, int] = field(default_factory=dict)
     # The model's JSON exactly as returned (before pydantic), so a odd token can be traced to
     # the model or to our code. It is the same data as `perception`, not extra personal data.
@@ -84,12 +91,24 @@ class SpikeResult:
     def critical_path_seconds(self) -> float:
         """Wall time if stages are sequential and retrieval slots run concurrently.
 
-        prepare_image + perception + the slowest retrieval slot. `total_seconds` (the plain sum)
-        double-counts the concurrent slots and is kept alongside it.
+        prepare_image + perception + the slowest slot chain (search, rank, then the slowest of that
+        slot's lookups; in web_search mode, the single search call). `total_seconds` (the plain sum)
+        double-counts the concurrent work and is kept alongside it.
         """
-        sequential = sum(r.seconds for r in self.rows if not r.stage.startswith("retrieval"))
-        slots = [r.seconds for r in self.rows if r.stage.startswith("retrieval")]
-        return sequential + max(slots, default=0.0)
+        sequential = sum(r.seconds for r in self.rows if r.slot is None)
+        chains: dict[str, float] = {}
+        lookups: dict[str, float] = {}
+        for r in self.rows:
+            if r.slot is None:
+                continue
+            if r.kind == "lookup":  # a slot's lookups overlap: only the slowest is on the path
+                lookups[r.slot] = max(lookups.get(r.slot, 0.0), r.seconds)
+            else:
+                chains[r.slot] = chains.get(r.slot, 0.0) + r.seconds
+        slowest = max(
+            (chains.get(s, 0.0) + lookups.get(s, 0.0) for s in {*chains, *lookups}), default=0.0
+        )
+        return sequential + slowest
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -143,9 +162,16 @@ def run_spike(
         budget_usd=budget_usd,
         style=style,
         prompt_versions={},
-        models={"perception": config.model_perception, "retrieval": config.model_retrieval},
+        models={
+            "perception": config.model_perception,
+            "retrieval": config.rank_model
+            if config.retrieval_mode == "shopping"
+            else config.model_retrieval,
+        },
         image={},
         perception_only=perception_only,
+        retrieval_mode=config.retrieval_mode,
+        search_provider=config.search_provider if config.retrieval_mode == "shopping" else None,
     )
     if perception_only:
         result.models.pop("retrieval")
@@ -186,9 +212,31 @@ def run_spike(
             budget=budget,
             run_id=run_id,
         )
-        result.prompt_versions["retrieval"] = retrieved.prompt_version
+        result.prompt_versions["rank" if retrieved.mode == "shopping" else "retrieval"] = (
+            retrieved.prompt_version
+        )
         for sr in retrieved.slots:
-            result.rows.append(_row(f"retrieval: {sr.slot.category}", sr.completion, sr.seconds))
+            lookup_no = 0
+            for call in sr.calls:
+                suffix = call.kind
+                if call.kind == "lookup":
+                    lookup_no += 1
+                    suffix = f"lookup {lookup_no}"
+                result.rows.append(
+                    StageRow(
+                        f"retrieval: {sr.slot.category} / {suffix}",
+                        call.provider,
+                        call.input_tokens,
+                        call.output_tokens,
+                        call.web_searches,
+                        call.cost_usd,
+                        call.seconds,
+                        call.time_to_first_token_s,
+                        slot=sr.slot.category,
+                        kind=call.kind,
+                        cost_estimated=call.estimated,
+                    )
+                )
             result.retrieval.append(
                 {
                     "slot": asdict(sr.slot),
@@ -196,6 +244,7 @@ def run_spike(
                     "dropped_unverified": sr.dropped,
                     "note": sr.note,
                     "searches": sr.completion.searches,
+                    "summary": sr.summary,
                 }
             )
         result.steps = budget.steps
@@ -218,7 +267,7 @@ def format_table(result: SpikeResult) -> str:
     ]  # fmt: skip
     body = [
         [r.stage, r.model, str(r.input_tokens), str(r.output_tokens), str(r.web_searches),
-         f"${r.cost_usd:.4f}", f"{r.seconds:.2f}",
+         f"${r.cost_usd:.4f}{'*' if r.cost_estimated else ''}", f"{r.seconds:.2f}",
          "-" if r.time_to_first_token_seconds is None else f"{r.time_to_first_token_seconds:.2f}"]
         for r in result.rows
     ]  # fmt: skip
@@ -247,6 +296,8 @@ def format_table(result: SpikeResult) -> str:
     lines += [
         f"run {result.run_id}  mode={result.llm_mode}  photo={result.photo_name}  "
         f"budget=${result.budget_usd:.0f}  style={result.style!r}"
+        + ("" if result.perception_only else f"  retrieval={result.retrieval_mode}")
+        + (f"/{result.search_provider}" if result.search_provider else "")
         + ("  [perception only]" if result.perception_only else ""),
         f"prompts: {result.prompt_versions}  image: {result.image.get('width')}x"
         f"{result.image.get('height')} (from {result.image.get('original_width')}x"
@@ -254,6 +305,13 @@ def format_table(result: SpikeResult) -> str:
         "",
         fmt(headers), rule, *[fmt(r) for r in body], rule, fmt(totals),
     ]  # fmt: skip
+    if any(r.cost_estimated for r in result.rows):
+        lines += [
+            "",
+            "* estimated: provider calls (search, lookup) are costed from",
+            "  APP_SERPER_USD_PER_QUERY / APP_SERPAPI_USD_PER_SEARCH, which are assumptions;",
+            "  free-tier usage costs $0 in reality.",
+        ]
     if result.unpriced_models:
         lines += [
             "",
@@ -266,7 +324,7 @@ def format_table(result: SpikeResult) -> str:
         "concurrently, so the real wait is the critical path.",
         f"  sum of stage seconds : {result.total_seconds:.2f}",
         f"  critical path        : {result.critical_path_seconds:.2f}  "
-        "(prepare_image + perception + slowest retrieval slot)",
+        "(prepare_image + perception + slowest slot chain)",
         f"  wall clock (measured): {result.wall_clock_seconds:.2f}",
     ]
     if result.perception_output_stats:

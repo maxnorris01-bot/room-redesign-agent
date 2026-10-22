@@ -126,6 +126,44 @@ class SlotCandidates(_Strict):
     note: str = Field(description="Anything the reader should know, e.g. why few results")
 
 
+class DimensionsM(_Strict):
+    """Stated product dimensions in metres; any of them may be missing from the listing."""
+
+    width_m: float | None = None
+    depth_m: float | None = None
+    height_m: float | None = None
+    length_m: float | None = None
+
+
+class ProductCandidate(Candidate):
+    """A candidate as the pipeline reports it. Not sent to the API as a schema.
+
+    `Candidate` stays the model-facing shape (web_search mode). In shopping mode the model never
+    supplies price, seller or URL; they come from the provider. `url_kind` says what `url` is:
+    a retailer's product page, the Google product panel (when no retailer URL could be obtained),
+    or "none" (empty `url`; we never invent one).
+    """
+
+    url_kind: Literal["retailer_product", "google_panel", "none"] = "retailer_product"
+    shipping: float | None = None
+    total: float | None = None
+    dimensions_m: DimensionsM | None = None
+    rating: float | None = None
+    rating_count: int | None = None
+    reason: str = ""
+    product_id: str = ""
+    price_source: Literal["search", "lookup", "model"] = "model"
+
+
+class Finalist(_Strict):
+    id: str = Field(description="A product id copied from the candidate list")
+    reason: str = Field(description="Why it fits, at most 12 words")
+
+
+class RankedFinalists(_Strict):
+    finalists: list[Finalist]
+
+
 # ---- JSON Schema for structured output ---------------------------------------------------
 
 # Keywords the API rejects (maxItems) or does not enforce (maxLength), plus numeric/size bounds
