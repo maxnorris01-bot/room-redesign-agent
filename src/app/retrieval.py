@@ -39,12 +39,27 @@ RETRIEVAL_MAX_TOKENS = 3000
 # there are few gaps or replacements. Categories already covered by something that stays are
 # skipped (see `plan_slots`).
 _ACCENT_SLOTS: dict[str, list[str]] = {
-    "living": ["sofa", "coffee table", "area rug", "floor lamp", "bookshelf", "media unit"],
-    "bed": ["bed frame", "nightstand", "dresser", "area rug", "reading lamp"],
-    "office": ["desk", "office chair", "bookshelf", "desk lamp", "area rug"],
-    "dining": ["dining table", "dining chairs", "sideboard", "pendant light", "area rug"],
-}
-_GENERIC_SLOTS = ["seating", "side table", "area rug", "lamp", "storage"]
+    "living": [
+        "sofa", "coffee table", "area rug", "floor lamp", "bookshelf", "media unit",
+        "armchair", "side table", "console table", "ottoman",
+    ],
+    "bed": [
+        "bed frame", "nightstand", "dresser", "area rug", "reading lamp",
+        "wardrobe", "bench", "armchair", "desk", "bookshelf",
+    ],
+    "office": [
+        "desk", "office chair", "bookshelf", "task lamp", "area rug",
+        "filing cabinet", "storage cabinet", "armchair", "side table", "console table",
+    ],
+    "dining": [
+        "dining table", "dining chairs", "sideboard", "pendant light", "area rug",
+        "bench", "bar cart", "display cabinet", "console table", "side table",
+    ],
+}  # fmt: skip
+_GENERIC_SLOTS = [
+    "seating", "side table", "area rug", "lamp", "storage",
+    "coffee table", "bookshelf", "console table", "ottoman", "desk",
+]  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -52,11 +67,13 @@ class Slot:
     category: str
     reason: str
     source: str  # "replace_requested" | "gap" | "replace_suggested" | "accent"
-    budget_usd: float  # per-item PRICE ceiling for search (same for every slot), not a share
+    # Per-item PRICE ceiling for search (same for every slot), not a share. None in freeplay.
+    budget_usd: float | None
     size_hint: str = ""
     replaces_id: str | None = None  # the existing item (perception id) this slot would replace
     total_cap_usd: float | None = None  # items over this total (price + shipping) are dropped
     total_budget_usd: float | None = None  # the whole budget (flags over-limit options)
+    tier: str | None = None  # freeplay price tier (value | mid | premium); None in budget mode
 
 
 @dataclass
@@ -93,6 +110,9 @@ class SlotResult:
     summary: dict[str, Any] = field(default_factory=dict)
     # Shown to the buyer for an empty slot, never picked and never counted (ADR 0007).
     over_budget_options: list[OverBudgetOption] = field(default_factory=list)
+    # Finalists that were ranked but not looked up (freeplay lookup economy): Google product link
+    # only. Shown as alternates "(retailer link on request)"; never picks.
+    unverified_alternates: list[ProductCandidate] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:
@@ -120,12 +140,14 @@ class SlotPlan:
     slots: list[Slot]
     dropped_by_cap: list[str] = field(default_factory=list)  # wanted but over max_slots
     skipped: list[str] = field(default_factory=list)  # not wanted after all (already covered, ...)
+    notes: list[str] = field(default_factory=list)  # for example fewer slots than asked for
 
     def to_json(self) -> dict[str, object]:
         return {
             "slots": [s.category for s in self.slots],
             "dropped_by_cap": self.dropped_by_cap,
             "skipped": self.skipped,
+            "notes": self.notes,
         }
 
 
@@ -136,7 +158,7 @@ def item_ceiling_usd(total_budget_usd: float, config: Config) -> float:
 
 def plan_slots(
     perception: RoomPerception,
-    total_budget_usd: float,
+    total_budget_usd: float | None,
     max_slots: int,
     preferences: Preferences | None = None,
     config: Config | None = None,
@@ -149,13 +171,21 @@ def plan_slots(
     Accents skip any category already covered by kept furniture, fixed items or decor, and a
     replaced item's category is never an accent. A gap already covered by something that stays is
     skipped too. Every slot gets the same per-item ceiling (`item_ceiling_usd`), not a share.
+
+    `total_budget_usd=None` is freeplay (ADR 0008): no ceiling or cap, and each slot carries the
+    configured price tier instead. If fewer than `max_slots` slots exist (a room type has a fixed
+    number of standard slots), the plan has what exists plus a note; it never pads with duplicates.
     """
     config = config or Config()
     if max_slots < 1:
         return SlotPlan([])
     prefs = preferences or resolve_preferences(perception)
-    ceiling = item_ceiling_usd(total_budget_usd, config)
-    cap = round(total_budget_usd * config.item_cap_fraction, 2)
+    freeplay = total_budget_usd is None
+    ceiling = None if total_budget_usd is None else item_ceiling_usd(total_budget_usd, config)
+    cap = (
+        None if total_budget_usd is None else round(total_budget_usd * config.item_cap_fraction, 2)
+    )
+    tier = config.price_tier if freeplay else None
     by_id = {f.id: f for f in perception.furniture}
     kept_categories = [norm(by_id[r.id].category) for r in prefs.decided("keep") if r.id in by_id]
     owned = [
@@ -177,7 +207,7 @@ def plan_slots(
         return Slot(
             category, reason, source, ceiling, hint,
             replaces_id=item.id if item else None, total_cap_usd=cap,
-            total_budget_usd=total_budget_usd,
+            total_budget_usd=total_budget_usd, tier=tier,
         )  # fmt: skip
 
     for r in prefs.decided("replace", "requested"):
@@ -224,12 +254,18 @@ def plan_slots(
             taken.append(norm(s.category))
     # Accents are a filler, not a wish: only report dropped requests, gaps and suggestions.
     dropped = [d for d in dropped if not d.startswith("accent:")]
-    return SlotPlan(chosen, dropped, skipped)
+    notes: list[str] = []
+    if len(chosen) < max_slots and not dropped:
+        notes.append(
+            f"asked for {max_slots} pieces but only {len(chosen)} slots are available: this room "
+            f"type has {len(accents)} standard slots and the rest are covered by what stays"
+        )
+    return SlotPlan(chosen, dropped, skipped, notes)
 
 
 def derive_slots(
     perception: RoomPerception,
-    total_budget_usd: float,
+    total_budget_usd: float | None,
     max_slots: int,
     preferences: Preferences | None = None,
     config: Config | None = None,
@@ -387,7 +423,7 @@ def _run_slot(
 def retrieve(
     perception: RoomPerception,
     *,
-    budget_usd: float,
+    budget_usd: float | None,
     style: str,
     max_slots: int,
     budget: Budget,
@@ -410,7 +446,9 @@ def retrieve(
     config = budget.config
     shopping = config.retrieval_mode == "shopping"
     prompt = (
-        load_prompt("rank", config.rank_prompt_version) if shopping else load_prompt("retrieval")
+        load_prompt("rank", config.rank_version_for(budget_usd is None))
+        if shopping
+        else load_prompt("retrieval")
     )
     plan = plan_slots(perception, budget_usd, max_slots, preferences, config)
     slots = plan.slots

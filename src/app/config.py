@@ -15,6 +15,7 @@ from app.pricing import WEB_SEARCH_USD_PER_REQUEST
 LLM_MODES = ("mock", "live")
 RETRIEVAL_MODES = ("shopping", "web_search")
 SEARCH_PROVIDERS = ("serper", "serpapi")
+PRICE_TIERS = ("value", "mid", "premium")
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,23 @@ class Config:
     # Which rank prompt to load (v3 adds the over-limit pool wording; v2 is kept). Per run via the
     # CLI, not the env.
     rank_prompt_version: str = "3"
+    # Freeplay (no --budget, ADR 0008): its own prompt versions; budget mode keeps the two above.
+    # A CLI version flag overrides both modes.
+    freeplay_rank_prompt_version: str = "4"
+    freeplay_proposal_prompt_version: str = "3"
+    # Freeplay price tier: value (cheapest third of the search results), mid, or premium.
+    price_tier: str = "mid"
+    # Pieces to shop for (slots). None = the mode default: `default_items_freeplay` in freeplay,
+    # `default_slots` in budget mode. Hard maximum `max_items`; the minimum is 2.
+    items: int | None = None
+    default_items_freeplay: int = 5
+    max_items: int = 10
+    # Product lookups per slot (each ~ one SerpApi search). None = 1 in freeplay, 2 in budget mode.
+    # With 1, the top-ranked finalist is looked up and the next is tried if that fails (2 attempts
+    # at most); other finalists stay unverified alternates (Google product link, no retailer link).
+    lookups_per_slot: int | None = None
+    # Eagerly look up the unverified alternates too (testing; the UI will do it on demand).
+    lookup_alternates: bool = False
     # Fit (coarse, code-only): fail if an item's longer side is over this fraction of the room's
     # shorter side, or its footprint is over `fit_max_footprint_fraction` of the floor area.
     # UNTUNED GUESSES. Rugs and other large flat items will trip them; see ADR 0006.
@@ -116,8 +134,35 @@ class Config:
             raise ValueError("APP_ITEM_CAP_FRACTION must be in (0, 1]")
         if self.shipping_buffer < 0:
             raise ValueError("APP_SHIPPING_BUFFER must be >= 0")
+        if self.price_tier not in PRICE_TIERS:
+            raise ValueError(
+                f"APP_PRICE_TIER must be one of {PRICE_TIERS}, got {self.price_tier!r}"
+            )
+        if self.max_items < 2:
+            raise ValueError("APP_MAX_ITEMS must be >= 2")
+        if self.items is not None and not 2 <= self.items <= self.max_items:
+            raise ValueError(f"items must be between 2 and {self.max_items}, got {self.items}")
+        if self.lookups_per_slot is not None and self.lookups_per_slot < 1:
+            raise ValueError("APP_LOOKUPS_PER_SLOT must be >= 1")
         if self.max_revisions < 0:
             raise ValueError("APP_MAX_REVISIONS must be >= 0")
+
+    def items_for(self, freeplay: bool) -> int:
+        """Slots to shop for: the explicit count, else the mode's default."""
+        if self.items is not None:
+            return self.items
+        return self.default_items_freeplay if freeplay else self.default_slots
+
+    def lookups_for(self, freeplay: bool) -> int:
+        if self.lookups_per_slot is not None:
+            return self.lookups_per_slot
+        return 1 if freeplay else 2
+
+    def rank_version_for(self, freeplay: bool) -> str:
+        return self.freeplay_rank_prompt_version if freeplay else self.rank_prompt_version
+
+    def proposal_version_for(self, freeplay: bool) -> str:
+        return self.freeplay_proposal_prompt_version if freeplay else self.proposal_prompt_version
 
     @property
     def rank_model(self) -> str:
@@ -164,6 +209,16 @@ class Config:
             max_revisions=int(os.environ.get("APP_MAX_REVISIONS", cls.max_revisions)),
             item_cap_fraction=float(os.environ.get("APP_ITEM_CAP_FRACTION", cls.item_cap_fraction)),
             shipping_buffer=float(os.environ.get("APP_SHIPPING_BUFFER", cls.shipping_buffer)),
+            price_tier=os.environ.get("APP_PRICE_TIER", cls.price_tier),
+            default_items_freeplay=int(
+                os.environ.get("APP_DEFAULT_ITEMS_FREEPLAY", cls.default_items_freeplay)
+            ),
+            max_items=int(os.environ.get("APP_MAX_ITEMS", cls.max_items)),
+            lookups_per_slot=(
+                int(os.environ["APP_LOOKUPS_PER_SLOT"])
+                if os.environ.get("APP_LOOKUPS_PER_SLOT")
+                else None
+            ),
         )
 
 

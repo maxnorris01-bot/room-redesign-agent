@@ -205,8 +205,11 @@ def test_accents_skip_what_stays_using_the_last_live_room() -> None:
     p = _live_room()  # has a rug and a floor lamp as decor, a nesting side table, a fireplace...
     plan = plan_slots(p, 800, 3)
     categories = [s.category for s in plan.slots]
-    assert categories == ["media unit or TV", "bookshelf"]  # one gap, one accent: nothing else
-    assert [s.source for s in plan.slots] == ["gap", "accent"]
+    # the gap comes first, then accents; everything the room already has is skipped
+    assert categories == ["media unit or TV", "bookshelf", "console table"]
+    assert [s.source for s in plan.slots] == ["gap", "accent", "accent"]
+    covered = {"sofa", "coffee table", "area rug", "floor lamp", "armchair", "side table"}
+    assert not covered & set(categories) and "media unit" not in categories
     assert any("side table beside sofa" in s for s in plan.skipped)  # covered by the kept one
 
 

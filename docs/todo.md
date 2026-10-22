@@ -20,6 +20,11 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 ## Later
 
+- [ ] Spike to find a size source for the fit check: fit has been "unknown" in every live run (provider stores rarely state dimensions). Candidates: parse sizes from titles and URL slugs, read product pages, a different lookup source.
+- [ ] Total and per-item budget modes, reusing the tier stats (p33, p67, median) so a ceiling is relative to the category instead of a flat number.
+- [ ] UI: decor, and a minimalist-to-maximalist slider (maps to the item count and to decor slots).
+- [ ] Gate the demo's item cap and lookup spend (a public run can cost up to 10 slots x about $0.026 plus fallbacks); decide limits before any public live upload.
+- [ ] Live check of freeplay: do tier-filtered pools beat the old ceiling on a real sofa search, how often does the first lookup fail, and are the 3x-median guard and the 3-result minimum band sensible?
 - [ ] Live check of over-budget options: does the rank stage keep accessories and off-category items out of the 8 cheapest over-ceiling results, and is 2 options per empty slot the right amount?
 - [ ] Decide whether a Google-page-only finalist should also be dropped (the strict reading of "verified retailer URL"); watch how often lookups fall back in live runs.
 - [ ] Consider a smarter empty-slot next step: suggest a budget that would fit the cheapest seen, or offer to relax the style.
@@ -78,6 +83,7 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- Move items here when done, newest first, with a one-line note on what happened. -->
 
+- [x] 2026-10-22 Freeplay mode (ADR 0008, proposed): optional `--budget`, `--price-tier`, `--items` 2 to 10, accent lists to 10, price tiers from search stats, rank v4 and proposal v3, lookup economy with unverified alternates, shipping status fix. Mock-verified only; see `docs/sessions/2026-10-22-freeplay-mode.md`.
 - [x] 2026-10-22 Over-budget options and link hygiene (ADR 0007 amended): price stats per slot, explained empty slots with up to 2 over-limit options (never picks), link-less finalists and bad alternates dropped, lookup failure reasons, media unit accent, shipping wording. Mock-verified only; see `docs/sessions/2026-10-22-over-budget-options-and-link-hygiene.md`.
 - [x] 2026-10-21 Keep-or-replace and cleanup (ADR 0007, proposed): `--keep` / `--replace`, slot policy (requested replacements, gaps, suggested, accents; up to 3), per-item budget ceiling, proposal prompt v2, title/page mismatch check, flat-goods fit exemption, lookup failure warnings (401 exits 4). Mock-verified only; see `docs/sessions/2026-10-21-keep-or-replace-and-cleanup.md`.
 - [x] 2026-10-21 Proposal and self-check (ADR 0006, proposed): one structured proposal call, four checks, one revision, separate Anthropic and provider cost caps, final list printed, `--no-proposal` / `--revisions` / `--proposal-model` / `--proposal-effort`. Mock-verified only; see `docs/sessions/2026-10-21-proposal-and-self-check.md`.

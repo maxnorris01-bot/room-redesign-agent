@@ -70,6 +70,10 @@ class Store:
     total: float | None
     availability: str | None
     title: str = ""  # the store page's own product title, when the lookup gives one
+    # known = a shipping amount; free = stated free (0.0); unknown = the listing says nothing.
+    # `shipping is None` always means unknown, never free; a total equal to the price does not
+    # make shipping known (the provider fills total with the price when it has no shipping data).
+    shipping_status: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -333,6 +337,26 @@ def parse_serpapi_search(payload: dict[str, Any]) -> list[SearchCandidate]:
     return out
 
 
+def parse_shipping(store: dict[str, Any], price: float | None) -> tuple[float | None, str]:
+    """(shipping, status) for one store entry of a product lookup.
+
+    `shipping_extracted` gives the amount (0 means free). Without it, a `shipping` text that says
+    "free" means free. Failing both, a total above the price implies the difference. Otherwise
+    shipping is unknown and stays `None`: a missing field is NOT free, and a total equal to the
+    price (what the provider reports when it has no shipping data) is not evidence of free shipping.
+    """
+    amount = _as_float(store.get("shipping_extracted"))
+    if amount is not None:
+        return amount, "free" if amount == 0 else "known"
+    text = store.get("shipping")
+    if isinstance(text, str) and "free" in text.lower():
+        return 0.0, "free"
+    total = _as_float(store.get("extracted_total"))
+    if total is not None and price is not None and total > price + 0.005:
+        return round(total - price, 2), "known"
+    return None, "unknown"
+
+
 def parse_product_details(payload: dict[str, Any]) -> ProductDetails:
     """Parse a SerpApi `google_product` (or `google_immersive_product`) response."""
     product = payload.get("product_results") or {}
@@ -349,15 +373,17 @@ def parse_product_details(payload: dict[str, Any]) -> ProductDetails:
         if price is None:
             parsed = parse_price(s.get("price"))
             price = parsed[0] if parsed else None
+        shipping, status = parse_shipping(s, price)
         stores.append(
             Store(
                 seller=_usable_str(s.get("name")) or "",
                 url=url,
                 price=price,
-                shipping=_as_float(s.get("shipping_extracted")),
+                shipping=shipping,
                 total=_as_float(s.get("extracted_total")),
                 availability=availability,
                 title=_usable_str(s.get("title")) or "",
+                shipping_status=status,
             )
         )
     attributes = [
@@ -585,9 +611,12 @@ class FixtureLookup:
 OVER_LIMIT_SCALE = 8.0
 SCALED_ID_PREFIX = "x"
 OVER_LIMIT_QUERY_PREFIXES = ("sofa",)
-SCALED_LOOKUP_IDS = (
-    SCALED_ID_PREFIX + "3228588211018347245",  # cheapest scaled result in the Serper fixture
-    SCALED_ID_PREFIX + "4374072672541677006",  # cheapest scaled result in the SerpApi fixture
+# Scaled ids whose lookup finds nothing (the second-cheapest result in each fixture), so the
+# over-limit scenario still shows a dropped option. Every other scaled id resolves to the scaled
+# Article store, so freeplay (which has no ceiling) fills the sofa slot normally.
+SCALED_LOOKUP_FAILS = (
+    SCALED_ID_PREFIX + "3515022197411126141",  # Serper fixture
+    SCALED_ID_PREFIX + "16642385544929688749",  # SerpApi fixture
 )
 
 # Product ids that have a lookup fixture. The first has dimensions, the second does not.
@@ -605,6 +634,10 @@ def build_providers(config: Config) -> tuple[SearchProvider, ProductLookup]:
             if config.search_provider == "serper"
             else "serpapi_search_oak_side_table.json"
         )
+        parse = parse_serper_search if config.search_provider == "serper" else parse_serpapi_search
+        scaled_ids = {SCALED_ID_PREFIX + c.product_id for c in parse(_load_fixture(default))} - set(
+            SCALED_LOOKUP_FAILS
+        )
         return (
             FixtureSearch(
                 config.search_provider,
@@ -613,9 +646,7 @@ def build_providers(config: Config) -> tuple[SearchProvider, ProductLookup]:
             ),
             FixtureLookup(
                 FIXTURE_LOOKUPS,
-                scaled={
-                    i: ("serpapi_product_article.json", OVER_LIMIT_SCALE) for i in SCALED_LOOKUP_IDS
-                },
+                scaled={i: ("serpapi_product_article.json", OVER_LIMIT_SCALE) for i in scaled_ids},
             ),
         )
     lookup = SerpApiProductLookup(os.environ.get("SERPAPI_API_KEY", ""))
