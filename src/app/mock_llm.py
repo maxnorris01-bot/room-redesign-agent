@@ -205,6 +205,96 @@ def mock_rank_payload(request_text: str) -> dict[str, Any]:
     return {"finalists": finalists}
 
 
+# ---- proposal and style-check mocks, plus builders for scripting them in tests -----------------
+
+
+def proposal_payload(
+    picks: dict[str, str | None],
+    *,
+    alternates: dict[str, list[str]] | None = None,
+    summary: str = "MOCK summary",
+) -> dict[str, Any]:
+    """A ProposalOutput payload: `picks` maps slot name to a finalist id (None = leave empty)."""
+    alternates = alternates or {}
+    return {
+        "slots": [
+            {
+                "slot": slot,
+                "pick_id": pick or "",
+                "alternate_ids": alternates.get(slot, []),
+                "rationale": f"MOCK rationale for {slot}",
+                "fit_note": "MOCK fit note",
+            }
+            for slot, pick in picks.items()
+        ],
+        "summary": summary,
+    }
+
+
+def style_payload(matches: dict[str, str], note: str = "MOCK style note") -> dict[str, Any]:
+    """A StyleCheckOutput payload: `matches` maps slot name to good, ok or poor."""
+    return {"items": [{"slot": s, "match": m, "note": note} for s, m in matches.items()]}
+
+
+def mock_proposal_payload(request_text: str) -> dict[str, Any]:
+    """Deterministic proposal from the request text.
+
+    First pass: per slot, the first finalist with a retailer link (else the first), the next one as
+    an alternate, plus one invented alternate id that validation visibly drops. Revision pass (the
+    text has "Failed checks:"): the finalist with the lowest total, so an over-budget proposal gets
+    cheaper. A slot with no finalists is left empty.
+    """
+    revising = "Failed checks:" in request_text
+    slots: list[dict[str, Any]] = []
+    blocks = re.split(r"^Slot: ", request_text, flags=re.MULTILINE)[1:]
+    for index, block in enumerate(blocks):
+        name = block.splitlines()[0].strip()
+        rows = re.findall(
+            r"^- id: (\S+) \|.*?\| total ([\d.]+) \|.*?\| link: (\w+) \|",
+            block.split("Previous proposal:")[0],
+            flags=re.MULTILINE,
+        )
+        ids = [r[0] for r in rows]
+        if not rows:
+            pick, alts = "", []
+        elif revising:
+            ordered = sorted(rows, key=lambda r: float(r[1]))
+            pick, alts = ordered[0][0], [r[0] for r in ordered[1:2]]
+        else:
+            retailer = [r for r in rows if r[2] == "retailer"]
+            pick = (retailer or rows)[0][0]
+            alts = [i for i in ids if i != pick][:1]
+        if index == 0 and rows and not revising:
+            alts = [*alts, MOCK_INVENTED_ID]
+        slots.append(
+            {
+                "slot": name,
+                "pick_id": pick,
+                "alternate_ids": alts,
+                "rationale": f"MOCK {'revised ' if revising else ''}pick for {name}",
+                "fit_note": "MOCK fit note",
+            }
+        )
+    return {"slots": slots, "summary": "MOCK summary: deterministic placeholder proposal."}
+
+
+def mock_style_payload(request_text: str) -> dict[str, Any]:
+    """Every listed item "good", unless its title contains POOR-STYLE (a hook for tests)."""
+    items = []
+    for line in request_text.splitlines():
+        match = re.match(r"^- slot: (.+?) \| (.*?) \| retailer:", line)
+        if match:
+            poor = "POOR-STYLE" in match.group(2)
+            items.append(
+                {
+                    "slot": match.group(1),
+                    "match": "poor" if poor else "good",
+                    "note": "MOCK style note",
+                }
+            )
+    return {"items": items}
+
+
 def _request_text(kwargs: dict[str, Any]) -> str:
     content = kwargs["messages"][0]["content"]
     if isinstance(content, str):
@@ -249,6 +339,18 @@ class MockAnthropicClient:
             # No structured-output schema on this request - just echo something schema-free.
             return response([text_block("mock response")], input_tokens=100, output_tokens=20)
         title = schema.get("title")
+        if title == "ProposalOutput":
+            return response(
+                [text_block(mock_proposal_payload(_request_text(kwargs)))],
+                input_tokens=1500,
+                output_tokens=300,
+            )
+        if title == "StyleCheckOutput":
+            return response(
+                [text_block(mock_style_payload(_request_text(kwargs)))],
+                input_tokens=300,
+                output_tokens=60,
+            )
         if title == "RankedFinalists":
             return response(
                 [text_block(mock_rank_payload(_request_text(kwargs)))],

@@ -65,6 +65,9 @@ class CallRecord:
     estimated: bool = False  # True for provider calls: dollars come from the APP_*_USD settings
     ok: bool = True
     detail: str = ""
+    # Calls that share a non-None group ran in parallel (proposal self-check: "selfcheck",
+    # "recheck"); only the slowest of a group is on the critical path. See SpikeResult.
+    group: str | None = None
 
 
 @dataclass

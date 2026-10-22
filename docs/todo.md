@@ -20,6 +20,13 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 ## Later
 
+- [ ] Fit against existing furniture, once the canvas exists (the self-check's fit is room-size only).
+- [ ] Size fallback for the fit check (many products state no size): parse sizes from titles or read product pages. Deliberately excluded from ADR 0006; decide with evidence of how often fit is "unknown".
+- [ ] Image-based style check (the current one is text only).
+- [ ] User preference questions (style, must-keeps, priorities) before the proposal; must-keep items are not yet checked.
+- [ ] Tune the untuned self-check constants (item cap 0.6, fit 0.6 side / 12% footprint / 0.5 confidence) from live runs; consider exempting rugs and other large flat items from the fit rule.
+- [ ] Measure the proposal and self-check live (latency, cost, how often the revision fires) and revisit ADR 0004's 35 s full-run guess before the measured run.
+- [ ] Layout is not part of the proposal yet (needs the canvas).
 <!-- Real, but not next. -->
 
 - [x] Retrieval: require a product-page URL. Done 2026-10-21 (`retrieval.is_product_page_url`, URL-pattern rules). Still open: how prices get verified from product pages (fetch tool vs shopping API), and the guard is URL-only, so it cannot prove a page is a product page.
@@ -65,6 +72,7 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- Move items here when done, newest first, with a one-line note on what happened. -->
 
+- [x] 2026-10-21 Proposal and self-check (ADR 0006, proposed): one structured proposal call, four checks, one revision, separate Anthropic and provider cost caps, final list printed, `--no-proposal` / `--revisions` / `--proposal-model` / `--proposal-effort`. Mock-verified only; see `docs/sessions/2026-10-21-proposal-and-self-check.md`.
 - [x] 2026-10-21 Two-stage shopping retrieval (ADR 0005, proposed): provider layer (Serper/SerpApi + SerpApi lookup), rank prompt, product lookup with dimensions, slot-coverage fix, per-call stage rows and critical path, fixtures, CLI flags. Mock-verified only; see `docs/sessions/2026-10-21-two-stage-shopping-retrieval.md`.
 - [x] 2026-10-21 Latency and retrieval hygiene (concurrent slots, product-page URL guard, perception prompt v2, timing fields, CLI flags). Mock-verified only; see `docs/sessions/2026-10-21-latency-and-retrieval-hygiene.md`.
 - [x] 2026-10-18 Claude Code session 1: repo setup (placeholders replaced, `CLAUDE.md` filled, mock/live-forced targets for every eval tier, `.env.example`) and the spike skeleton (`scripts/spike.py`, perception, retrieval config A, pricing table, mock mode, tests). No live calls were made; see `docs/sessions/2026-10-18-spike-skeleton.md`.

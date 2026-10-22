@@ -9,8 +9,9 @@
                is kept with the Google panel URL (or no URL), never an invented one.
 
 Slots run concurrently (see `retrieval.retrieve`) and so do the lookups inside a slot; everything
-shares the lock-protected `Budget`. Provider calls add their estimated dollars to the budget (so
-`max_cost_usd` covers them) but do not count as LLM steps.
+shares the lock-protected `Budget`. Provider calls add their estimated dollars to the budget's
+separate provider total (capped by `max_provider_cost_usd`, not `max_cost_usd`) but do not count
+as LLM steps.
 """
 
 from __future__ import annotations
@@ -132,7 +133,7 @@ def _record_provider_call(
         detail=detail,
     ):
         pass
-    budget.add_cost(usd)
+    budget.add_provider_cost(usd)
     return CallRecord(
         kind, label, provider, cost_usd=usd, seconds=seconds, estimated=True, ok=ok, detail=detail
     )

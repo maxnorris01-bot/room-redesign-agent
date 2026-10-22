@@ -23,6 +23,7 @@ from app.images import PreparedImage, prepare_image
 from app.llm import Budget, Completion
 from app.perception import PerceptionResult, perceive
 from app.pricing import is_priced
+from app.proposal import propose_and_check
 from app.retrieval import RetrievalResult, retrieve
 from app.tracing import span
 
@@ -52,6 +53,9 @@ class StageRow:
     kind: str | None = None
     # True when the dollars are an estimate from the APP_*_USD settings (provider calls).
     cost_estimated: bool = False
+    # Rows sharing a non-None group ran in parallel (self-check); only the slowest counts on the
+    # critical path.
+    group: str | None = None
 
 
 @dataclass
@@ -78,42 +82,70 @@ class SpikeResult:
     # the model or to our code. It is the same data as `perception`, not extra personal data.
     perception_raw_text: str = ""
     wall_clock_seconds: float = 0.0
+    caps: dict[str, float] = field(default_factory=dict)  # the dollar caps this run ran under
+    proposal: dict[str, Any] = field(default_factory=dict)
+    proposal_dropped: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def total_cost_usd(self) -> float:
         return sum(r.cost_usd for r in self.rows)
 
     @property
+    def anthropic_cost_usd(self) -> float:
+        return sum(r.cost_usd for r in self.rows if not r.cost_estimated)
+
+    @property
+    def provider_cost_usd(self) -> float:
+        """Estimated provider dollars (search and lookup calls at the APP_*_USD settings)."""
+        return sum(r.cost_usd for r in self.rows if r.cost_estimated)
+
+    @property
     def total_seconds(self) -> float:
         return sum(r.seconds for r in self.rows)
 
-    @property
-    def critical_path_seconds(self) -> float:
-        """Wall time if stages are sequential and retrieval slots run concurrently.
-
-        prepare_image + perception + the slowest slot chain (search, rank, then the slowest of that
-        slot's lookups; in web_search mode, the single search call). `total_seconds` (the plain sum)
-        double-counts the concurrent work and is kept alongside it.
-        """
-        sequential = sum(r.seconds for r in self.rows if r.slot is None)
+    def _slowest_slot_chain(self) -> float:
+        """The slowest retrieval slot: search, rank, then the slowest of its overlapping lookups
+        (in web_search mode, the single search call)."""
         chains: dict[str, float] = {}
         lookups: dict[str, float] = {}
         for r in self.rows:
             if r.slot is None:
                 continue
-            if r.kind == "lookup":  # a slot's lookups overlap: only the slowest is on the path
+            if r.kind == "lookup":
                 lookups[r.slot] = max(lookups.get(r.slot, 0.0), r.seconds)
             else:
                 chains[r.slot] = chains.get(r.slot, 0.0) + r.seconds
-        slowest = max(
+        return max(
             (chains.get(s, 0.0) + lookups.get(s, 0.0) for s in {*chains, *lookups}), default=0.0
         )
-        return sequential + slowest
+
+    @property
+    def perception_retrieval_seconds(self) -> float:
+        """Perception plus the slowest retrieval slot (what the 30 s proposal talks about)."""
+        perception = sum(r.seconds for r in self.rows if r.stage == "perception")
+        return perception + self._slowest_slot_chain()
+
+    @property
+    def critical_path_seconds(self) -> float:
+        """Wall time of the pipeline: prepare_image, perception, the slowest retrieval slot chain,
+        the proposal, the self-check (its style call and code checks run in parallel: the slower
+        one counts), then, if a revision ran, the revision and its re-check.
+
+        `total_seconds` (the plain sum) double-counts all the parallel work and is kept alongside.
+        """
+        sequential = sum(r.seconds for r in self.rows if r.slot is None and r.group is None)
+        grouped: dict[str, float] = {}
+        for r in self.rows:
+            if r.group is not None:
+                grouped[r.group] = max(grouped.get(r.group, 0.0), r.seconds)
+        return sequential + sum(grouped.values()) + self._slowest_slot_chain()
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
         data["totals"] = {
             "cost_usd": self.total_cost_usd,
+            "anthropic_cost_usd": self.anthropic_cost_usd,
+            "provider_cost_usd_estimated": self.provider_cost_usd,
             "seconds": self.total_seconds,  # plain sum of stage seconds
             "critical_path_seconds": self.critical_path_seconds,
             "wall_clock_seconds": self.wall_clock_seconds,  # measured end to end
@@ -144,10 +176,12 @@ def run_spike(
     config: Config | None = None,
     run_id: str | None = None,
     perception_only: bool = False,
+    with_proposal: bool = True,
 ) -> SpikeResult:
     """Run the stages under one shared, thread-safe `Budget` (step + cost caps cover the run).
 
-    Retrieval slots run concurrently. With `perception_only`, retrieval is skipped.
+    Retrieval slots run concurrently. With `perception_only`, retrieval is skipped; with
+    `with_proposal=False` the run stops after retrieval (no proposal, self-check or revision).
     """
     config = config or Config.from_env()
     budget = Budget(config)
@@ -172,9 +206,16 @@ def run_spike(
         perception_only=perception_only,
         retrieval_mode=config.retrieval_mode,
         search_provider=config.search_provider if config.retrieval_mode == "shopping" else None,
+        caps={
+            "max_cost_usd": config.max_cost_usd,
+            "max_provider_cost_usd": config.max_provider_cost_usd,
+        },
     )
     if perception_only:
         result.models.pop("retrieval")
+    elif with_proposal:
+        result.models["proposal"] = config.model_proposal
+        result.models["style_check"] = config.model_stylecheck
     result.unpriced_models = [m for m in set(result.models.values()) if not is_priced(m)]
 
     with span("spike.run", config=config, run_id=run_id, llm_mode=config.llm_mode) as run_rec:
@@ -247,16 +288,85 @@ def run_spike(
                     "summary": sr.summary,
                 }
             )
+        if with_proposal:
+            ran = propose_and_check(
+                perceived.perception,
+                retrieved,
+                budget_usd=budget_usd,
+                style=style,
+                budget=budget,
+                run_id=run_id,
+            )
+            result.prompt_versions.update(ran.prompt_versions)
+            for call in ran.calls:
+                result.rows.append(
+                    StageRow(
+                        call.label,
+                        call.provider,
+                        call.input_tokens,
+                        call.output_tokens,
+                        call.web_searches,
+                        call.cost_usd,
+                        call.seconds,
+                        call.time_to_first_token_s,
+                        kind=call.kind,
+                        group=call.group,
+                    )
+                )
+            result.proposal = ran.proposal.model_dump()
+            result.proposal_dropped = ran.dropped
         result.steps = budget.steps
         result.wall_clock_seconds = time.perf_counter() - run_started
         run_rec.update(
             total_cost_usd=round(result.total_cost_usd, 5),
+            anthropic_cost_usd=round(result.anthropic_cost_usd, 5),
+            provider_cost_usd_estimated=round(result.provider_cost_usd, 5),
             total_seconds=round(result.total_seconds, 3),
             critical_path_seconds=round(result.critical_path_seconds, 3),
             wall_clock_seconds=round(result.wall_clock_seconds, 3),
             steps=budget.steps,
         )
     return result
+
+
+def format_final_list(proposal: dict[str, Any], *, mock: bool = False) -> str:
+    """The proposal as a short, human-readable list. Failed checks are always shown."""
+    totals = proposal["totals"]
+    lines = ["FINAL LIST" + ("  (MOCK DATA: fixtures, not real products)" if mock else "")]
+    for n, item in enumerate(proposal["items"], start=1):
+        pick = item["pick"]
+        if pick is None:
+            lines.append(f"{n}. {item['slot']}: (none) - {item['note'] or 'no pick'}")
+            if item["rationale"]:
+                lines.append(f"     why: {item['rationale']}")
+            continue
+        shipping = pick["shipping"]
+        ship = "shipping unknown" if shipping is None else f"+ ${shipping:.2f} shipping"
+        link = pick["url"] or "(no link)"
+        kind = "" if pick["url_kind"] == "retailer_product" else f"  [{pick['url_kind']}]"
+        lines += [
+            f"{n}. {item['slot']}: {pick['name']} - {pick['retailer']}",
+            f"     ${pick['price']:.2f} {ship} = ${item['item_total']:.2f}   {link}{kind}",
+            f"     why: {item['rationale']}",
+            f"     fit: {item['fit_status']}"
+            + (f" - {item['fit_note']}" if item["fit_note"] else "")
+            + f"   style: {item['style_match']}"
+            + (f" - {item['style_note']}" if item["style_note"] else ""),
+        ]
+        lines += [f"     WARNING {w}" for w in item["warnings"]]
+    lines.append(
+        f"Total: ${totals['total']:.2f} of ${totals['budget']:.2f} budget "
+        f"(${totals['remaining']:.2f} remaining; items ${totals['items_total']:.2f}, "
+        f"known shipping ${totals['shipping_total']:.2f})"
+    )
+    if proposal["summary"]:
+        lines.append(f"Summary: {proposal['summary']}")
+    checks = ", ".join(f"{k} {v}" for k, v in proposal["check_summary"].items())
+    revised = "yes" if proposal["revised"] else "no"
+    lines.append(f"Checks: {checks}   Revised: {revised}")
+    lines += [f"  revision: {c}" for c in proposal["revision_changes"]]
+    lines += [f"WARNING {w}" for w in proposal["warnings"]]
+    return "\n".join(lines)
 
 
 def format_table(result: SpikeResult) -> str:
@@ -305,6 +415,15 @@ def format_table(result: SpikeResult) -> str:
         "",
         fmt(headers), rule, *[fmt(r) for r in body], rule, fmt(totals),
     ]  # fmt: skip
+    caps = result.caps or {}
+    cap_a, cap_p = caps.get("max_cost_usd", 0.0), caps.get("max_provider_cost_usd", 0.0)
+    lines += [
+        "",
+        f"Anthropic cost: ${result.anthropic_cost_usd:.4f} (cap ${cap_a:.2f})   "
+        f"Provider cost (estimated): ${result.provider_cost_usd:.4f} (cap ${cap_p:.2f})",
+    ]
+    if result.proposal:
+        lines += ["", format_final_list(result.proposal, mock=result.llm_mode == "mock")]
     if any(r.cost_estimated for r in result.rows):
         lines += [
             "",
@@ -324,7 +443,11 @@ def format_table(result: SpikeResult) -> str:
         "concurrently, so the real wait is the critical path.",
         f"  sum of stage seconds : {result.total_seconds:.2f}",
         f"  critical path        : {result.critical_path_seconds:.2f}  "
-        "(prepare_image + perception + slowest slot chain)",
+        + (
+            "(prepare_image, perception, slowest slot, proposal, self-check, revision if any)"
+            if result.proposal
+            else "(prepare_image, perception, slowest slot)"
+        ),
         f"  wall clock (measured): {result.wall_clock_seconds:.2f}",
     ]
     if result.perception_output_stats:
@@ -334,9 +457,7 @@ def format_table(result: SpikeResult) -> str:
 
     pr = [r for r in result.rows if r.stage == "perception" or r.stage.startswith("retrieval")]
     pr_cost = sum(r.cost_usd for r in pr)
-    pr_secs = result.critical_path_seconds - sum(
-        r.seconds for r in result.rows if r.stage == "prepare_image"
-    )
+    pr_secs = result.perception_retrieval_seconds
     t = PROPOSED_TARGETS
     lines += [
         "",

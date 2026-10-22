@@ -69,6 +69,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--finalists", type=int, help="finalists per slot (override APP_FINALISTS_PER_SLOT)"
     )
+    parser.add_argument(
+        "--no-proposal",
+        action="store_true",
+        help="stop after retrieval (no proposal, self-check or revision)",
+    )
+    parser.add_argument(
+        "--revisions", type=int, help="automatic revisions after a failed check (0 disables)"
+    )
+    parser.add_argument("--proposal-model", help="override APP_MODEL_PROPOSAL for this run")
+    parser.add_argument("--proposal-effort", help="override APP_EFFORT_PROPOSAL for this run")
     args = parser.parse_args(argv)
     if not args.perception_only and (args.budget is None or args.style is None):
         parser.error("--budget and --style are required unless --perception-only is given")
@@ -87,6 +97,9 @@ def main(argv: list[str] | None = None) -> int:
         "retrieval_mode": args.retrieval_mode,
         "search_provider": args.search_provider,
         "finalists_per_slot": args.finalists,
+        "max_revisions": args.revisions,
+        "model_proposal": args.proposal_model,
+        "effort_proposal": args.proposal_effort,
     }
     config = replace(config, **{k: v for k, v in overrides.items() if v is not None})
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
@@ -98,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             budget_usd=args.budget or 0.0,
             style=args.style or "",
             perception_only=args.perception_only,
+            with_proposal=not args.no_proposal,
             slots=args.slots,
             config=config,
             run_id=run_id,
