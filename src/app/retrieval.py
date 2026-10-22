@@ -14,10 +14,15 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, urldefrag, urlsplit
 
+from app.categories import already_covered, norm
+from app.categories import canonical_category as canonical_category  # re-exported
+from app.config import Config
 from app.llm import Budget, Completion, complete, web_search_tool
+from app.preferences import Preferences, resolve_preferences
 from app.prompts import Prompt, load_prompt
 from app.schemas import (
     Candidate,
+    FurnitureItem,
     ProductCandidate,
     RoomPerception,
     SlotCandidates,
@@ -29,9 +34,10 @@ from app.tracing import span
 
 RETRIEVAL_MAX_TOKENS = 3000
 
-# Used only when perception marks nothing as missing or replaceable: common first purchases per
-# room type, most impactful first. Style and budget then shape the search, not the category.
-_DEFAULT_SLOTS: dict[str, list[str]] = {
+# Accent slots: common pieces per room type, most impactful first, used to fill the slot list when
+# there are few gaps or replacements. Categories already covered by something that stays are
+# skipped (see `plan_slots`).
+_ACCENT_SLOTS: dict[str, list[str]] = {
     "living": ["sofa", "coffee table", "area rug", "floor lamp", "bookshelf"],
     "bed": ["bed frame", "nightstand", "dresser", "area rug", "reading lamp"],
     "office": ["desk", "office chair", "bookshelf", "desk lamp", "area rug"],
@@ -44,9 +50,11 @@ _GENERIC_SLOTS = ["seating", "side table", "area rug", "lamp", "storage"]
 class Slot:
     category: str
     reason: str
-    source: str  # "replaceable" | "gap" | "default"
-    budget_usd: float
+    source: str  # "replace_requested" | "gap" | "replace_suggested" | "accent"
+    budget_usd: float  # per-item PRICE ceiling for search (same for every slot), not a share
     size_hint: str = ""
+    replaces_id: str | None = None  # the existing item (perception id) this slot would replace
+    total_cap_usd: float | None = None  # items over this total (price + shipping) are dropped
 
 
 @dataclass
@@ -97,92 +105,126 @@ class RetrievalResult:
     slots: list[SlotResult] = field(default_factory=list)
     prompt_version: str = ""
     mode: str = "web_search"
+    plan: SlotPlan | None = None
 
 
-def _norm(category: str) -> str:
-    return " ".join(category.lower().split())
+@dataclass
+class SlotPlan:
+    """The slot list plus what the policy left out, so nothing disappears silently."""
+
+    slots: list[Slot]
+    dropped_by_cap: list[str] = field(default_factory=list)  # wanted but over max_slots
+    skipped: list[str] = field(default_factory=list)  # not wanted after all (already covered, ...)
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "slots": [s.category for s in self.slots],
+            "dropped_by_cap": self.dropped_by_cap,
+            "skipped": self.skipped,
+        }
 
 
-# Simple synonym groups: any category containing one of the keywords counts as the canonical name.
-# Order matters (first match wins). "floor lamp", "lamp" and "torchiere" are all one thing here, as
-# are "area rug" and "rug".
-_SYNONYMS: list[tuple[str, tuple[str, ...]]] = [
-    ("lamp", ("lamp", "torchiere", "torchère", "floor light", "standing light")),
-    ("rug", ("rug", "carpet")),
-    ("sofa", ("sofa", "couch", "loveseat", "sectional")),
-    ("armchair", ("armchair", "accent chair", "lounge chair", "recliner")),
-    ("coffee table", ("coffee table", "cocktail table")),
-    ("side table", ("side table", "end table", "accent table", "nesting table")),
-    ("media unit", ("media unit", "media console", "tv stand", "tv unit", "tv console")),
-    ("bookshelf", ("bookshelf", "bookcase", "shelving unit", "shelf unit")),
-    ("nightstand", ("nightstand", "bedside table", "night stand")),
-]
+def item_ceiling_usd(total_budget_usd: float, config: Config) -> float:
+    """Per-item price ceiling for search: budget x item cap / (1 + shipping buffer), every slot."""
+    return round(total_budget_usd * config.item_cap_fraction / (1 + config.shipping_buffer), 2)
 
 
-def canonical_category(category: str) -> str:
-    """Normalized category with synonyms folded: "Area rug" -> "rug", "torchiere" -> "lamp"."""
-    c = _norm(category)
-    for canonical, keywords in _SYNONYMS:
-        if any(k in c for k in keywords):
-            return canonical
-    return c
+def plan_slots(
+    perception: RoomPerception,
+    total_budget_usd: float,
+    max_slots: int,
+    preferences: Preferences | None = None,
+    config: Config | None = None,
+) -> SlotPlan:
+    """Build the slot list (ADR 0007). Order, stopping at `max_slots`:
 
+    1. requested replacements (`--replace`), 2. gaps, 3. suggested replacements (perception said
+    "unlikely"), 4. accent slots from the room-type default list.
 
-def _already_covered(category: str, taken: list[str]) -> bool:
-    c = _norm(category)
-    canon = canonical_category(category)
-    return any(c in t or t in c or canon == canonical_category(t) for t in taken)
-
-
-def _owned_categories(perception: RoomPerception) -> list[str]:
-    """Everything already in the room that could stand in for a default purchase."""
-    return [
-        *(_norm(f.category) for f in perception.furniture),
-        *(_norm(d.kind) for d in perception.art_and_decor),
-        *(_norm(x.category) for x in perception.fixed_items),
-    ]
-
-
-def derive_slots(perception: RoomPerception, total_budget_usd: float, max_slots: int) -> list[Slot]:
-    """Up to `max_slots` slots: replaceable furniture, then missing categories, then defaults.
-
-    The budget is split equally across the chosen slots (a deliberately simple spike heuristic;
-    a smarter split by category is a later concern). Furniture marked keepable is never a slot.
+    Accents skip any category already covered by kept furniture, fixed items or decor, and a
+    replaced item's category is never an accent. A gap already covered by something that stays is
+    skipped too. Every slot gets the same per-item ceiling (`item_ceiling_usd`), not a share.
     """
+    config = config or Config()
     if max_slots < 1:
-        return []
-    picks: list[tuple[str, str, str, str]] = []  # category, reason, source, size_hint
-    for item in perception.furniture:
-        if item.keepable == "unlikely":
-            hint = f"current one is about {item.size.width_m:.1f} m x {item.size.depth_m:.1f} m"
-            picks.append(
-                (
-                    item.category,
-                    f"replace existing {item.category}: {item.note}",
-                    "replaceable",
-                    hint,
-                )
-            )
-    for gap in perception.furniture_gaps:
-        picks.append((gap.category, gap.reason, "gap", ""))
-    if not picks:
-        room = perception.room_type.lower()
-        defaults = next((v for k, v in _DEFAULT_SLOTS.items() if k in room), _GENERIC_SLOTS)
-        owned = _owned_categories(perception)
-        picks = [(c, "common first purchase for this room type", "default", "") for c in defaults
-                 if not _already_covered(c, owned)]  # fmt: skip
+        return SlotPlan([])
+    prefs = preferences or resolve_preferences(perception)
+    ceiling = item_ceiling_usd(total_budget_usd, config)
+    cap = round(total_budget_usd * config.item_cap_fraction, 2)
+    by_id = {f.id: f for f in perception.furniture}
+    kept_categories = [norm(by_id[r.id].category) for r in prefs.decided("keep") if r.id in by_id]
+    owned = [
+        *kept_categories,
+        *(norm(d.kind) for d in perception.art_and_decor),
+        *(norm(x.category) for x in perception.fixed_items),
+    ]
+    replaced_categories = [norm(r.category) for r in prefs.decided("replace")]
 
-    chosen: list[tuple[str, str, str, str]] = []
-    taken: list[str] = []
-    for category, reason, source, hint in picks:
-        if _already_covered(category, taken):
+    wanted: list[Slot] = []
+
+    def slot(category: str, reason: str, source: str, item: FurnitureItem | None = None) -> Slot:
+        hint = ""
+        if item is not None:
+            hint = (
+                f"replaces your {item.category} ({item.id}), about "
+                f"{item.size.width_m:.1f} m x {item.size.depth_m:.1f} m"
+            )
+        return Slot(
+            category, reason, source, ceiling, hint,
+            replaces_id=item.id if item else None, total_cap_usd=cap,
+        )  # fmt: skip
+
+    for r in prefs.decided("replace", "requested"):
+        item = by_id[r.id]
+        wanted.append(
+            slot(item.category, f"replace existing {item.category} ({item.id}) as requested",
+                 "replace_requested", item)
+        )  # fmt: skip
+    skipped: list[str] = []
+    for gap in perception.furniture_gaps:
+        if already_covered(gap.category, owned):
+            skipped.append(f"gap {gap.category!r}: already covered by something that stays")
             continue
-        chosen.append((category, reason, source, hint))
-        taken.append(_norm(category))
-        if len(chosen) == max_slots:
-            break
-    share = total_budget_usd / len(chosen) if chosen else 0.0
-    return [Slot(c, r, s, round(share, 2), h) for c, r, s, h in chosen]
+        wanted.append(slot(gap.category, gap.reason, "gap"))
+    for r in prefs.decided("replace", "suggested"):
+        item = by_id[r.id]
+        wanted.append(
+            slot(item.category, f"replace existing {item.category} ({item.id}): {item.note}",
+                 "replace_suggested", item)
+        )  # fmt: skip
+    room = perception.room_type.lower()
+    accents = next((v for k, v in _ACCENT_SLOTS.items() if k in room), _GENERIC_SLOTS)
+    for category in accents:
+        if already_covered(category, owned) or already_covered(category, replaced_categories):
+            continue
+        wanted.append(slot(category, "accent piece for this room type", "accent"))
+
+    chosen: list[Slot] = []
+    taken: list[str] = []
+    dropped: list[str] = []
+    for s in wanted:
+        if already_covered(s.category, taken):
+            if s.source != "accent":  # accents are filler, not wishes: no need to report them
+                skipped.append(f"{s.source} {s.category!r}: same kind as an earlier slot")
+        elif len(chosen) >= max_slots:
+            dropped.append(f"{s.source}: {s.category}")
+        else:
+            chosen.append(s)
+            taken.append(norm(s.category))
+    # Accents are a filler, not a wish: only report dropped requests, gaps and suggestions.
+    dropped = [d for d in dropped if not d.startswith("accent:")]
+    return SlotPlan(chosen, dropped, skipped)
+
+
+def derive_slots(
+    perception: RoomPerception,
+    total_budget_usd: float,
+    max_slots: int,
+    preferences: Preferences | None = None,
+    config: Config | None = None,
+) -> list[Slot]:
+    """The slots of `plan_slots` (use that when you also need what was dropped)."""
+    return plan_slots(perception, total_budget_usd, max_slots, preferences, config).slots
 
 
 def _norm_url(url: str) -> str:
@@ -260,7 +302,7 @@ def _slot_user_text(slot: Slot, perception: RoomPerception, style: str, max_uses
         f"Slot: {slot.category}",
         f"Why this slot: {slot.reason}",
         f"Requested style: {style}",
-        f"Slot budget (soft ceiling): {slot.budget_usd:.0f} USD",
+        f"Per-item price ceiling (soft): {slot.budget_usd:.0f} USD",
         f"Search limit: at most {max_uses} searches.",
         f"Room: {perception.room_type}, about {d.width_m:.1f} m x {d.length_m:.1f} m "
         f"(confidence {d.confidence:.1f}); current style: {styles}",
@@ -340,6 +382,7 @@ def retrieve(
     budget: Budget,
     run_id: str | None = None,
     providers: tuple[SearchProvider, ProductLookup] | None = None,
+    preferences: Preferences | None = None,
 ) -> RetrievalResult:
     """Retrieve candidates for each derived slot concurrently, under `budget`'s caps.
 
@@ -348,15 +391,17 @@ def retrieve(
     order regardless of which slot finishes first. If any slot raises (for example
     `BudgetExceededError`), the first failure in slot order is re-raised once the slots already in
     flight have finished; they cannot be cancelled, and they bill. `providers` overrides the
-    (search, lookup) pair in shopping mode (tests).
+    (search, lookup) pair in shopping mode (tests). `preferences` (keep or replace) shapes the
+    slot list; without it perception's `keepable` flags decide.
     """
     from app import shopping_retrieval  # local import: that module imports this one
 
     config = budget.config
     shopping = config.retrieval_mode == "shopping"
     prompt = load_prompt("rank" if shopping else "retrieval")
-    slots = derive_slots(perception, budget_usd, max_slots)
-    result = RetrievalResult(prompt_version=prompt.version, mode=config.retrieval_mode)
+    plan = plan_slots(perception, budget_usd, max_slots, preferences, config)
+    slots = plan.slots
+    result = RetrievalResult(prompt_version=prompt.version, mode=config.retrieval_mode, plan=plan)
     pair = (providers or shopping_retrieval.build_providers(config)) if shopping else None
     with span(
         "stage.retrieval",

@@ -153,6 +153,9 @@ class ProductCandidate(Candidate):
     reason: str = ""
     product_id: str = ""
     price_source: Literal["search", "lookup", "model"] = "model"
+    # The store page's own title from the lookup (not the search title): lets the grounded check
+    # notice when the page behind a link is a different product than the search result.
+    store_title: str = ""
 
 
 class Finalist(_Strict):
@@ -207,8 +210,18 @@ class CheckResult(_Strict):
     value: str | None = None  # style check only: the match word (good, ok, poor)
 
 
+class ReplacedItem(_Strict):
+    """The existing item a slot would replace (from perception)."""
+
+    id: str
+    category: str
+    width_m: float
+    depth_m: float
+
+
 class ProposalItem(_Strict):
     slot: str
+    replaces: ReplacedItem | None = None  # set when the slot replaces an existing item
     pick_id: str = ""  # the finalist id (scoped to this slot) the pick was built from
     pick: ProductCandidate | None = None  # real candidate data; None = slot left empty
     alternate_ids: list[str] = []

@@ -24,6 +24,7 @@ from app.schemas import (
     ProposalOutput,
     ProposalTotals,
     ProposedSlot,
+    ReplacedItem,
     RoomPerception,
     SchemaError,
     parse_model,
@@ -48,9 +49,12 @@ class SlotInput:
     reason: str
     note: str  # why the slot has no finalists, when it has none
     finalists: dict[str, ProductCandidate]  # ordered; keys are ids scoped to this slot
+    replaces: ReplacedItem | None = None  # the existing item this slot would replace
 
 
-def slot_inputs(retrieved: RetrievalResult) -> list[SlotInput]:
+def slot_inputs(
+    retrieved: RetrievalResult, perception: RoomPerception | None = None
+) -> list[SlotInput]:
     """Finalists per slot, keyed by id. Candidates without a product id (web_search mode) get a
     synthetic id, "<slot number>.<position>", so the model can still name them."""
     out: list[SlotInput] = []
@@ -61,7 +65,17 @@ def slot_inputs(retrieved: RetrievalResult) -> list[SlotInput]:
             while cid in finalists:
                 cid += "'"
             finalists[cid] = cand
-        out.append(SlotInput(sr.slot.category, sr.slot.reason, sr.note, finalists))
+        replaces = None
+        if perception is not None and sr.slot.replaces_id is not None:
+            old = next((f for f in perception.furniture if f.id == sr.slot.replaces_id), None)
+            if old is not None:
+                replaces = ReplacedItem(
+                    id=old.id,
+                    category=old.category,
+                    width_m=old.size.width_m,
+                    depth_m=old.size.depth_m,
+                )
+        out.append(SlotInput(sr.slot.category, sr.slot.reason, sr.note, finalists, replaces))
     return out
 
 
@@ -94,6 +108,7 @@ def proposal_user_text(
     slots: list[SlotInput],
     previous: list[ProposalItem] | None = None,
     failed: list[CheckResult] | None = None,
+    kept: list[tuple[str, str]] | None = None,
 ) -> str:
     d = perception.dimensions
     lines = [
@@ -105,8 +120,16 @@ def proposal_user_text(
         f"Existing decor: {', '.join(x.kind for x in perception.art_and_decor) or 'none'}",
         f"Current style: {', '.join(perception.style_descriptors) or 'unknown'}",
     ]
+    if kept:
+        lines.append("Keeping (stays in the room): " + ", ".join(f"{c} ({i})" for i, c in kept))
     for slot in slots:
         lines += ["", f"Slot: {slot.name}", f"Why this slot: {slot.reason}"]
+        if slot.replaces is not None:
+            rep = slot.replaces
+            lines.append(
+                f"Replaces: {rep.category} ({rep.id}), "
+                f"about {rep.width_m:.1f} m x {rep.depth_m:.1f} m"
+            )
         if not slot.finalists:
             lines.append("Finalists: none")
         else:
@@ -141,11 +164,19 @@ def validate_proposal(
     for slot in slots:
         chosen = proposed.get(slot.name.strip().lower())
         if not slot.finalists:
-            items.append(ProposalItem(slot=slot.name, note=slot.note or "no finalists found"))
+            items.append(
+                ProposalItem(
+                    slot=slot.name, replaces=slot.replaces, note=slot.note or "no finalists found"
+                )
+            )
             continue
         if chosen is None:
             items.append(
-                ProposalItem(slot=slot.name, note="the proposal did not address this slot")
+                ProposalItem(
+                    slot=slot.name,
+                    replaces=slot.replaces,
+                    note="the proposal did not address this slot",
+                )
             )
             continue
         pick_id, pick, note = "", None, ""
@@ -168,6 +199,7 @@ def validate_proposal(
         items.append(
             ProposalItem(
                 slot=slot.name,
+                replaces=slot.replaces,
                 pick_id=pick_id,
                 pick=pick,
                 alternate_ids=alt_ids,
@@ -226,15 +258,16 @@ def _call_model(
     kind: str,
     previous: list[ProposalItem] | None = None,
     failed: list[CheckResult] | None = None,
+    kept: list[tuple[str, str]] | None = None,
 ) -> tuple[list[ProposalItem], str, list[dict[str, str]], CallRecord, str]:
     config = budget.config
-    prompt = load_prompt("proposal")
+    prompt = load_prompt("proposal", config.proposal_prompt_version)
     started = time.perf_counter()
     completion = complete(
         span_name=f"llm.{kind}",
         prompt=prompt,
         model=config.model_proposal,
-        user_text=proposal_user_text(perception, budget_usd, style, slots, previous, failed),
+        user_text=proposal_user_text(perception, budget_usd, style, slots, previous, failed, kept),
         budget=budget,
         max_tokens=PROPOSAL_MAX_TOKENS,
         schema=to_output_schema(ProposalOutput),
@@ -278,11 +311,13 @@ def propose_and_check(
     style: str,
     budget: Budget,
     run_id: str | None = None,
+    kept: list[tuple[str, str]] | None = None,
 ) -> ProposalRun:
     """Proposal, self-check, and up to `max_revisions` revisions. Raises on Budget/schema errors
-    in the first proposal; a failed revision keeps the previous proposal and says so."""
+    in the first proposal; a failed revision keeps the previous proposal and says so. `kept` is
+    (id, category) of existing furniture that stays, shown to the model so it does not duplicate."""
     config = budget.config
-    slots = slot_inputs(retrieved)
+    slots = slot_inputs(retrieved, perception)
     calls: list[CallRecord] = []
     dropped: list[dict[str, str]] = []
     versions: dict[str, str] = {}
@@ -303,7 +338,7 @@ def propose_and_check(
             calls += check.calls
         else:
             items, summary, dropped, record, versions["proposal"] = _call_model(
-                perception, budget_usd, style, slots, budget, kind="proposal"
+                perception, budget_usd, style, slots, budget, kind="proposal", kept=kept
             )
             calls.append(record)
             check = _check(items, perception, style, budget_usd, slots, budget,
@@ -317,7 +352,7 @@ def propose_and_check(
                 try:
                     new_items, new_summary, new_dropped, record, _ = _call_model(
                         perception, budget_usd, style, slots, budget, kind="revision",
-                        previous=items, failed=check.failures,
+                        previous=items, failed=check.failures, kept=kept,
                     )  # fmt: skip
                 except (SchemaError, LLMOutputError) as exc:  # BudgetExceededError propagates
                     revised = True

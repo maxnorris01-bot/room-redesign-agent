@@ -21,6 +21,7 @@ from pathlib import Path
 from app.config import BudgetExceededError, Config, load_env
 from app.images import synthetic_room_image
 from app.llm import LLMOutputError
+from app.preferences import PreferenceError, check_flag_overlap, split_names
 from app.schemas import SchemaError
 from app.shopping import ProviderError
 from app.spike import format_table, point_trace_at, run_spike, write_outputs
@@ -79,6 +80,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--proposal-model", help="override APP_MODEL_PROPOSAL for this run")
     parser.add_argument("--proposal-effort", help="override APP_EFFORT_PROPOSAL for this run")
+    parser.add_argument(
+        "--replace",
+        help="existing furniture to replace: comma separated ids (f1) or categories (sofa)",
+    )
+    parser.add_argument(
+        "--keep", help="existing furniture to keep: comma separated ids (f1) or categories"
+    )
+    parser.add_argument(
+        "--proposal-prompt-version",
+        help="proposal prompt version to load (default: config, currently 2; 1 is kept)",
+    )
     args = parser.parse_args(argv)
     if not args.perception_only and (args.budget is None or args.style is None):
         parser.error("--budget and --style are required unless --perception-only is given")
@@ -86,6 +98,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("give exactly one of: a photo path, or --synthetic")
     if args.photo is not None and not args.photo.is_file():
         parser.error(f"photo not found: {args.photo}")
+
+    keep_names, replace_names = split_names(args.keep), split_names(args.replace)
+    try:
+        check_flag_overlap(keep_names, replace_names)
+    except PreferenceError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     load_env()
     config = Config.from_env()
@@ -100,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         "max_revisions": args.revisions,
         "model_proposal": args.proposal_model,
         "effort_proposal": args.proposal_effort,
+        "proposal_prompt_version": args.proposal_prompt_version,
     }
     config = replace(config, **{k: v for k, v in overrides.items() if v is not None})
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
@@ -112,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
             style=args.style or "",
             perception_only=args.perception_only,
             with_proposal=not args.no_proposal,
+            keep=keep_names,
+            replace=replace_names,
             slots=args.slots,
             config=config,
             run_id=run_id,
@@ -121,6 +143,9 @@ def main(argv: list[str] | None = None) -> int:
             f"STOPPED: budget cap hit ({exc}). Nothing was truncated; raise the cap deliberately.",
             file=sys.stderr,
         )
+        return 2
+    except PreferenceError as exc:  # names come from perception, so this surfaces after it ran
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     except ProviderError as exc:  # message names the provider and HTTP status, never a key or URL
         print(f"FAILED: shopping provider error: {exc}", file=sys.stderr)

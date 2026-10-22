@@ -117,7 +117,7 @@ def test_query_is_category_plus_a_few_style_words() -> None:
 
 def test_filter_keeps_top_25_then_drops_unpriced_duplicates_and_over_budget() -> None:
     results = [_cand(str(i), 10.0 + i) for i in range(30)]  # 0..29; only 0..24 are considered
-    kept, counts = filter_candidates(results, budget_usd=1000)
+    kept, counts = filter_candidates(results, ceiling_usd=1000)
     assert [c.product_id for c in kept] == [str(i) for i in range(25)]
     assert counts["returned"] == 30 and counts["considered"] == 25
 
@@ -128,7 +128,7 @@ def test_filter_keeps_top_25_then_drops_unpriced_duplicates_and_over_budget() ->
         _cand("c", 500.0),  # over budget
         _cand("d", 100.0),  # exactly at budget is allowed
     ]
-    kept, counts = filter_candidates(mixed, budget_usd=100.0)
+    kept, counts = filter_candidates(mixed, ceiling_usd=100.0)
     assert [(c.product_id, c.price) for c in kept] == [("a", 50.0), ("d", 100.0)]
     assert (counts["unpriced"], counts["duplicates"], counts["over_budget"], counts["kept"]) == (
         1, 1, 1, 2,
@@ -143,7 +143,7 @@ def test_empty_slot_when_nothing_fits_skips_rank_and_lookup(
     search = FakeSearch([_cand("1", 999.0), _cand("2", None)])
     result, budget = _run(monkeypatch, search, lookup, client, budget_usd=100)
     (slot,) = result.slots
-    assert slot.candidates == [] and "no shopping results within the $100" in slot.note
+    assert slot.candidates == [] and "per-item ceiling" in slot.note
     assert "1 unpriced" in slot.note and "1 over budget" in slot.note
     assert client.calls == [] and lookup.ids == []
     assert budget.steps == 0  # a search is not an LLM step
@@ -527,7 +527,7 @@ def test_live_run_room_gets_no_default_rug_or_floor_lamp_slot() -> None:
     p = p.model_copy(update={"furniture_gaps": []})  # nothing flagged: defaults take over
     assert all(f.keepable != "unlikely" for f in p.furniture)
     slots = derive_slots(p, 600, 5)
-    assert [s.source for s in slots] == ["default"] * len(slots)
+    assert [s.source for s in slots] == ["accent"] * len(slots)
     categories = [s.category for s in slots]
     assert "area rug" not in categories and "floor lamp" not in categories
     assert "sofa" not in categories and "coffee table" not in categories  # owned furniture

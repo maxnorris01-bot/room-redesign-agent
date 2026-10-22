@@ -1,12 +1,15 @@
 """Retrieval mode "shopping": three stages per slot, with prices and URLs from provider data only.
 
   1. search  - a shopping provider returns candidate products for "<category> <style>"; code keeps
-               the top 25, drops unpriced and duplicate ones and anything above the slot budget.
+               the top 25, drops unpriced and duplicate ones and anything priced above the slot's
+               per-item ceiling (budget x item cap / (1 + shipping buffer); ADR 0007).
   2. rank    - a small model sees a compact list and returns finalist ids with a reason. Every id
                is validated against the list; the model never supplies a price, seller or URL.
   3. lookup  - each finalist is looked up by product id for its stores: direct retailer URL,
                shipping, total, availability and any stated dimensions. If that fails, the candidate
-               is kept with the Google panel URL (or no URL), never an invented one.
+               is kept with the Google panel URL (or no URL), never an invented one. A lookup that
+               fails with 401/403 is a configuration error and is raised, not degraded. Finalists
+               whose total (price plus shipping) is over the slot's total cap are dropped.
 
 Slots run concurrently (see `retrieval.retrieve`) and so do the lookups inside a slot; everything
 shares the lock-protected `Budget`. Provider calls add their estimated dollars to the budget's
@@ -31,6 +34,7 @@ from app.schemas import (
     parse_model,
     to_output_schema,
 )
+from app.selfcheck import item_total
 from app.shopping import (
     ProductDetails,
     ProductLookup,
@@ -58,9 +62,9 @@ def build_query(category: str, style: str) -> str:
 
 
 def filter_candidates(
-    results: list[SearchCandidate], budget_usd: float
+    results: list[SearchCandidate], ceiling_usd: float
 ) -> tuple[list[SearchCandidate], dict[str, int]]:
-    """Top 25, then drop unpriced, duplicate-id and over-budget results (in that order)."""
+    """Top 25, then drop unpriced, duplicate-id and over-ceiling results (in that order)."""
     top = results[:TOP_N]
     counts = {"returned": len(results), "considered": len(top)}
     priced = [c for c in top if c.price is not None]
@@ -72,7 +76,7 @@ def filter_candidates(
             seen.add(c.product_id)
             unique.append(c)
     counts["duplicates"] = len(priced) - len(unique)
-    within = [c for c in unique if c.price is not None and c.price <= budget_usd]
+    within = [c for c in unique if c.price is not None and c.price <= ceiling_usd]
     counts["over_budget"] = len(unique) - len(within)
     counts["kept"] = len(within)
     return within, counts
@@ -102,7 +106,7 @@ def _rank_user_text(
         f"Slot: {slot.category}",
         f"Why this slot: {slot.reason}",
         f"Requested style: {style}",
-        f"Slot budget: {slot.budget_usd:.0f} USD",
+        f"Per-item price ceiling: {slot.budget_usd:.0f} USD (shipping is added later)",
         f"Room: {_room_summary(perception)}",
     ]
     if slot.size_hint:
@@ -150,6 +154,8 @@ def _lookup_one(
     try:
         details = lookup.lookup(cand.product_id)
     except ProviderError as exc:
+        if exc.status in (401, 403):  # bad key or plan: a configuration error, not a bad product
+            raise
         ok, detail = False, str(exc)  # provider name + status only, by construction
     seconds = round(time.perf_counter() - started, 3)
     record = _record_provider_call(
@@ -178,6 +184,7 @@ def _lookup_one(
         "reason": reason,
         "product_id": cand.product_id,
         "price_source": "search",
+        "store_title": "",
     }
     store = choose_store(details.stores, cand.seller)
     if store is not None:
@@ -191,6 +198,7 @@ def _lookup_one(
                 shipping=store.shipping,
                 total=store.total,
                 price_source="lookup" if store.price is not None else "search",
+                store_title=store.title,
             )
             if store.price is not None:
                 base["price"] = store.price
@@ -260,7 +268,7 @@ def run_slot(
 
     if not pool_:
         return finish(
-            f"no shopping results within the ${slot.budget_usd:.0f} slot budget "
+            f"no shopping results within the ${slot.budget_usd:.0f} per-item ceiling "
             f"({counts['considered']} considered, {counts['unpriced']} unpriced, "
             f"{counts['over_budget']} over budget)",
             [],
@@ -315,11 +323,32 @@ def run_slot(
         futures = [pool.submit(_lookup_one, c, reason, lookup, budget) for c, reason in chosen]
         outcomes = [f.exception() for f in futures]
     candidates: list[ProductCandidate] = []
+    over_cap = 0
     for future, error in zip(futures, outcomes, strict=True):
         if error is not None:
             raise error
         candidate, record, drops = future.result()
-        candidates.append(candidate)
         calls.append(record)
         dropped.extend(drops)
+        total, _ = item_total(candidate)
+        if slot.total_cap_usd is not None and total > slot.total_cap_usd:
+            over_cap += 1
+            dropped.append(
+                {
+                    "name": candidate.name,
+                    "reason": "total_over_item_cap",
+                    "total": f"{total:.2f}",
+                    "cap": f"{slot.total_cap_usd:.2f}",
+                }
+            )
+            continue
+        candidates.append(candidate)
+    summary["over_item_cap_after_lookup"] = over_cap
+    if not candidates:
+        return finish(
+            f"every finalist's total (price plus shipping) is over the ${slot.total_cap_usd:.0f} "
+            "per-item cap",
+            [],
+            completion,
+        )
     return finish("", candidates, completion)

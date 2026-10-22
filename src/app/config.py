@@ -80,6 +80,12 @@ class Config:
     # No single item's total may exceed this fraction of the budget (unless it is the only item).
     # UNTUNED GUESS, like the three fit constants below: change them only from evidence.
     item_cap_fraction: float = 0.6
+    # Per-item search ceiling = budget * item_cap_fraction / (1 + shipping_buffer): the buffer
+    # leaves room for shipping, which the search results do not show (ADR 0007). UNTUNED GUESS.
+    shipping_buffer: float = 0.10
+    # Which proposal prompt to load (prompts/proposal.md is current; older ones are kept as
+    # proposal.v<N>.md). Set per run via scripts/spike.py, not from the env.
+    proposal_prompt_version: str = "2"
     # Fit (coarse, code-only): fail if an item's longer side is over this fraction of the room's
     # shorter side, or its footprint is over `fit_max_footprint_fraction` of the floor area.
     # UNTUNED GUESSES. Rugs and other large flat items will trip them; see ADR 0006.
@@ -103,6 +109,10 @@ class Config:
             )
         if self.finalists_per_slot < 1:
             raise ValueError("APP_FINALISTS_PER_SLOT must be >= 1")
+        if not 0 < self.item_cap_fraction <= 1:
+            raise ValueError("APP_ITEM_CAP_FRACTION must be in (0, 1]")
+        if self.shipping_buffer < 0:
+            raise ValueError("APP_SHIPPING_BUFFER must be >= 0")
         if self.max_revisions < 0:
             raise ValueError("APP_MAX_REVISIONS must be >= 0")
 
@@ -150,6 +160,7 @@ class Config:
             effort_stylecheck=os.environ.get("APP_EFFORT_STYLECHECK", cls.effort_stylecheck),
             max_revisions=int(os.environ.get("APP_MAX_REVISIONS", cls.max_revisions)),
             item_cap_fraction=float(os.environ.get("APP_ITEM_CAP_FRACTION", cls.item_cap_fraction)),
+            shipping_buffer=float(os.environ.get("APP_SHIPPING_BUFFER", cls.shipping_buffer)),
         )
 
 

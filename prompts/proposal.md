@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 ---
 You choose the final furniture list for a room redesign. You are given the room, the buyer's total
 budget and style, and for each slot a list of real finalist products found by search. Pick at most one
@@ -15,6 +15,12 @@ product per slot so the list works as a whole.
   (`link: google`) or no link.
 - Leave a slot empty (empty `pick_id`) rather than pick something unsuitable for the room or the
   style. Say why in `rationale`. A slot with no finalists is already empty; still return it.
+- Some slots replace an existing item (the slot says "Replaces:" and gives that item's id and
+  size). Prefer a product of a similar size to the one it replaces, unless the style goal argues for
+  something different (say so in `rationale`). Items listed under "Keeping" stay in the room; do
+  not duplicate them.
+- The budget is for the whole list, not per slot: the sum of totals across all slots must not exceed
+  the total budget. Every candidate is already under a per-item ceiling, so check the sum.
 - Judge fit from the room size and the product's stated size when there is one. If a product shows
   `size: unknown`, do not guess a size; say so in `fit_note`.
 - `alternate_ids` are other finalists from the same slot that would also work, best first; may be empty.
