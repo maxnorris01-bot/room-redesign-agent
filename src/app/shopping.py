@@ -69,6 +69,7 @@ class Store:
     shipping: float | None
     total: float | None
     availability: str | None
+    title: str = ""  # the store page's own product title, when the lookup gives one
 
 
 @dataclass(frozen=True)
@@ -353,6 +354,7 @@ def parse_product_details(payload: dict[str, Any]) -> ProductDetails:
                 shipping=_as_float(s.get("shipping_extracted")),
                 total=_as_float(s.get("extracted_total")),
                 availability=availability,
+                title=_usable_str(s.get("title")) or "",
             )
         )
     attributes = [
@@ -392,7 +394,7 @@ class _HttpProvider:
         return f"{type(self).__name__}()"
 
     def _request(self, send: Any) -> dict[str, Any]:
-        """Run `send()` with one immediate retry on timeout or 5xx; map errors without leaking."""
+        """Run `send()` with one immediate retry on timeout, 5xx or 429; no leaks in errors."""
         last_status: int | None = None
         for attempt in (1, 2):
             try:
@@ -404,8 +406,8 @@ class _HttpProvider:
             except httpx.HTTPError as exc:
                 raise ProviderError(self.name, f"request failed ({type(exc).__name__})") from None
             status = response.status_code
-            if status >= 500 and attempt == 1:
-                last_status = status
+            if (status >= 500 or status == 429) and attempt == 1:
+                last_status = status  # one immediate retry on 5xx and 429 (no waiting)
                 continue
             if status in _STATUS_HELP:
                 raise ProviderError(

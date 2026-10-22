@@ -157,10 +157,12 @@ def mock_perception_payload() -> dict[str, Any]:
             {"id": "f2", "category": "armchair", "position": {"x": 0.7, "y": 0.7},
              "size": {"width_m": 0.9, "depth_m": 0.9}, "keepable": "likely",
              "note": "MOCK armchair, marked keepable"},
+            {"id": "f3", "category": "desk", "position": {"x": 0.8, "y": 0.2},
+             "size": {"width_m": 1.4, "depth_m": 0.7}, "keepable": "likely",
+             "note": "MOCK desk, marked keepable"},
         ],
         "furniture_gaps": [
             {"category": "coffee table", "reason": "MOCK: bare floor in front of sofa"},
-            {"category": "floor lamp", "reason": "MOCK: dark corner beside armchair"},
         ],
         "living_things": [
             {"kind": "pet", "description": "MOCK pet, never furniture",

@@ -63,12 +63,15 @@ def test_no_search_results_means_everything_is_dropped() -> None:
     assert kept == [] and len(dropped) == 1
 
 
-def test_slots_replaceable_first_then_gaps_and_never_keepable() -> None:
+def test_slots_gaps_then_suggested_replacements_then_accents_and_never_keepable() -> None:
     slots = derive_slots(_perception(), 900, 5)
-    assert [s.category for s in slots] == ["sofa", "coffee table", "floor lamp"]
-    assert [s.source for s in slots] == ["replaceable", "gap", "gap"]
-    assert "armchair" not in [s.category for s in slots]  # marked keepable
-    assert sum(s.budget_usd for s in slots) == pytest.approx(900)
+    assert [s.category for s in slots] == [
+        "coffee table", "sofa", "area rug", "floor lamp", "bookshelf",
+    ]  # fmt: skip
+    assert [s.source for s in slots] == ["gap", "replace_suggested", "accent", "accent", "accent"]
+    assert "armchair" not in [s.category for s in slots]  # marked keepable: stays
+    # every slot gets the same per-item ceiling, not a share of the budget
+    assert {s.budget_usd for s in slots} == {round(900 * 0.6 / 1.1, 2)}
 
 
 def test_slots_are_capped_at_n() -> None:
@@ -80,7 +83,7 @@ def test_slots_fall_back_to_room_type_defaults_when_nothing_flagged() -> None:
     p = _perception(furniture_gaps=[], furniture=[], room_type="Cosy bedroom")
     slots = derive_slots(p, 600, 3)
     assert [s.category for s in slots] == ["bed frame", "nightstand", "dresser"]
-    assert {s.source for s in slots} == {"default"}
+    assert {s.source for s in slots} == {"accent"}
 
 
 def test_default_slots_skip_what_the_room_already_has() -> None:

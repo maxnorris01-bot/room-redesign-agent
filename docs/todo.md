@@ -20,11 +20,14 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 ## Later
 
+- [ ] UI for keep or replace (the flags are a stand-in) and visitor preference notes (free text such as "must keep the oak desk", budget priorities).
+- [ ] Tune the new untuned values from live runs: shipping buffer 0.10, mismatch tolerance, accent lists per room type, how often perception's `keepable` suggestion matches the visitor's choice.
+- [ ] Measure a live multi-slot run (up to 3 slots, 2 finalists): cost at the assumed provider prices (about $0.05 per slot), the revision rate and the critical path.
 - [ ] Fit against existing furniture, once the canvas exists (the self-check's fit is room-size only).
-- [ ] Size fallback for the fit check (many products state no size): parse sizes from titles or read product pages. Deliberately excluded from ADR 0006; decide with evidence of how often fit is "unknown".
+- [ ] Size fallback for the fit check (many products state no size): parse sizes from titles or read product pages. Deliberately excluded from ADR 0006 and 0007 (the mismatch check compares two titles' sizes only); decide with evidence of how often fit is "unknown".
 - [ ] Image-based style check (the current one is text only).
 - [ ] User preference questions (style, must-keeps, priorities) before the proposal; must-keep items are not yet checked.
-- [ ] Tune the untuned self-check constants (item cap 0.6, fit 0.6 side / 12% footprint / 0.5 confidence) from live runs; consider exempting rugs and other large flat items from the fit rule.
+- [ ] Tune the untuned self-check constants (item cap 0.6, fit 0.6 side / 12% footprint / 0.5 confidence) from live runs; (rugs and other flat goods are now exempt from the footprint rule).
 - [ ] Measure the proposal and self-check live (latency, cost, how often the revision fires) and revisit ADR 0004's 35 s full-run guess before the measured run.
 - [ ] Layout is not part of the proposal yet (needs the canvas).
 <!-- Real, but not next. -->
@@ -72,6 +75,7 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- Move items here when done, newest first, with a one-line note on what happened. -->
 
+- [x] 2026-10-21 Keep-or-replace and cleanup (ADR 0007, proposed): `--keep` / `--replace`, slot policy (requested replacements, gaps, suggested, accents; up to 3), per-item budget ceiling, proposal prompt v2, title/page mismatch check, flat-goods fit exemption, lookup failure warnings (401 exits 4). Mock-verified only; see `docs/sessions/2026-10-21-keep-or-replace-and-cleanup.md`.
 - [x] 2026-10-21 Proposal and self-check (ADR 0006, proposed): one structured proposal call, four checks, one revision, separate Anthropic and provider cost caps, final list printed, `--no-proposal` / `--revisions` / `--proposal-model` / `--proposal-effort`. Mock-verified only; see `docs/sessions/2026-10-21-proposal-and-self-check.md`.
 - [x] 2026-10-21 Two-stage shopping retrieval (ADR 0005, proposed): provider layer (Serper/SerpApi + SerpApi lookup), rank prompt, product lookup with dimensions, slot-coverage fix, per-call stage rows and critical path, fixtures, CLI flags. Mock-verified only; see `docs/sessions/2026-10-21-two-stage-shopping-retrieval.md`.
 - [x] 2026-10-21 Latency and retrieval hygiene (concurrent slots, product-page URL guard, perception prompt v2, timing fields, CLI flags). Mock-verified only; see `docs/sessions/2026-10-21-latency-and-retrieval-hygiene.md`.

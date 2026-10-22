@@ -37,9 +37,9 @@ item it concerns. The style call runs in a worker thread while the code checks r
 | Check | How | Catches | Cannot catch |
 |---|---|---|---|
 | budget | code: sum of totals (price plus shipping; unknown shipping counts as 0 and warns) within the budget; no item over `APP_ITEM_CAP_FRACTION` (0.6) of it unless it is the only item | an over-budget list, one item eating the budget | real shipping when it is unknown; tax; price changes after the crawl |
-| fit | code: when width and depth are stated, fail if the longer side is over 60% of the room's shorter side or the footprint over 12% of the floor area; otherwise unknown ("no size found; check the product page") | an obviously too-big piece | everything else: it is coarse; it uses the room size at perception's stated confidence (a note is added below 0.5); it cannot see existing furniture (that needs the canvas); large flat items such as rugs will trip it |
+| fit | code: when width and depth are stated, fail if the longer side is over 60% of the room's shorter side or the footprint over 12% of the floor area; otherwise unknown ("no size found; check the product page") | an obviously too-big piece | everything else: it is coarse; it uses the room size at perception's stated confidence (a note is added below 0.5); it cannot see existing furniture (that needs the canvas); flat goods (rug, runner, mat, carpet) skip the footprint rule and report "unknown" |
 | style | one Haiku call (`prompts/style_check.md` v1), text only: style goal, room style, each pick's title, retailer and category; "poor" fails, "ok" passes | a title that clearly contradicts the goal | anything visual: it cannot see images; "ok" is also its answer when the text says too little |
-| grounded | code: the pick is among the finalists; `url_kind` is a retailer product page (a Google panel link warns, no link fails); `price_source` is search or lookup; the URL passes the product-page guard | invented ids, listing pages, model-supplied prices | whether the page still shows that price or is in stock |
+| grounded | code: the pick is among the finalists; `url_kind` is a retailer product page (a Google panel link warns, no link fails); `price_source` is search or lookup; the URL passes the product-page guard; the search title does not clearly contradict the store page (its title plus URL slug) on size or material | invented ids, listing pages, model-supplied prices, a link that lands on a different product | whether the page still shows that price or is in stock |
 
 The three fit constants and the item cap are untuned guesses in `config.py`.
 
@@ -71,6 +71,20 @@ overshot by calls already in flight.
 4. **A vision style check** (send product images). Better signal, more cost and a new data path.
    Deferred.
 
+## Amendments (2026-10-21, ADR 0007)
+
+- **Title/page mismatch.** The lookup's own store title is kept (`store_title`). The grounded check
+  fails with "store page title disagrees with search title (size or material)" when both texts state
+  sizes (numbers with ", in, inch, cm, mm or W, cm and mm converted to inches, within about 1 inch;
+  a bare 2 to 3 digit number in the URL slug counts as inches) and none match, or both name materials
+  (oak, walnut, ... ) and the sets are disjoint ("oak" matches "smoked oak"). It is silent when either
+  side says nothing. Sizes are used only to compare two titles, never for fit. Real example: search
+  title `Article Oak Wood Media Unit 79"W ...` against slug `judith-63-low-media-unit-walnut` fails.
+- **Flat goods** (rug, runner, mat, carpet, with synonyms) skip the fit rule: status unknown, "flat
+  item; footprint rule not applied". This removes the rug false-fail noted below.
+- The proposal prompt is v2 (v1 kept): a slot may replace an existing item, the budget is for the
+  whole list, kept items are not duplicated.
+
 ## Consequences
 
 - **Latency.** Two more model hops (proposal, then style check in parallel with code checks), and a
@@ -79,7 +93,8 @@ overshot by calls already in flight.
   full-run target in ADR 0004 (35 s) was a guess made before these stages existed and may need revising
   before the measured run.
 - **Fit will mostly say "unknown"** until sizes are available (1 of 3 looked-up products so far), and
-  will falsely fail very large flat items. Both are accepted for now and visible in the output.
+  (before the 2026-10-21 amendment) falsely failed large flat items. Unknown fit is accepted for
+  now and visible in the output.
 - **Web-search retrieval mode** produces candidates whose price came from a model
   (`price_source: model`), so the grounded check fails them by design.
 - **Steps.** A three-slot run with a revision uses 8 model requests (perception, 3 ranks, proposal,

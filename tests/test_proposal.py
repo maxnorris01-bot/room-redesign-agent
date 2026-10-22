@@ -241,7 +241,7 @@ def test_fit_pass_fail_by_side_fail_by_footprint_and_unknown() -> None:
     room = _perception(conf=0.9, width=4.0, length=5.0)  # shorter side 4 m, floor 20 m2
     cfg = Config()
     ok = _item("sofa", _cand("1", 1, dims=_dims(2.0, 0.9)))  # 2.0 <= 2.4; 1.8 <= 2.4
-    long_side = _item("rug", _cand("2", 1, dims=_dims(3.0, 0.5)))  # 3.0 > 2.4
+    long_side = _item("console", _cand("2", 1, dims=_dims(3.0, 0.5)))  # 3.0 > 2.4
     big_footprint = _item("bed", _cand("3", 1, dims=_dims(2.3, 1.2)))  # 2.76 m2 > 2.4
     no_dims = _item("lamp", _cand("4", 1))
     half = _item("desk", _cand("5", 1, dims=_dims(1.0, None)))  # depth missing: not enough
@@ -249,7 +249,9 @@ def test_fit_pass_fail_by_side_fail_by_footprint_and_unknown() -> None:
         r.item: r for r in check_fit([ok, long_side, big_footprint, no_dims, half], room, cfg)
     }
     assert results["sofa"].status == "pass" and "low-confidence" not in results["sofa"].message
-    assert results["rug"].status == "fail" and "longer side 3.00 m" in results["rug"].message
+    assert (
+        results["console"].status == "fail" and "longer side 3.00 m" in results["console"].message
+    )
     assert results["bed"].status == "fail" and "footprint 2.76 m2" in results["bed"].message
     assert results["lamp"].status == "unknown"
     assert results["lamp"].message == "no size found; check the product page"
@@ -265,7 +267,7 @@ def test_fit_boundaries_are_inclusive() -> None:
 def test_low_confidence_room_size_is_stated_on_pass_and_fail() -> None:
     room = _perception(conf=0.3)
     ok = _item("sofa", _cand("1", 1, dims=_dims(2.0, 0.9)))
-    bad = _item("rug", _cand("2", 1, dims=_dims(3.5, 2.0)))
+    bad = _item("console", _cand("2", 1, dims=_dims(3.5, 2.0)))
     results = check_fit([ok, bad], room, Config())
     assert all("room size is a low-confidence estimate" in r.message for r in results)
     assert [r.status for r in results] == ["pass", "fail"]

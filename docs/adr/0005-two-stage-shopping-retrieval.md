@@ -56,7 +56,7 @@ trimmed copies are committed as `tests/fixtures/shopping/`.
 Make "shopping" the default retrieval mode, in three stages per slot:
 
 1. **Search** (Serper by default, SerpApi selectable): query is the slot category plus style words.
-   Code keeps the top 25, drops unpriced and duplicate results and anything over the slot budget.
+   Code keeps the top 25, drops unpriced and duplicate results and anything priced over the slot's per-item ceiling. (Amended 2026-10-21, ADR 0007: the ceiling is budget x item cap / (1 + shipping buffer), the same for every slot, replacing the earlier equal split of the budget. After lookup, a finalist whose total is over budget x item cap is dropped.)
 2. **Rank**: a small model (Haiku by default, `APP_MODEL_RANK`) sees a compact list and returns up to
    `APP_FINALISTS_PER_SLOT` ids with a reason. No web search tool. Every id is validated against the
    list; the model never supplies a price, seller or URL.

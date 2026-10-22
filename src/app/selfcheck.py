@@ -12,10 +12,13 @@ returned as `CheckResult`s and attached to items as warnings by `apply_results`.
 
 from __future__ import annotations
 
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
+from app.categories import is_flat_item
 from app.config import Config
 from app.llm import Budget, Completion, LLMOutputError, complete
 from app.prompts import load_prompt
@@ -36,6 +39,69 @@ EPS = 1e-9
 STYLE_MAX_TOKENS = 1000
 LOW_CONFIDENCE_NOTE = "room size is a low-confidence estimate"
 NO_SIZE_NOTE = "no size found; check the product page"
+FLAT_NOTE = "flat item; footprint rule not applied"
+MISMATCH_NOTE = "store page title disagrees with search title (size or material)"
+
+# Materials compared between a search title and the store page's title/slug ("oak" matches
+# "smoked oak"). Sizes are compared only between those two texts; they are never used for fit.
+MATERIALS = frozenset(
+    "oak walnut ash maple pine teak birch cherry mahogany marble glass steel brass rattan linen"
+    " leather".split()
+)
+_SIZE_RE = re.compile(
+    r"(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>[\"\u201d\u2033]|inches|inch|in|cm|mm|w)(?![a-z])", re.I
+)
+_TO_INCHES = {"cm": 1 / 2.54, "mm": 1 / 25.4}
+SIZE_TOLERANCE_IN = 1.0  # inches (or 3%, whichever is larger): titles round differently
+
+
+def _sizes_in(text: str) -> set[float]:
+    """Numbers with a unit (", in, inch, cm, mm, W) in `text`, as inches."""
+    out: set[float] = set()
+    for m in _SIZE_RE.finditer(text):
+        unit = m.group("unit").lower()
+        out.add(round(float(m.group("num")) * _TO_INCHES.get(unit, 1.0), 2))
+    return out
+
+
+def _slug_words(url: str) -> str:
+    segments = [s for s in urlsplit(url).path.split("/") if s]
+    if not segments:
+        return ""
+    return (
+        re.sub(r"\.(html?|php|aspx?)$", "", segments[-1], flags=re.I)
+        .replace("-", " ")
+        .replace("_", " ")
+    )
+
+
+def title_mismatch(search_title: str, store_title: str, url: str) -> bool:
+    """True when the store page (its title plus URL slug) clearly disagrees with the search title.
+
+    Disagreement means: both sides state sizes and none match, or both name materials and the
+    sets are disjoint. A bare 2-3 digit number in the slug counts as a size in inches (slugs like
+    `leif-54-media-unit`); in titles only numbers with a unit count. Silent when either side says
+    nothing, so it only catches clear contradictions.
+    """
+    slug = _slug_words(url)
+    store_text = f"{store_title} {slug}"
+    search_sizes = _sizes_in(search_title)
+    store_sizes = _sizes_in(store_text) | {
+        float(t) for t in re.findall(r"(?<![\w.])\d{2,3}(?![\w.])", slug)
+    }
+    if (
+        search_sizes
+        and store_sizes
+        and not any(
+            abs(a - b) <= max(SIZE_TOLERANCE_IN, 0.03 * max(a, b))
+            for a in search_sizes
+            for b in store_sizes
+        )
+    ):
+        return True
+    search_mats = MATERIALS & set(re.findall(r"[a-z]+", search_title.lower()))
+    store_mats = MATERIALS & set(re.findall(r"[a-z]+", store_text.lower()))
+    return bool(search_mats and store_mats and search_mats.isdisjoint(store_mats))
 
 
 def item_total(c: ProductCandidate) -> tuple[float, bool]:
@@ -123,6 +189,11 @@ def check_fit(
     low = room.confidence < config.fit_low_confidence
     results: list[CheckResult] = []
     for item, cand in _picked(items):
+        if is_flat_item(item.slot):
+            results.append(
+                CheckResult(check="fit", status="unknown", item=item.slot, message=FLAT_NOTE)
+            )
+            continue
         dims = cand.dimensions_m
         if dims is None or dims.width_m is None or dims.depth_m is None:
             results.append(
@@ -174,6 +245,10 @@ def check_grounded(
             warning = "link is a Google Shopping page, not the retailer"
         elif not is_product_page_url(cand.url):
             problems.append("link does not look like a product page")
+        if cand.url_kind == "retailer_product" and title_mismatch(
+            cand.name, cand.store_title, cand.url
+        ):
+            problems.append(MISMATCH_NOTE)
         if cand.price_source not in ("search", "lookup"):
             problems.append("price did not come from provider data")
         results.append(

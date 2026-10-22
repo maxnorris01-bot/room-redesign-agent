@@ -22,6 +22,7 @@ from app.config import Config
 from app.images import PreparedImage, prepare_image
 from app.llm import Budget, Completion
 from app.perception import PerceptionResult, perceive
+from app.preferences import resolve_preferences
 from app.pricing import is_priced
 from app.proposal import propose_and_check
 from app.retrieval import RetrievalResult, retrieve
@@ -83,6 +84,10 @@ class SpikeResult:
     perception_raw_text: str = ""
     wall_clock_seconds: float = 0.0
     caps: dict[str, float] = field(default_factory=dict)  # the dollar caps this run ran under
+    preferences: dict[str, Any] = field(default_factory=dict)  # keep / replace and what resolved
+    kept_items: list[dict[str, str]] = field(default_factory=list)  # existing items that stay
+    slot_plan: dict[str, Any] = field(default_factory=dict)  # slots chosen, dropped by cap, skipped
+    warnings: list[str] = field(default_factory=list)  # run-level, shown after the table
     proposal: dict[str, Any] = field(default_factory=dict)
     proposal_dropped: list[dict[str, str]] = field(default_factory=list)
 
@@ -177,11 +182,15 @@ def run_spike(
     run_id: str | None = None,
     perception_only: bool = False,
     with_proposal: bool = True,
+    keep: list[str] | None = None,
+    replace: list[str] | None = None,
 ) -> SpikeResult:
     """Run the stages under one shared, thread-safe `Budget` (step + cost caps cover the run).
 
     Retrieval slots run concurrently. With `perception_only`, retrieval is skipped; with
     `with_proposal=False` the run stops after retrieval (no proposal, self-check or revision).
+    `keep` / `replace` name existing furniture (ids or categories); an unknown or contradictory
+    name raises `PreferenceError` once perception has run (the ids come from perception).
     """
     config = config or Config.from_env()
     budget = Budget(config)
@@ -245,6 +254,10 @@ def run_spike(
             )
             return result
 
+        prefs = resolve_preferences(perceived.perception, keep, replace)
+        result.preferences = prefs.to_json()
+        result.kept_items = [{"id": r.id, "category": r.category} for r in prefs.decided("keep")]
+
         retrieved: RetrievalResult = retrieve(
             perceived.perception,
             budget_usd=budget_usd,
@@ -252,7 +265,17 @@ def run_spike(
             max_slots=n_slots,
             budget=budget,
             run_id=run_id,
+            preferences=prefs,
         )
+        if retrieved.plan is not None:
+            result.slot_plan = retrieved.plan.to_json()
+        failures = [e for sr in retrieved.slots for e in sr.summary.get("lookup_errors", [])]
+        if failures:
+            kinds = ", ".join(sorted(set(failures)))
+            result.warnings.append(
+                f"{len(failures)} product lookup(s) failed ({kinds}); those candidates keep "
+                "their Google page link instead of a retailer link"
+            )
         result.prompt_versions["rank" if retrieved.mode == "shopping" else "retrieval"] = (
             retrieved.prompt_version
         )
@@ -296,6 +319,7 @@ def run_spike(
                 style=style,
                 budget=budget,
                 run_id=run_id,
+                kept=[(k["id"], k["category"]) for k in result.kept_items],
             )
             result.prompt_versions.update(ran.prompt_versions)
             for call in ran.calls:
@@ -329,14 +353,27 @@ def run_spike(
     return result
 
 
-def format_final_list(proposal: dict[str, Any], *, mock: bool = False) -> str:
+def format_final_list(
+    proposal: dict[str, Any],
+    *,
+    mock: bool = False,
+    kept: list[dict[str, str]] | None = None,
+    warnings: list[str] | None = None,
+) -> str:
     """The proposal as a short, human-readable list. Failed checks are always shown."""
     totals = proposal["totals"]
-    lines = ["FINAL LIST" + ("  (MOCK DATA: fixtures, not real products)" if mock else "")]
+    header = "FINAL LIST" + ("  (MOCK DATA: fixtures, not real products)" if mock else "")
+    if warnings:
+        header += f"  [WARNING: {len(warnings)} run warning(s) above]"
+    lines = [header]
     for n, item in enumerate(proposal["items"], start=1):
         pick = item["pick"]
         if pick is None:
             lines.append(f"{n}. {item['slot']}: (none) - {item['note'] or 'no pick'}")
+            if item.get("replaces"):
+                lines.append(
+                    f"     Replaces: {item['replaces']['category']} ({item['replaces']['id']})"
+                )
             if item["rationale"]:
                 lines.append(f"     why: {item['rationale']}")
             continue
@@ -344,6 +381,7 @@ def format_final_list(proposal: dict[str, Any], *, mock: bool = False) -> str:
         ship = "shipping unknown" if shipping is None else f"+ ${shipping:.2f} shipping"
         link = pick["url"] or "(no link)"
         kind = "" if pick["url_kind"] == "retailer_product" else f"  [{pick['url_kind']}]"
+        replaced = item.get("replaces")
         lines += [
             f"{n}. {item['slot']}: {pick['name']} - {pick['retailer']}",
             f"     ${pick['price']:.2f} {ship} = ${item['item_total']:.2f}   {link}{kind}",
@@ -353,7 +391,14 @@ def format_final_list(proposal: dict[str, Any], *, mock: bool = False) -> str:
             + f"   style: {item['style_match']}"
             + (f" - {item['style_note']}" if item["style_note"] else ""),
         ]
+        if replaced:
+            lines.insert(
+                len(lines) - 3,
+                f"     Replaces: {replaced['category']} ({replaced['id']})",
+            )
         lines += [f"     WARNING {w}" for w in item["warnings"]]
+    if kept:
+        lines.append("Keeping: " + ", ".join(f"{k['category']} ({k['id']})" for k in kept))
     lines.append(
         f"Total: ${totals['total']:.2f} of ${totals['budget']:.2f} budget "
         f"(${totals['remaining']:.2f} remaining; items ${totals['items_total']:.2f}, "
@@ -422,8 +467,25 @@ def format_table(result: SpikeResult) -> str:
         f"Anthropic cost: ${result.anthropic_cost_usd:.4f} (cap ${cap_a:.2f})   "
         f"Provider cost (estimated): ${result.provider_cost_usd:.4f} (cap ${cap_p:.2f})",
     ]
+    for w in result.warnings:
+        lines += ["", f"WARNING {w}"]
+    plan = result.slot_plan
+    if plan and plan.get("dropped_by_cap"):
+        lines += [
+            "",
+            f"NOTE slots over the cap of {len(plan['slots'])} were dropped: "
+            + "; ".join(plan["dropped_by_cap"]),
+        ]
     if result.proposal:
-        lines += ["", format_final_list(result.proposal, mock=result.llm_mode == "mock")]
+        lines += [
+            "",
+            format_final_list(
+                result.proposal,
+                mock=result.llm_mode == "mock",
+                kept=result.kept_items,
+                warnings=result.warnings,
+            ),
+        ]
     if any(r.cost_estimated for r in result.rows):
         lines += [
             "",
