@@ -140,11 +140,12 @@ def test_empty_slot_when_nothing_fits_skips_rank_and_lookup(
 ) -> None:
     client = ScriptedClient([])
     lookup = FakeLookup({})
-    search = FakeSearch([_cand("1", 999.0), _cand("2", None)])
+    search = FakeSearch([_cand("2", None), _cand("3", None)])  # nothing priced: nothing to show
     result, budget = _run(monkeypatch, search, lookup, client, budget_usd=100)
     (slot,) = result.slots
     assert slot.candidates == [] and "per-item ceiling" in slot.note
-    assert "1 unpriced" in slot.note and "1 over budget" in slot.note
+    assert "2 unpriced" in slot.note and "0 over budget" in slot.note
+    assert slot.over_budget_options == []
     assert client.calls == [] and lookup.ids == []
     assert budget.steps == 0  # a search is not an LLM step
 
@@ -308,8 +309,11 @@ def test_no_url_at_all_is_reported_as_none_never_invented(
         monkeypatch, search, FakeLookup({"p1": ProductDetails()}),
         _rank_client({"id": "p1", "reason": "r"}),
     )  # fmt: skip
-    (c,) = result.slots[0].candidates
-    assert c.url == "" and c.url_kind == "none"
+    slot = result.slots[0]
+    assert slot.candidates == []  # a finalist with no link of any kind is dropped, not shown
+    assert {"name": "Product p1", "reason": "no_link"} in slot.dropped
+    assert slot.note == "lookup returned no store for Product p1"
+    assert slot.summary["lookup_issues"] == [{"title": "Product p1", "why": "no stores"}]
 
 
 def test_dimensions_are_attached_when_the_lookup_has_them(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -531,7 +535,7 @@ def test_live_run_room_gets_no_default_rug_or_floor_lamp_slot() -> None:
     categories = [s.category for s in slots]
     assert "area rug" not in categories and "floor lamp" not in categories
     assert "sofa" not in categories and "coffee table" not in categories  # owned furniture
-    assert categories == ["bookshelf"]
+    assert categories == ["bookshelf", "media unit"]  # no media unit in the room, no gap planned
 
 
 def test_fixed_items_count_as_covered_for_defaults() -> None:

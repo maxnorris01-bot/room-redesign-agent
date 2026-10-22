@@ -210,6 +210,20 @@ class CheckResult(_Strict):
     value: str | None = None  # style check only: the match word (good, ok, poor)
 
 
+class OverBudgetOption(_Strict):
+    """A real product shown for an empty slot because it is over the buyer's limit.
+
+    Never a pick: not passed to the proposal, not in the totals, not budget-checked. It has a
+    verified retailer URL from lookup (options without one are dropped).
+    """
+
+    candidate: ProductCandidate
+    reason: Literal["over_item_limit", "over_total_cap"]
+    item_total: float  # price plus shipping, unknown shipping counted as 0
+    shipping_known: bool
+    also_over_total_budget: bool
+
+
 class ReplacedItem(_Strict):
     """The existing item a slot would replace (from perception)."""
 
@@ -229,6 +243,11 @@ class ProposalItem(_Strict):
     rationale: str = ""
     model_fit_note: str = ""  # the model's own words; the code check below is the verdict
     note: str = ""  # why the slot is empty, when it is
+    # Empty because retrieval found no finalist (as opposed to the proposal leaving it empty):
+    no_finalists: bool = False
+    limit_usd: float | None = None  # the slot's per-item price ceiling
+    price_stats: dict[str, float | int | None] | None = None  # search prices seen for the slot
+    over_budget_options: list[OverBudgetOption] = []  # shown only; never picks, never totals
     item_total: float | None = None  # price plus shipping, shipping unknown counted as 0
     fit_status: CheckStatus = "unknown"
     fit_note: str = ""
@@ -241,6 +260,9 @@ class ProposalTotals(_Strict):
     items_total: float  # sum of picked prices
     shipping_total: float  # sum of known shipping
     total: float  # items plus shipping
+    item_count: int = 0  # picked items
+    shipping_known_count: int = 0  # picked items whose shipping (or total) is known
+    shipping_note: str = ""  # set when some shipping is unknown: it is excluded, never shown as $0
     budget: float
     remaining: float  # budget minus total (negative = over)
 

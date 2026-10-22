@@ -23,6 +23,7 @@ from app.prompts import Prompt, load_prompt
 from app.schemas import (
     Candidate,
     FurnitureItem,
+    OverBudgetOption,
     ProductCandidate,
     RoomPerception,
     SlotCandidates,
@@ -38,7 +39,7 @@ RETRIEVAL_MAX_TOKENS = 3000
 # there are few gaps or replacements. Categories already covered by something that stays are
 # skipped (see `plan_slots`).
 _ACCENT_SLOTS: dict[str, list[str]] = {
-    "living": ["sofa", "coffee table", "area rug", "floor lamp", "bookshelf"],
+    "living": ["sofa", "coffee table", "area rug", "floor lamp", "bookshelf", "media unit"],
     "bed": ["bed frame", "nightstand", "dresser", "area rug", "reading lamp"],
     "office": ["desk", "office chair", "bookshelf", "desk lamp", "area rug"],
     "dining": ["dining table", "dining chairs", "sideboard", "pendant light", "area rug"],
@@ -55,6 +56,7 @@ class Slot:
     size_hint: str = ""
     replaces_id: str | None = None  # the existing item (perception id) this slot would replace
     total_cap_usd: float | None = None  # items over this total (price + shipping) are dropped
+    total_budget_usd: float | None = None  # the whole budget (flags over-limit options)
 
 
 @dataclass
@@ -73,6 +75,7 @@ class CallRecord:
     estimated: bool = False  # True for provider calls: dollars come from the APP_*_USD settings
     ok: bool = True
     detail: str = ""
+    phase: str = ""  # e.g. "over limit": a second rank/lookup round for over-budget options
     # Calls that share a non-None group ran in parallel (proposal self-check: "selfcheck",
     # "recheck"); only the slowest of a group is on the critical path. See SpikeResult.
     group: str | None = None
@@ -88,6 +91,8 @@ class SlotResult:
     seconds: float = 0.0  # measured wall time of the whole slot chain
     calls: list[CallRecord] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
+    # Shown to the buyer for an empty slot, never picked and never counted (ADR 0007).
+    over_budget_options: list[OverBudgetOption] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:
@@ -172,6 +177,7 @@ def plan_slots(
         return Slot(
             category, reason, source, ceiling, hint,
             replaces_id=item.id if item else None, total_cap_usd=cap,
+            total_budget_usd=total_budget_usd,
         )  # fmt: skip
 
     for r in prefs.decided("replace", "requested"):
@@ -194,8 +200,13 @@ def plan_slots(
         )  # fmt: skip
     room = perception.room_type.lower()
     accents = next((v for k, v in _ACCENT_SLOTS.items() if k in room), _GENERIC_SLOTS)
+    planned = [norm(w.category) for w in wanted]  # slots already planned (for example a gap)
     for category in accents:
-        if already_covered(category, owned) or already_covered(category, replaced_categories):
+        if (
+            already_covered(category, owned)
+            or already_covered(category, replaced_categories)
+            or already_covered(category, planned)
+        ):
             continue
         wanted.append(slot(category, "accent piece for this room type", "accent"))
 
@@ -398,7 +409,9 @@ def retrieve(
 
     config = budget.config
     shopping = config.retrieval_mode == "shopping"
-    prompt = load_prompt("rank" if shopping else "retrieval")
+    prompt = (
+        load_prompt("rank", config.rank_prompt_version) if shopping else load_prompt("retrieval")
+    )
     plan = plan_slots(perception, budget_usd, max_slots, preferences, config)
     slots = plan.slots
     result = RetrievalResult(prompt_version=prompt.version, mode=config.retrieval_mode, plan=plan)

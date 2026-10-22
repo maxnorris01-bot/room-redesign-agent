@@ -68,7 +68,7 @@ def test_mock_run_end_to_end_shopping_mode(tmp_path: Path) -> None:
     """The default: structured shopping data from fixtures, a mock ranker, mock lookups."""
     result = run_spike(
         synthetic_room_image(),
-        budget_usd=900,
+        budget_usd=800,
         style="warm minimalist",
         config=Config(),
         run_id="s1",
@@ -76,14 +76,17 @@ def test_mock_run_end_to_end_shopping_mode(tmp_path: Path) -> None:
     assert result.retrieval_mode == "shopping" and result.search_provider == "serper"
     stages = [r.stage for r in result.rows]
     assert stages[:2] == ["prepare_image", "perception"]
-    for slot in ("coffee table", "sofa", "area rug"):
+    for slot in ("coffee table", "area rug"):
         assert f"retrieval: {slot} / search" in stages
         assert f"retrieval: {slot} / rank" in stages
         assert (
             f"retrieval: {slot} / lookup 1" in stages and f"retrieval: {slot} / lookup 2" in stages
         )
+    # the sofa slot's results are all over the limit: its second round is labelled as such
+    assert "retrieval: sofa / rank (over limit)" in stages
+    assert "retrieval: sofa / lookup 1 (over limit)" in stages
     assert result.prompt_versions == {
-        "perception": "2", "rank": "2", "proposal": "2", "style_check": "1",
+        "perception": "2", "rank": "3", "proposal": "2", "style_check": "1",
     }  # fmt: skip
     provider_rows = [r for r in result.rows if r.kind in ("search", "lookup")]
     assert provider_rows and all(r.cost_estimated for r in provider_rows)
@@ -92,6 +95,9 @@ def test_mock_run_end_to_end_shopping_mode(tmp_path: Path) -> None:
 
     for slot in result.retrieval:
         cands = slot["candidates"]
+        if slot["slot"]["category"] == "sofa":
+            assert cands == [] and len(slot["over_budget_options"]) == 1
+            continue
         assert len(cands) == 2  # the invented id was dropped
         assert all(c["name"].startswith("[FIXTURE]") for c in cands)
         assert {c["url_kind"] for c in cands} == {"retailer_product", "google_panel"}

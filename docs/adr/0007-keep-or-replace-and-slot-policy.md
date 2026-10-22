@@ -51,6 +51,44 @@ whether it was requested, suggested or default), `kept_items` and `slot_plan` (s
 skipped). The printed list shows "Replaces: sofa (f1)" per replaced item and a "Keeping:" line before
 the totals.
 
+## Amendment (2026-10-22): empty slots, over-budget options, the link rule
+
+Found in the first live run with `--budget 800 --replace sofa --keep desk`: every one of 25 sofa
+results was over the $436.36 ceiling, the slot came back empty, and the output said only "25 over
+budget", so the tool looked broken. Also an alternate had no retailer URL and the total line treated
+unknown shipping as $0.
+
+- **Price stats.** Search records per slot, from parsed numeric prices of the top 25: considered,
+  priced, unpriced, over_ceiling, min, median, max. They are in the slot summary, the trace and
+  `slot_plan.price_stats` in `result.json`.
+- **Over-budget options.** When a slot has no in-budget finalist, up to 2 options are built so the
+  buyer sees what exists. After the ceiling filter: the 8 cheapest priced results over the ceiling
+  are ranked (same rank stage; prompt v3 says to pick the closest matches anyway, v2 stays
+  selectable with `--rank-prompt-version`), the top 2 are looked up, and an option needs a verified
+  retailer URL. After the post-lookup total-cap drop: the dropped finalists become options directly,
+  with no extra lookup. Each carries a reason (over per-item limit, or over total cap after
+  shipping) and a flag if it also exceeds the whole budget. A filled slot never gets options.
+- **Options are never picks.** Not proposal candidates, not in the totals, not budget-checked, not
+  mentioned by the model (the proposal sees an empty slot as data and is told not to recommend
+  anything for it). They appear only in their own block, written by code: "<slot>: nothing found
+  within your $<ceiling> per-item limit", "Replaces: ..." if it replaces something, "Cheapest <slot>
+  seen: $X (median $Y, N results). Raise the budget or loosen the style to fit one.", then "Over your
+  limit, not counted in the total:" with name, price, shipping (or "shipping unknown"), URL and
+  "also over your total budget". If no option survives, only the stats line is shown.
+- **Cost.** At most one Haiku rank call and two lookups per such slot, counted in the caps and shown
+  as "(over limit)" rows; the slot chain stays one concurrent chain.
+- **Link rule.** A finalist with no link at all (`url_kind: none`) is dropped with a reason; if that
+  empties the slot, a WARNING says "lookup returned no store for <title>". A finalist that only has
+  a Google page link stays (as before, flagged by the grounded check). Alternates face the same
+  grounded rules as picks (link, product page, title agreement, price source) and are dropped if
+  they fail. When a lookup returns nothing the reason (http error with status, no product_results,
+  no stores) goes into the trace, the slot summary and a warning.
+- **Accents.** "media unit" joins the living-room accent list after bookshelf; it is skipped when
+  kept furniture, fixed items, decor or a planned slot (a gap) already covers it.
+- **Shipping wording.** Unknown shipping is never shown as $0: the total line says how many items
+  have known shipping and that unknown is excluded (`result.json` carries the counts and a note).
+  The budget check still counts unknown shipping as 0 and warns, unchanged.
+
 ## Alternatives considered
 
 1. **A preferences file.** Reproducible, but a second artifact to maintain for a single-user spike and
@@ -70,5 +108,7 @@ the totals.
 - Unknown-name errors cost a perception call before they are reported. A UI will make this moot.
 - The ceiling and shipping buffer are untuned guesses, like the item cap.
 - `Slot.source` renamed; consumers, tests and docs updated.
+- Over-budget options add up to 3 calls per empty slot (about $0.05 estimated provider dollars) and
+  rely on the rank stage to filter off-category junk from the cheapest results, which is unmeasured.
 - Mock-verified only. How well suggested replacements (perception's `keepable`) match what a visitor
   would choose is unmeasured, and `keepable` flipped between runs on the same photo before.

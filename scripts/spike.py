@@ -91,6 +91,10 @@ def main(argv: list[str] | None = None) -> int:
         "--proposal-prompt-version",
         help="proposal prompt version to load (default: config, currently 2; 1 is kept)",
     )
+    parser.add_argument(
+        "--rank-prompt-version",
+        help="rank prompt version to load (default: config, currently 3; 2 is kept)",
+    )
     args = parser.parse_args(argv)
     if not args.perception_only and (args.budget is None or args.style is None):
         parser.error("--budget and --style are required unless --perception-only is given")
@@ -120,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         "model_proposal": args.proposal_model,
         "effort_proposal": args.proposal_effort,
         "proposal_prompt_version": args.proposal_prompt_version,
+        "rank_prompt_version": args.rank_prompt_version,
     }
     config = replace(config, **{k: v for k, v in overrides.items() if v is not None})
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]

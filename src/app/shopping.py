@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol
@@ -90,6 +90,9 @@ class ProductDetails:
     stores: list[Store] = field(default_factory=list)
     attributes: list[dict[str, str]] = field(default_factory=list)
     dimensions: Dimensions | None = None
+    # Why there is nothing usable, when there is not: "no product_results" or "no stores". Empty
+    # when the lookup returned stores. (An HTTP failure raises `ProviderError` instead.)
+    note: str = ""
 
 
 class SearchProvider(Protocol):
@@ -364,10 +367,13 @@ def parse_product_details(payload: dict[str, Any]) -> ProductDetails:
     ]
     about = product.get("about_the_product") or {}
     features = about.get("features") if isinstance(about, dict) else None
+    product_results_missing = not isinstance(payload.get("product_results"), dict) or not product
+    note = "no product_results" if product_results_missing else "" if stores else "no stores"
     return ProductDetails(
         stores=stores,
         attributes=attributes,
         dimensions=parse_dimensions(features, product.get("product_attributes")),
+        note=note,
     )
 
 
@@ -500,10 +506,19 @@ def _tag(candidates: list[SearchCandidate]) -> list[SearchCandidate]:
 class FixtureSearch:
     """Fake search provider, keyed by query. Any query not in `by_query` gets `default`."""
 
-    def __init__(self, name: str, default: str, by_query: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        default: str,
+        by_query: dict[str, str] | None = None,
+        by_prefix: dict[str, tuple[str, float]] | None = None,
+    ) -> None:
         self.name = name
         self._default = default
         self._by_query = {q.lower(): f for q, f in (by_query or {}).items()}
+        # query prefix -> (fixture, price scale): the same real results with prices multiplied
+        # and ids prefixed, to make a slot whose results are all over the buyer's limit
+        self._by_prefix = {q.lower(): v for q, v in (by_prefix or {}).items()}
         self.queries: list[str] = []
         parser = parse_serper_search if name == "serper" else parse_serpapi_search
         self._parser = parser
@@ -512,6 +527,18 @@ class FixtureSearch:
         self, query: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL
     ) -> list[SearchCandidate]:
         self.queries.append(query)
+        for prefix, (scaled_fixture, scale) in self._by_prefix.items():
+            if query.lower().startswith(prefix):
+                return _tag(
+                    [
+                        replace(
+                            c,
+                            product_id=SCALED_ID_PREFIX + c.product_id,
+                            price=None if c.price is None else round(c.price * scale, 2),
+                        )
+                        for c in self._parser(_load_fixture(scaled_fixture))
+                    ]
+                )
         fixture = self._by_query.get(query.lower(), self._default)
         return _tag(self._parser(_load_fixture(fixture)))
 
@@ -521,15 +548,47 @@ class FixtureLookup:
 
     name = "serpapi"
 
-    def __init__(self, by_product_id: dict[str, str]) -> None:
+    def __init__(
+        self,
+        by_product_id: dict[str, str],
+        scaled: dict[str, tuple[str, float]] | None = None,
+    ) -> None:
         self._by_id = dict(by_product_id)
+        self._scaled = dict(scaled or {})  # scaled id -> (fixture, price scale)
         self.product_ids: list[str] = []
 
     def lookup(self, product_id: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL) -> ProductDetails:
         self.product_ids.append(product_id)
-        fixture = self._by_id.get(product_id)
-        return parse_product_details(_load_fixture(fixture)) if fixture else ProductDetails()
+        if product_id in self._scaled:
+            fixture, scale = self._scaled[product_id]
+            details = parse_product_details(_load_fixture(fixture))
+            stores = [
+                replace(
+                    s,
+                    price=None if s.price is None else round(s.price * scale, 2),
+                    shipping=None if s.shipping is None else round(s.shipping * scale, 2),
+                    total=None if s.total is None else round(s.total * scale, 2),
+                )
+                for s in details.stores
+            ]
+            return replace(details, stores=stores)
+        fixture_name = self._by_id.get(product_id)
+        if fixture_name:
+            return parse_product_details(_load_fixture(fixture_name))
+        return ProductDetails(note="no product_results")
 
+
+# Mock "over the limit" scenario: any search whose query starts with one of these prefixes returns
+# the real fixture results with prices multiplied and ids prefixed, so every result is over a
+# normal per-item ceiling. Only the cheapest scaled ids below have lookup data (the Article
+# fixture, scaled), so the other over-limit options fail their lookup and are dropped.
+OVER_LIMIT_SCALE = 8.0
+SCALED_ID_PREFIX = "x"
+OVER_LIMIT_QUERY_PREFIXES = ("sofa",)
+SCALED_LOOKUP_IDS = (
+    SCALED_ID_PREFIX + "3228588211018347245",  # cheapest scaled result in the Serper fixture
+    SCALED_ID_PREFIX + "4374072672541677006",  # cheapest scaled result in the SerpApi fixture
+)
 
 # Product ids that have a lookup fixture. The first has dimensions, the second does not.
 FIXTURE_LOOKUPS = {
@@ -546,7 +605,19 @@ def build_providers(config: Config) -> tuple[SearchProvider, ProductLookup]:
             if config.search_provider == "serper"
             else "serpapi_search_oak_side_table.json"
         )
-        return FixtureSearch(config.search_provider, default), FixtureLookup(FIXTURE_LOOKUPS)
+        return (
+            FixtureSearch(
+                config.search_provider,
+                default,
+                by_prefix={p: (default, OVER_LIMIT_SCALE) for p in OVER_LIMIT_QUERY_PREFIXES},
+            ),
+            FixtureLookup(
+                FIXTURE_LOOKUPS,
+                scaled={
+                    i: ("serpapi_product_article.json", OVER_LIMIT_SCALE) for i in SCALED_LOOKUP_IDS
+                },
+            ),
+        )
     lookup = SerpApiProductLookup(os.environ.get("SERPAPI_API_KEY", ""))
     if config.search_provider == "serper":
         return SerperSearch(os.environ.get("SERPER_API_KEY", "")), lookup

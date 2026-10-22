@@ -18,6 +18,7 @@ from app.prompts import load_prompt
 from app.retrieval import CallRecord, RetrievalResult
 from app.schemas import (
     CheckResult,
+    OverBudgetOption,
     ProductCandidate,
     Proposal,
     ProposalItem,
@@ -33,6 +34,7 @@ from app.schemas import (
 from app.selfcheck import (
     SelfCheckRun,
     apply_results,
+    grounded_problems,
     item_shipping,
     item_total,
     run_self_check,
@@ -50,6 +52,9 @@ class SlotInput:
     note: str  # why the slot has no finalists, when it has none
     finalists: dict[str, ProductCandidate]  # ordered; keys are ids scoped to this slot
     replaces: ReplacedItem | None = None  # the existing item this slot would replace
+    limit_usd: float | None = None  # the slot's per-item price ceiling
+    price_stats: dict[str, float | int | None] | None = None
+    over_budget_options: list[OverBudgetOption] = field(default_factory=list)  # display only
 
 
 def slot_inputs(
@@ -75,7 +80,18 @@ def slot_inputs(
                     width_m=old.size.width_m,
                     depth_m=old.size.depth_m,
                 )
-        out.append(SlotInput(sr.slot.category, sr.slot.reason, sr.note, finalists, replaces))
+        out.append(
+            SlotInput(
+                sr.slot.category,
+                sr.slot.reason,
+                sr.note,
+                finalists,
+                replaces,
+                sr.slot.budget_usd,
+                sr.summary.get("price_stats"),
+                list(sr.over_budget_options),
+            )
+        )
     return out
 
 
@@ -131,7 +147,11 @@ def proposal_user_text(
                 f"about {rep.width_m:.1f} m x {rep.depth_m:.1f} m"
             )
         if not slot.finalists:
-            lines.append("Finalists: none")
+            # An empty slot is data, not a prompt rewrite: nothing outside the lists exists.
+            lines.append(
+                "Finalists: none (empty slot: nothing was found within the per-item limit; do not "
+                "recommend or mention any product for it)"
+            )
         else:
             lines.append("Finalists:")
             lines += [_candidate_line(cid, c) for cid, c in slot.finalists.items()]
@@ -166,7 +186,13 @@ def validate_proposal(
         if not slot.finalists:
             items.append(
                 ProposalItem(
-                    slot=slot.name, replaces=slot.replaces, note=slot.note or "no finalists found"
+                    slot=slot.name,
+                    replaces=slot.replaces,
+                    note=slot.note or "no finalists found",
+                    no_finalists=True,
+                    limit_usd=slot.limit_usd,
+                    price_stats=slot.price_stats,
+                    over_budget_options=slot.over_budget_options,
                 )
             )
             continue
@@ -195,11 +221,23 @@ def validate_proposal(
             if aid not in slot.finalists:
                 dropped.append({"slot": slot.name, "id": aid, "reason": "id_not_in_finalists"})
             elif aid != pick_id and aid not in alt_ids:
-                alt_ids.append(aid)
+                problems, _ = grounded_problems(slot.finalists[aid])
+                if problems:  # an alternate must pass the same link and price rules as a pick
+                    dropped.append(
+                        {
+                            "slot": slot.name,
+                            "id": aid,
+                            "reason": "alternate_failed_grounded: " + "; ".join(problems),
+                        }
+                    )
+                else:
+                    alt_ids.append(aid)
         items.append(
             ProposalItem(
                 slot=slot.name,
                 replaces=slot.replaces,
+                limit_usd=slot.limit_usd,
+                price_stats=slot.price_stats,
                 pick_id=pick_id,
                 pick=pick,
                 alternate_ids=alt_ids,
@@ -218,10 +256,19 @@ def _totals(items: list[ProposalItem], budget_usd: float) -> ProposalTotals:
     items_total = sum(c.price for c in picks)
     shipping_total = sum(s for c in picks if (s := item_shipping(c)) is not None)
     total = sum(item_total(c)[0] for c in picks)
+    known = sum(1 for c in picks if item_shipping(c) is not None)
     return ProposalTotals(
         items_total=round(items_total, 2),
         shipping_total=round(shipping_total, 2),
         total=round(total, 2),
+        item_count=len(picks),
+        shipping_known_count=known,
+        shipping_note=(
+            f"shipping known for {known} of {len(picks)} items; unknown shipping is excluded "
+            "from the total, not counted as $0 in what you will pay"
+            if known < len(picks)
+            else ""
+        ),
         budget=budget_usd,
         remaining=round(budget_usd - total, 2),
     )

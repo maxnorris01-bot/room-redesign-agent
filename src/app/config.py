@@ -86,6 +86,9 @@ class Config:
     # Which proposal prompt to load (prompts/proposal.md is current; older ones are kept as
     # proposal.v<N>.md). Set per run via scripts/spike.py, not from the env.
     proposal_prompt_version: str = "2"
+    # Which rank prompt to load (v3 adds the over-limit pool wording; v2 is kept). Per run via the
+    # CLI, not the env.
+    rank_prompt_version: str = "3"
     # Fit (coarse, code-only): fail if an item's longer side is over this fraction of the room's
     # shorter side, or its footprint is over `fit_max_footprint_fraction` of the floor area.
     # UNTUNED GUESSES. Rugs and other large flat items will trip them; see ADR 0006.

@@ -395,7 +395,8 @@ def test_proposal_prompt_versions_v2_current_and_v1_selectable() -> None:
     assert "replace an existing item" in v2.text.lower() or "Replaces:" in v2.text
     assert "whole list, not per slot" in v2.text and "Replaces:" not in v1.text
     assert Config().proposal_prompt_version == "2"
-    assert load_prompt("rank").version == "2" and load_prompt("rank", "1").version == "1"
+    assert load_prompt("rank").version == "3"
+    assert load_prompt("rank", "2").version == "2" and load_prompt("rank", "1").version == "1"
 
 
 def test_v1_can_be_selected_and_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:

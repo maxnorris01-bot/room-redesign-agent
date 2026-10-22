@@ -269,6 +269,16 @@ def run_spike(
         )
         if retrieved.plan is not None:
             result.slot_plan = retrieved.plan.to_json()
+        if result.slot_plan:
+            result.slot_plan["price_stats"] = {
+                sr.slot.category: sr.summary.get("price_stats") for sr in retrieved.slots
+            }
+        for sr in retrieved.slots:
+            for issue in sr.summary.get("lookup_issues", []):
+                if not issue["why"].startswith("http error"):  # those are counted just below
+                    result.warnings.append(
+                        f"lookup returned no store for {issue['title']} ({issue['why']})"
+                    )
         failures = [e for sr in retrieved.slots for e in sr.summary.get("lookup_errors", [])]
         if failures:
             kinds = ", ".join(sorted(set(failures)))
@@ -286,6 +296,8 @@ def run_spike(
                 if call.kind == "lookup":
                     lookup_no += 1
                     suffix = f"lookup {lookup_no}"
+                if call.phase:
+                    suffix += f" ({call.phase})"
                 result.rows.append(
                     StageRow(
                         f"retrieval: {sr.slot.category} / {suffix}",
@@ -309,6 +321,7 @@ def run_spike(
                     "note": sr.note,
                     "searches": sr.completion.searches,
                     "summary": sr.summary,
+                    "over_budget_options": [o.model_dump() for o in sr.over_budget_options],
                 }
             )
         if with_proposal:
@@ -353,6 +366,47 @@ def run_spike(
     return result
 
 
+def _option_line(option: dict[str, Any]) -> str:
+    cand = option["candidate"]
+    if option["shipping_known"]:
+        price = f"${cand['price']:.2f} + ${(option['item_total'] - cand['price']):.2f} shipping"
+        price += f" = ${option['item_total']:.2f}"
+    else:
+        price = f"${cand['price']:.2f}, shipping unknown"
+    why = "over per-item limit" if option["reason"] == "over_item_limit" else (
+        "over total cap after shipping"
+    )  # fmt: skip
+    if option["also_over_total_budget"]:
+        why += "; also over your total budget"
+    return f"       - {cand['name']} - {cand['retailer']}: {price}   {cand['url']}  [{why}]"
+
+
+def _empty_slot_lines(n: int, item: dict[str, Any]) -> list[str]:
+    """An empty slot, explained by code (never by the model): the limit, what was seen, and the
+    closest real products over the limit, which are shown but never counted."""
+    slot = item["slot"]
+    lines = [f"{n}. {slot}: nothing found within your ${item['limit_usd']:.0f} per-item limit"]
+    if item.get("replaces"):
+        lines.append(f"     Replaces: {item['replaces']['category']} ({item['replaces']['id']})")
+    stats = item.get("price_stats") or {}
+    options = item.get("over_budget_options") or []
+    priced = stats.get("priced") or 0
+    all_over = priced > 0 and (stats.get("over_ceiling") or 0) >= priced
+    if all_over or any(o["reason"] == "over_total_cap" for o in options):
+        seen = stats.get("min_usd")
+        if seen is not None:
+            lines.append(
+                f"     Cheapest {slot} seen: ${seen:.2f} (median ${stats['median_usd']:.2f}, "
+                f"{priced} results). Raise the budget or loosen the style to fit one."
+            )
+    elif item.get("note"):
+        lines.append(f"     {item['note']}")
+    if options:
+        lines.append("     Over your limit, not counted in the total:")
+        lines += [_option_line(o) for o in options]
+    return lines
+
+
 def format_final_list(
     proposal: dict[str, Any],
     *,
@@ -368,6 +422,9 @@ def format_final_list(
     lines = [header]
     for n, item in enumerate(proposal["items"], start=1):
         pick = item["pick"]
+        if pick is None and item.get("no_finalists") and item.get("limit_usd") is not None:
+            lines += _empty_slot_lines(n, item)
+            continue
         if pick is None:
             lines.append(f"{n}. {item['slot']}: (none) - {item['note'] or 'no pick'}")
             if item.get("replaces"):
@@ -399,11 +456,20 @@ def format_final_list(
         lines += [f"     WARNING {w}" for w in item["warnings"]]
     if kept:
         lines.append("Keeping: " + ", ".join(f"{k['category']} ({k['id']})" for k in kept))
-    lines.append(
-        f"Total: ${totals['total']:.2f} of ${totals['budget']:.2f} budget "
-        f"(${totals['remaining']:.2f} remaining; items ${totals['items_total']:.2f}, "
-        f"known shipping ${totals['shipping_total']:.2f})"
-    )
+    unknown = totals.get("item_count", 0) - totals.get("shipping_known_count", 0)
+    if unknown > 0:
+        lines.append(
+            f"Total: ${totals['total']:.2f} of ${totals['budget']:.2f} budget "
+            f"(items ${totals['items_total']:.2f}, shipping known for "
+            f"{totals['shipping_known_count']} of {totals['item_count']} items, unknown "
+            f"excluded; ${totals['remaining']:.2f} remaining)"
+        )
+    else:
+        lines.append(
+            f"Total: ${totals['total']:.2f} of ${totals['budget']:.2f} budget "
+            f"(${totals['remaining']:.2f} remaining; items ${totals['items_total']:.2f}, "
+            f"shipping ${totals['shipping_total']:.2f})"
+        )
     if proposal["summary"]:
         lines.append(f"Summary: {proposal['summary']}")
     checks = ", ".join(f"{k} {v}" for k, v in proposal["check_summary"].items())

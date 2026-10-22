@@ -531,7 +531,7 @@ def test_separate_cost_caps_trip_independently() -> None:
         run_spike(img, budget_usd=800, style="x", config=Config(max_provider_cost_usd=0.04))
     # Anthropic cap only: proposal and self-check push Anthropic dollars past a small cap
     with pytest.raises(BudgetExceededError) as info:
-        run_spike(img, budget_usd=800, style="x", config=Config(max_cost_usd=0.018))
+        run_spike(img, budget_usd=800, style="x", config=Config(max_cost_usd=0.012))
     assert "provider" not in str(info.value) and "cost cap" in str(info.value)
     # a provider total far over the Anthropic cap is fine when its own cap allows it
     roomy = Config(max_provider_cost_usd=5.0, serpapi_usd_per_search=0.2)
@@ -541,9 +541,11 @@ def test_separate_cost_caps_trip_independently() -> None:
 
 
 def test_step_cap_for_a_three_slot_run_with_a_revision_fits_the_default() -> None:
-    result = run_spike(synthetic_room_image(), budget_usd=800, style="x", config=Config())
-    assert result.proposal["revised"] is True  # the default mock run exercises the revision
-    # perception 1 + 3 ranks + proposal + style + revision + style = 8, under max_steps 12
+    # $600 budget: two $308 picks (616) are over budget, so the first proposal fails and revises.
+    # The sofa slot is all over the limit, so it adds an over-limit rank call.
+    result = run_spike(synthetic_room_image(), budget_usd=600, style="x", config=Config())
+    assert result.proposal["revised"] is True
+    # perception 1 + 2 ranks + 1 over-limit rank + proposal + style + revision + style = 8
     assert result.steps == 8 <= Config().max_steps
     # a revision with web_search retrieval adds no extra LLM steps beyond its own calls
     web = run_spike(
@@ -562,7 +564,10 @@ def test_result_json_proposal_shape(tmp_path: Path) -> None:
         "items", "totals", "summary", "checks", "check_summary", "revised",
         "revision_changes", "warnings",
     }  # fmt: skip
-    assert set(p["totals"]) == {"items_total", "shipping_total", "total", "budget", "remaining"}
+    assert set(p["totals"]) == {
+        "items_total", "shipping_total", "total", "budget", "remaining",
+        "item_count", "shipping_known_count", "shipping_note",
+    }  # fmt: skip
     assert set(p["check_summary"]) == {"budget", "fit", "style", "grounded"}
     item = p["items"][0]
     assert {
@@ -582,9 +587,9 @@ def test_end_to_end_mock_prints_the_final_list_and_both_subtotals(tmp_path: Path
     result = run_spike(synthetic_room_image(), budget_usd=800, style="x", config=Config())
     table = (write_outputs(result, tmp_path) / "table.txt").read_text()
     assert "FINAL LIST" in table and "MOCK DATA" in table
-    assert "Total: $" in table and "Checks: budget pass" in table and "Revised: yes" in table
+    assert "Total: $" in table and "Checks: budget pass" in table and "Revised: no" in table
     assert "Anthropic cost: $" in table and "Provider cost (estimated): $" in table
-    assert "self-check / style" in table and "revision / self-check / style" in table
+    assert "self-check / style" in table and "revision / self-check / style" not in table
     assert table.index("FINAL LIST") > table.index("TOTAL")
 
 
