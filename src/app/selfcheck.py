@@ -27,6 +27,7 @@ from app.prompts import load_prompt
 from app.retrieval import CallRecord, is_product_page_url
 from app.schemas import (
     CheckResult,
+    DimensionsM,
     ProductCandidate,
     ProposalItem,
     RoomPerception,
@@ -41,6 +42,8 @@ from app.schemas import (
 from app.tracing import span
 
 EPS = 1e-9
+# A known height must leave this much clearance under the ceiling. UNTUNED guess.
+HEIGHT_CLEARANCE_M = 0.1
 STYLE_MAX_TOKENS = 1000
 LOW_CONFIDENCE_NOTE = "room size is a low-confidence estimate"
 NO_SIZE_NOTE = "no size found; check the product page"
@@ -196,6 +199,24 @@ def check_budget(
 # ---- fit ------------------------------------------------------------------------------------
 
 
+def _axes_used(dims: DimensionsM | None, footprint: bool) -> str:
+    """The sizes the fit check used, e.g. "2.01 m tall, 0.53 m wide" or "1.20 x 0.60 m"."""
+    if dims is None:
+        return ""
+    flat = [v for v in (dims.width_m, dims.depth_m, dims.length_m) if v is not None]
+    parts: list[str] = []
+    if dims.height_m is not None:
+        parts.append(f"{dims.height_m:.2f} m tall")
+    if footprint:
+        two = sorted(flat, reverse=True)[:2]
+        text = f"{two[0]:.2f} x {two[1]:.2f} m"
+        return ", ".join([text, *parts]) if parts else text
+    for value, word in ((dims.width_m, "wide"), (dims.depth_m, "deep"), (dims.length_m, "long")):
+        if value is not None:
+            parts.append(f"{value:.2f} m {word}")
+    return ", ".join(parts)
+
+
 def check_fit(
     items: list[ProposalItem], perception: RoomPerception, config: Config
 ) -> list[CheckResult]:
@@ -203,6 +224,7 @@ def check_fit(
     shorter = min(room.width_m, room.length_m)
     area = room.width_m * room.length_m
     low = room.confidence < config.fit_low_confidence
+    ceiling = getattr(room, "ceiling_height_m", None)
     results: list[CheckResult] = []
     for item, cand in _picked(items):
         if is_flat_item(item.slot):
@@ -217,28 +239,45 @@ def check_fit(
             else [],
             reverse=True,
         )
-        if not horizontal:  # no size, or a height alone: nothing to compare with the room
+        height = dims.height_m if dims is not None else None
+        reasons: list[str] = []
+        if height is not None and ceiling is not None and ceiling > 0:
+            limit = ceiling - HEIGHT_CLEARANCE_M
+            if height > limit + EPS:
+                reasons.append(
+                    f"height {height:.2f} m is over the ceiling limit {limit:.2f} m "
+                    f"(ceiling {ceiling:.2f} m minus {HEIGHT_CLEARANCE_M:.1f} m)"
+                )
+        if not horizontal:  # no size, or a height alone: nothing to compare with the room's floor
             results.append(
-                CheckResult(check="fit", status="unknown", item=item.slot, message=NO_SIZE_NOTE)
+                CheckResult(
+                    check="fit",
+                    status="fail" if reasons else "unknown",
+                    item=item.slot,
+                    message="; ".join(reasons) if reasons else NO_SIZE_NOTE,
+                )
             )
             continue
         longer = horizontal[0]
-        reasons: list[str] = []
         if longer > config.fit_max_side_fraction * shorter + EPS:
             reasons.append(
                 f"longer side {longer:.2f} m is over {config.fit_max_side_fraction:.0%} of the "
                 f"room's shorter side ({shorter:.2f} m)"
             )
+        # The footprint needs two horizontal sizes (width, depth or length); a height never counts.
         footprint = horizontal[0] * horizontal[1] if len(horizontal) >= 2 else None
         if footprint is not None and footprint > config.fit_max_footprint_fraction * area + EPS:
             reasons.append(
                 f"footprint {footprint:.2f} m2 is over {config.fit_max_footprint_fraction:.0%} of "
                 f"the floor area ({area:.1f} m2)"
             )
+        axes = _axes_used(dims, footprint is not None)
         if reasons:
-            message = "; ".join(reasons)
+            message = "; ".join(reasons) + (f" (sizes used: {axes})" if axes else "")
         elif footprint is not None:
-            message = f"{horizontal[0]:.2f} x {horizontal[1]:.2f} m fits the room's proportions"
+            message = f"{axes} fits the room's proportions"
+        elif dims is not None and dims.height_m is not None:  # a tall piece, one floor size
+            message = f"{axes} fits the room's proportions (footprint rule skipped)"
         else:  # only a longest side is known: the footprint rule is skipped
             message = f"longest side {longer:.2f} m fits the room's proportions"
         if cand.size_confidence == "low":
@@ -425,7 +464,7 @@ def check_style(
             continue
         clash: Literal["none", "mild", "strong"] = s.clash if isinstance(s, StyleItem) else "none"
         clash_with = s.clash_with if isinstance(s, StyleItem) else ""
-        message = f"{s.match}: {s.note}"
+        message = f"{s.match}: {s.note.strip().rstrip('.;,: ')}"
         if clash != "none":
             message += f"; {clash} clash with {clash_with or 'a kept item'}"
         basis: Literal["image", "text"] = "image" if item.slot in image_index else "text"

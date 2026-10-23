@@ -77,7 +77,11 @@ this choice over the alternatives. Note what's still open or deferred within it,
 - Template gaps: adversarial eval pattern. (Mock/live-forced `eval-standard` and `eval-nightly` targets are done in this repo as of 2026-10-18; not yet ported back to the template.)
 - Unverified until a live call: whether Haiku 5.5 accepts structured output + `web_search_20250305` + `effort` together (check `capabilities.server_tools` via the Models API first), and how many thinking tokens each stage burns.
 - `Config.max_cost_usd` (0.25) and `max_steps` (12) are still template guesses. They bound a whole spike run now; the proposed full-run target ($0.20) sits below the cap on purpose, but validate both against the exploratory run.
-
+- **2026-10-23, size axes depend on the category.** An unlabeled `21"x79"` is width x height for tall
+  products, width x length for flat ones, and longest side only for everything else, because guessing
+  depth made a tall bookcase look like a 2 m deep footprint. A known height over ceiling minus 0.1 m
+  now fails the fit check. All thresholds untuned. See ADR 0009 (amendment) and
+  `docs/sessions/2026-10-23-size-parsing-fix.md`.
 
 ## See also
 

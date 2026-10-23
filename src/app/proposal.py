@@ -325,16 +325,29 @@ def annotate_replacements(items: list[ProposalItem]) -> None:
         old = item.replaces.width_m
         if not sides or old <= 0:
             continue
+        approx = (
+            " (approximate, from the listing URL)" if item.pick.size_confidence == "low" else ""
+        )
+        category = item.replaces.category
         new = max(sides)
         change = (new - old) / old
         if abs(change) > REPLACE_SIZE_TOLERANCE:
-            approx = (
-                " (approximate, from the listing URL)" if item.pick.size_confidence == "low" else ""
-            )
             item.replace_size_note = (
-                f"new piece is about {new:.2f} m long{approx} vs your old {item.replaces.category} "
+                f"new piece is about {new:.2f} m long{approx} vs your old {category} "
                 f"at {old:.2f} m ({abs(change):.0%} {'longer' if change > 0 else 'shorter'})"
             )
+        old_depth = item.replaces.depth_m
+        if d.depth_m is not None and old_depth is not None and old_depth > 0:
+            d_change = (d.depth_m - old_depth) / old_depth
+            if abs(d_change) > REPLACE_SIZE_TOLERANCE:
+                way = "deeper" if d_change > 0 else "shallower"
+                text = (
+                    f"new piece is {d.depth_m:.2f} m deep{approx} vs your old {category} "
+                    f"at {old_depth:.2f} m ({abs(d_change):.0%} {way})"
+                )
+                item.replace_size_note = (
+                    f"{item.replace_size_note}; {text}" if item.replace_size_note else text
+                )
 
 
 def _describe_change(before: list[ProposalItem], after: list[ProposalItem]) -> list[str]:

@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from app.categories import category_words, size_range_in
+from app.categories import axis_rule, category_words, size_range_in
 from app.schemas import DimensionsM
 
 IN_M = 0.0254
@@ -26,13 +26,24 @@ _TO_M = {
 _NUM = r"\d+(?:\.\d+)?(?:\s+\d+/\d+)?"
 _UNIT = r"\"|”|″|inches|inch|in(?!\s*\d)\b|cm\b|mm\b"
 # 79"W, 63"L, 12 in W, 214 cm D (a unit is optional when an axis letter follows)
-_LABELED = re.compile(rf"(?P<num>{_NUM})\s*(?P<unit>{_UNIT})?\s*(?P<ax>[WDHL])(?![A-Za-z])")
+_LABELED = re.compile(
+    rf"(?P<num>{_NUM})\s*(?P<unit>{_UNIT})?\s*(?P<ax>[WDHL])(?![A-Za-z0-9])", re.IGNORECASE
+)
+# W80 D34 H30 (axis letter first); only trusted when at least two axes appear
+_PREFIXED = re.compile(
+    rf"(?<![A-Za-z0-9])(?P<ax>[WDHL])\s*(?P<num>{_NUM})\s*(?P<unit>{_UNIT})?(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_TRAILING_UNIT = re.compile(r"\s*(?P<unit>inches|inch|in|cm|mm)\b", re.IGNORECASE)
+_RUN_GAP = re.compile(r"^[\s,x×/|]*$", re.IGNORECASE)
+THREE_NUMBER_HEIGHT_RATIO = 2.5  # untuned: a W x D x H height over this x the footprint's long side
 # 79 x 18 x 30 in, 58 x 39 cm (W x D x H; a unit after the last number is required)
 _GROUP = re.compile(
     rf"(?P<a>{_NUM})\s*(?:{_UNIT})?\s*[x×]\s*(?P<b>{_NUM})\s*(?:{_UNIT})?"
-    rf"(?:\s*[x×]\s*(?P<c>{_NUM}))?\s*(?P<unit>{_UNIT})"
+    rf"(?:\s*[x×]\s*(?P<c>{_NUM}))?\s*(?P<unit>{_UNIT})",
+    re.IGNORECASE,
 )
-_SINGLE = re.compile(rf"(?P<num>{_NUM})\s*(?P<unit>{_UNIT})(?![A-Za-z])")
+_SINGLE = re.compile(rf"(?P<num>{_NUM})\s*(?P<unit>{_UNIT})(?![A-Za-z])", re.IGNORECASE)
 _AXIS = {"W": "width_m", "D": "depth_m", "H": "height_m", "L": "length_m"}
 SLUG_SIZE_WORDS = {"wide", "w", "in", "inch", "inches", "long", "l", "size", "width", "length"}
 PLAUSIBLE_PAD = 1.0
@@ -61,37 +72,114 @@ def _metres(num: str, unit: str | None) -> float:
     return round(_number(num) * _TO_M[(unit or "").lower()], 4)
 
 
-def parse_title_sizes(text: str) -> dict[str, float]:
-    """Sizes written in a title, in metres, keyed width_m / depth_m / height_m / length_m.
+def _labeled_matches(text: str) -> list[tuple[int, int, str, str, str | None]]:
+    """(start, end, axis, number, unit) for labeled sizes, trailing unit words applied to a run.
 
-    Handles 79"W, 63"L x 12"W x 16"H, W x D x H (79 x 18 x 30 in), 58", 85.5 in and 214 cm. An
-    unlabeled size ("58 in") is recorded as `length_m`, the product's longest side. Numbers with
-    no unit and no axis letter are ignored.
+    "80w 34d 30h", "80W x 34D x 30H", '80"W 34"D 30"H' and "W80 D34 H30" all land here. A run of
+    labels with no unit of its own takes a trailing unit word ("... 30h cm"); without one, inches.
+    """
+    hits = [
+        (m.start(), m.end(), m.group("ax").upper(), m.group("num"), m.group("unit"))
+        for m in _LABELED.finditer(text)
+    ]
+    taken = [(h[0], h[1]) for h in hits]
+    prefixed = [
+        (m.start(), m.end(), m.group("ax").upper(), m.group("num"), m.group("unit"))
+        for m in _PREFIXED.finditer(text)
+        if not any(m.start() < t[1] and t[0] < m.end() for t in taken)
+    ]
+    if len({h[2] for h in prefixed}) >= 2:
+        hits += prefixed
+    hits.sort()
+    out: list[tuple[int, int, str, str, str | None]] = []
+    i = 0
+    while i < len(hits):
+        j = i + 1
+        while j < len(hits) and _RUN_GAP.match(text[hits[j - 1][1] : hits[j][0]]):
+            j += 1
+        trailing = _TRAILING_UNIT.match(text, hits[j - 1][1])
+        for h in hits[i:j]:
+            unit = h[4] or (trailing.group("unit") if trailing else hits[j - 1][4])
+            end = trailing.end() if trailing and h is hits[j - 1] else h[1]
+            out.append((h[0], end, h[2], h[3], unit))
+        i = j
+    return out
+
+
+def _three_number_ok(category: str, a: float, b: float, c: float) -> bool:
+    """Whether "a x b x c" can be W x D x H for the category (inches): in range, sane height."""
+    lo, hi = size_range_in(category)
+    if not lo - PLAUSIBLE_PAD <= max(a, b, c) <= hi + PLAUSIBLE_PAD:
+        return False
+    if axis_rule(category) == "tall":
+        return c >= max(a, b)
+    return c <= THREE_NUMBER_HEIGHT_RATIO * max(a, b)
+
+
+def parse_title_detail(
+    text: str, category: str | None = None
+) -> tuple[dict[str, float], list[str]]:
+    """Sizes written in a title (metres, keyed width_m / depth_m / height_m / length_m) and notes.
+
+    Labeled forms: 79"W, 63"L x 12"W x 16"H, 80w 34d 30h, W80 D34 H30, with a trailing unit word.
+    Unlabeled groups depend on the category (`categories.axis_rule`): tall products read
+    "21x79" as 21 wide, 79 tall (depth unknown); flat ones as width by length; anything else keeps
+    only the longest side. An unlabeled three-number group is W x D x H only when plausible for the
+    category, else the longest side only. An unlabeled single ("58 in") is `length_m`, the longest
+    side. Numbers with no unit and no axis letter are ignored. With `category=None` the older
+    reading applies (unlabeled groups are W x D x H).
     """
     found: dict[str, float] = {}
+    notes: list[str] = []
     used: list[tuple[int, int]] = []
 
     def overlaps(span: tuple[int, int]) -> bool:
         return any(span[0] < u[1] and u[0] < span[1] for u in used)
 
-    for m in _LABELED.finditer(text):
-        key = _AXIS[m.group("ax")]
-        found.setdefault(key, _metres(m.group("num"), m.group("unit")))
-        used.append(m.span())
+    for start, end, ax, num, unit in _labeled_matches(text):
+        found.setdefault(_AXIS[ax], _metres(num, unit))
+        used.append((start, end))
     for m in _GROUP.finditer(text):
         if overlaps(m.span()):
             continue
         unit = m.group("unit")
-        for key, grp in zip(("width_m", "depth_m", "height_m"), "abc", strict=True):
-            if m.group(grp):
-                found.setdefault(key, _metres(m.group(grp), unit))
+        nums = [m.group(g) for g in "abc" if m.group(g)]
+        values = [_metres(n, unit) for n in nums]
         used.append(m.span())
+        keys = ("width_m", "depth_m", "height_m")
+        if category is None:
+            for key, value in zip(keys, values, strict=False):
+                found.setdefault(key, value)
+            continue
+        rule = axis_rule(category)
+        raw = ", ".join(nums)
+        if len(values) == 3 and _three_number_ok(category, *(v / IN_M for v in values)):
+            for key, value in zip(keys, values, strict=True):
+                found.setdefault(key, value)
+            notes.append(f"{raw} read as W x D x H")
+        elif len(values) == 2 and rule == "tall":
+            found.setdefault("width_m", min(values))
+            found.setdefault("height_m", max(values))
+            notes.append(f"{raw} read as width x height (tall category rule; depth unknown)")
+        elif len(values) == 2 and rule == "flat":
+            found.setdefault("width_m", min(values))
+            found.setdefault("length_m", max(values))
+            notes.append(f"{raw} read as width x length (flat category rule)")
+        else:
+            found["length_m"] = max(found.get("length_m", 0.0), max(values))
+            why = "implausible as W x D x H" if len(values) == 3 else "no axis rule for category"
+            notes.append(f"{raw}: longest side only ({why})")
     if not found:
         for m in _SINGLE.finditer(text):
             if not overlaps(m.span()):
                 value = _metres(m.group("num"), m.group("unit"))
                 found["length_m"] = max(found.get("length_m", 0.0), value)
-    return found
+    return found, notes
+
+
+def parse_title_sizes(text: str, category: str | None = None) -> dict[str, float]:
+    """`parse_title_detail` without the notes."""
+    return parse_title_detail(text, category)[0]
 
 
 def parse_slug_size(url: str, category: str) -> tuple[float | None, str]:
@@ -157,12 +245,12 @@ def resolve_size(
             return SizeResult(features, "feature", "high", notes)
         notes.append("feature size outside the plausible range; discarded")
     for text in titles:
-        parsed = parse_title_sizes(text)
+        parsed, parse_notes = parse_title_detail(text, category)
         if not parsed:
             continue
         dims = DimensionsM(**parsed)
         if _plausible(dims, category):
-            return SizeResult(dims, "title", "high", notes)
+            return SizeResult(dims, "title", "high", notes + parse_notes)
         notes.append("title size outside the plausible range; discarded")
     value, note = parse_slug_size(url, category)
     if note:
