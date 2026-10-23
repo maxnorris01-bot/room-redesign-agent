@@ -168,8 +168,10 @@ def test_the_rank_pool_is_filtered_in_code_before_the_rank_call(
         line.split("|")[0].strip()[6:] for line in request.splitlines() if line.startswith("- id:")
     ]
     assert ids and all(int(i[1:]) >= 8 for i in ids)  # only the top third (p8..p11) is ranked
-    summary = out.slots[0].summary
-    assert summary["tier_band"]["tier"] == "premium" and summary["tier_band"]["kept"] == len(ids)
+    band = out.slots[0].summary["tier_band"]
+    # all twelve share one seller, so the cap of 3 trims the four-result band to three
+    assert band["tier"] == "premium" and band["kept"] == 4 and len(ids) == 3
+    assert band["seller_cap_removed"] == 1
     assert out.plan is not None and out.slots[0].slot.budget_usd is None
     assert out.slots[0].slot.tier == "premium"
 
@@ -242,7 +244,7 @@ def test_no_budget_is_freeplay_and_records_the_mode(cli_env: Any, capsys: Any) -
     assert (data["mode"], data["price_tier"], data["items"], data["budget_usd"]) == (
         "freeplay", "premium", 4, None,
     )  # fmt: skip
-    assert data["prompt_versions"]["rank"] == "4" and data["prompt_versions"]["proposal"] == "3"
+    assert data["prompt_versions"]["rank"] == "5" and data["prompt_versions"]["proposal"] == "3"
     assert set(data["slot_plan"]["tier_bands"]) == set(data["slot_plan"]["slots"])
 
 
@@ -276,14 +278,28 @@ def test_prompt_files() -> None:
 
 
 @pytest.mark.parametrize(
-    "room", ["living room", "bedroom", "home office", "dining room", "studio flat"]
+    ("room", "families"),
+    [
+        ("living room", 8),
+        ("bedroom", 9),
+        ("home office", 7),
+        ("dining room", 8),
+        ("studio flat", 8),
+    ],
 )
-def test_every_room_type_can_reach_ten_distinct_slots(room: str) -> None:
+def test_every_room_type_fills_one_slot_per_family_and_notes_the_shortfall(
+    room: str, families: int
+) -> None:
+    from app.categories import family_of
+
     plan = plan_slots(_empty_room(room), None, 10)
     cats = [s.category for s in plan.slots]
-    assert len(cats) == 10 and len(set(cats)) == 10
-    assert plan.notes == [] and all(s.source == "accent" for s in plan.slots)
+    assert len(cats) == len(set(cats)) == families  # at most one per family, never padded
+    assert len({family_of(c) for c in cats}) == families
+    assert all(s.source == "accent" for s in plan.slots)
     assert all(s.budget_usd is None and s.total_cap_usd is None for s in plan.slots)
+    assert f"only {families} slots are available" in plan.notes[0]
+    assert plan.report["skipped_as_duplicates"]  # the family duplicates are named, not hidden
 
 
 def test_existing_lists_keep_their_order_and_entries() -> None:
@@ -567,7 +583,8 @@ def test_two_failed_attempts_leave_the_slot_empty_and_never_try_a_third(
 def test_a_pick_must_be_a_retailer_page_and_a_linkless_alternate_is_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    results = [_sc(f"p{i}", 10.0 * (i + 1)) for i in range(5)] + [_sc("p5", 60.0, panel=None)]
+    results = [_sc(f"p{i}", 10.0 * (i + 1), seller=f"Seller{i}") for i in range(5)]
+    results.append(_sc("p5", 60.0, panel=None, seller="Seller5"))
     lookup = _Lookup({"p4": _store("a", 50)})
     out, _ = _freeplay(monkeypatch, results, lookup, ["p4", "p5"])
     slot = out.slots[0]

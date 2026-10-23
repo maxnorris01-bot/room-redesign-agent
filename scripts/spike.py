@@ -109,6 +109,11 @@ def main(argv: list[str] | None = None) -> int:
         "--keep", help="existing furniture to keep: comma separated ids (f1) or categories"
     )
     parser.add_argument(
+        "--replace-matching",
+        action="store_true",
+        help="also replace kept items that are part of a set with something being replaced",
+    )
+    parser.add_argument(
         "--proposal-prompt-version",
         help="proposal prompt version to load (default: config, currently 2; 1 is kept)",
     )
@@ -176,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             with_proposal=not args.no_proposal,
             keep=keep_names,
             replace=replace_names,
+            replace_matching=args.replace_matching,
             slots=args.items if args.items is not None else args.slots,
             config=config,
             run_id=run_id,

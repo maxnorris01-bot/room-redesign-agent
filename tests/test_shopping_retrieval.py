@@ -319,11 +319,12 @@ def test_no_url_at_all_is_reported_as_none_never_invented(
 def test_dimensions_are_attached_when_the_lookup_has_them(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.shopping import Dimensions
 
-    details = ProductDetails(dimensions=Dimensions(width_m=0.58, depth_m=0.39, height_m=0.32))
+    details = ProductDetails(dimensions=Dimensions(width_m=1.9, depth_m=0.9, height_m=0.8))
     slot, _ = _one(monkeypatch, details)
-    dims = slot.candidates[0].dimensions_m
-    assert dims is not None and (dims.width_m, dims.depth_m, dims.height_m) == (0.58, 0.39, 0.32)
-    assert dims.length_m is None
+    cand = slot.candidates[0]
+    dims = cand.dimensions_m
+    assert dims is not None and (dims.width_m, dims.depth_m, dims.height_m) == (1.9, 0.9, 0.8)
+    assert dims.length_m is None and (cand.size_source, cand.size_confidence) == ("feature", "high")
 
 
 def test_a_search_provider_failure_is_loud_not_an_empty_slot(
@@ -539,7 +540,7 @@ def test_live_run_room_gets_no_default_rug_or_floor_lamp_slot() -> None:
         "bookshelf",
         "media unit",
     ]  # no media unit in the room, no gap planned
-    assert "console table" in categories  # the longer accent lists continue past media unit
+    assert "console table" not in categories  # same family (storage) as the media unit
 
 
 def test_fixed_items_count_as_covered_for_defaults() -> None:

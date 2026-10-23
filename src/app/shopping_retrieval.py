@@ -25,11 +25,13 @@ as LLM steps.
 
 from __future__ import annotations
 
+import re
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from app.images import PreparedImage
 from app.llm import Budget, Completion, complete
 from app.prompts import Prompt
 from app.retrieval import CallRecord, Slot, SlotResult, product_page_rejection
@@ -53,12 +55,21 @@ from app.shopping import (
     choose_store,
     strip_tracking,
 )
+from app.sizes import resolve_size
+from app.thumbnails import Thumbnailer, build_thumbnailer, fetch_traced
 from app.tracing import span
 
 __all__ = [
-    "build_providers", "build_query", "filter_candidates", "lookup_alternate", "price_stats",
-    "run_slot", "tier_pool",
-]  # fmt: skip
+    "build_providers",
+    "build_query",
+    "build_thumbnailer",
+    "cap_per_seller",
+    "filter_candidates",
+    "lookup_alternate",
+    "price_stats",
+    "run_slot",
+    "tier_pool",
+]
 
 TOP_N = 25
 RANK_MAX_TOKENS = 1500
@@ -69,6 +80,7 @@ OVER_OPTIONS = 2  # over-budget options shown per empty slot
 # Freeplay price tiers (ADR 0008). Both UNTUNED GUESSES.
 OUTLIER_FACTOR = 3.0  # results above this many medians are ignored when sizing the premium band
 MIN_BAND_RESULTS = 3  # a tier band with fewer results is widened to the adjacent tier
+SELLER_CAP = 3  # most results one seller may contribute to a freeplay rank pool. UNTUNED GUESS.
 
 
 def build_query(category: str, style: str) -> str:
@@ -199,6 +211,30 @@ def tier_pool(
     return kept, band
 
 
+def seller_key(seller: str) -> str:
+    """A seller name normalised for grouping ("Article", "article.com" and "ARTICLE" are one)."""
+    lowered = seller.lower().strip()
+    lowered = re.sub(r"\.(com|net|org|co)$", "", lowered)
+    return re.sub(r"[^a-z0-9]+", "", lowered) or "?"
+
+
+def cap_per_seller(
+    pool: list[SearchCandidate], cap: int = SELLER_CAP
+) -> tuple[list[SearchCandidate], int]:
+    """Keep at most `cap` results per seller, in the pool's own (search rank) order.
+
+    Returns (capped pool, number removed). Applied after the tier band filter so the band is kept.
+    """
+    seen: dict[str, int] = {}
+    kept: list[SearchCandidate] = []
+    for c in pool:
+        key = seller_key(c.seller)
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] <= cap:
+            kept.append(c)
+    return kept, len(pool) - len(kept)
+
+
 def _estimated_cost(budget: Budget, provider: str) -> float:
     config = budget.config
     return config.serper_usd_per_query if provider == "serper" else config.serpapi_usd_per_search
@@ -285,7 +321,7 @@ def _record_provider_call(
 
 
 def _lookup_one(
-    cand: SearchCandidate, reason: str, lookup: ProductLookup, budget: Budget
+    cand: SearchCandidate, reason: str, lookup: ProductLookup, budget: Budget, category: str = ""
 ) -> tuple[ProductCandidate, CallRecord, list[dict[str, Any]], str | None]:
     """Stage 3 for one finalist. Provider failures degrade to a panel-URL candidate.
 
@@ -363,6 +399,21 @@ def _lookup_one(
         if cand.google_panel_url:
             base.update(url=cand.google_panel_url, url_kind="google_panel")
         result = ProductCandidate(**base)
+    size = resolve_size(
+        category,
+        dims,
+        [result.store_title, cand.title],
+        result.url if result.url_kind == "retailer_product" else "",
+    )
+    result = result.model_copy(
+        update={
+            "dimensions_m": size.dims,
+            "size_source": size.source,
+            "size_confidence": size.confidence,
+            "size_note": "; ".join(size.notes),
+            "thumbnail_url": cand.thumbnail_url or "",
+        }
+    )
     record = _record_provider_call(
         budget, "lookup", cand.title[:40], lookup.name,
         budget.config.serpapi_usd_per_search, seconds, ok=ok, detail=detail or (issue or ""),
@@ -374,12 +425,17 @@ Looked = tuple[ProductCandidate, CallRecord, list[dict[str, Any]], str | None]
 
 
 def _lookup_round(
-    chosen: list[tuple[SearchCandidate, str]], lookup: ProductLookup, budget: Budget
+    chosen: list[tuple[SearchCandidate, str]],
+    lookup: ProductLookup,
+    budget: Budget,
+    category: str = "",
 ) -> list[Looked]:
     """Look up the chosen finalists concurrently; results keep rank order. A budget error or a
     401/403 propagates (after the calls in flight finish); other provider errors degrade."""
     with ThreadPoolExecutor(max_workers=len(chosen), thread_name_prefix="lookup") as pool:
-        futures = [pool.submit(_lookup_one, c, reason, lookup, budget) for c, reason in chosen]
+        futures = [
+            pool.submit(_lookup_one, c, reason, lookup, budget, category) for c, reason in chosen
+        ]
         outcomes = [f.exception() for f in futures]
     out: list[Looked] = []
     for future, error in zip(futures, outcomes, strict=True):
@@ -467,11 +523,12 @@ def _unverified(c: SearchCandidate, reason: str) -> ProductCandidate:
         reason=reason,
         product_id=c.product_id,
         price_source="search",
+        thumbnail_url=c.thumbnail_url or "",
     )
 
 
 def lookup_alternate(
-    alt: ProductCandidate, lookup: ProductLookup, budget: Budget
+    alt: ProductCandidate, lookup: ProductLookup, budget: Budget, category: str = ""
 ) -> tuple[ProductCandidate | None, CallRecord]:
     """Look up one unverified alternate on demand (the UI's "get the retailer link").
 
@@ -483,7 +540,7 @@ def lookup_alternate(
         alt.product_id, alt.name, alt.retailer, alt.price, alt.currency, alt.rating,
         alt.rating_count, alt.url or None,
     )  # fmt: skip
-    candidate, record, _, _ = _lookup_one(search_like, alt.reason, lookup, budget)
+    candidate, record, _, _ = _lookup_one(search_like, alt.reason, lookup, budget, category)
     return (candidate if candidate.url_kind == "retailer_product" else None), record
 
 
@@ -495,8 +552,14 @@ def run_slot(
     rank_prompt: Prompt,
     search: SearchProvider,
     lookup: ProductLookup,
+    thumbs: Thumbnailer | None = None,
 ) -> SlotResult:
-    """All three stages for one slot (runs in a worker thread)."""
+    """All three stages for one slot (runs in a worker thread).
+
+    With `thumbs`, the top-ranked finalist's thumbnail is fetched in a worker thread right after
+    the rank step, in parallel with the lookups, so it adds nothing to the slot's critical path.
+    A failed fetch is counted in `summary["thumbnail"]`; the style check then reads text.
+    """
     config = budget.config
     started = time.perf_counter()
     calls: list[CallRecord] = []
@@ -529,6 +592,8 @@ def run_slot(
     band: dict[str, Any] | None = None
     if slot.budget_usd is None:  # freeplay: a price tier band from this slot's own results
         pool_, band = tier_pool(results, slot.tier or config.price_tier)
+        pool_, removed = cap_per_seller(pool_)
+        band["seller_cap_removed"] = removed
         priced = unique_priced(results)
         counts = {
             "returned": len(results),
@@ -545,7 +610,16 @@ def run_slot(
     summary["search"] = counts
     summary["price_stats"] = price_stats(results, slot.budget_usd)
 
+    thumb: dict[str, Any] = {}  # {"future": ..., "pool": ..., "product_id": ...} once started
+
     def finish(note: str, candidates: list[ProductCandidate], completion: Completion) -> SlotResult:
+        images: dict[str, PreparedImage] = {}
+        if "future" in thumb:
+            got = thumb["future"].result()
+            thumb["pool"].shutdown(wait=False)
+            summary["thumbnail"] = {"ok": got.ok, "reason": got.reason, "host": got.host}
+            if got.ok and got.image is not None:
+                images[thumb["product_id"]] = got.image
         summary.update(
             candidates_kept=len(candidates),
             dropped=[d["reason"] for d in dropped],
@@ -559,6 +633,7 @@ def run_slot(
             round(time.perf_counter() - started, 3), calls, summary,
         )  # fmt: skip
         result.over_budget_options = options
+        result.thumbnails = images
         return result
 
     def collect(looked: list[Looked], phase: str = "") -> list[ProductCandidate]:
@@ -598,7 +673,7 @@ def run_slot(
         dropped.extend(rank_drops)
         summary["over_limit_rank"] = rank_counts
         if chosen:
-            for cand in collect(_lookup_round(chosen, lookup, budget), "over limit"):
+            for cand in collect(_lookup_round(chosen, lookup, budget, slot.category), "over limit"):
                 if cand.url_kind == "retailer_product":
                     options.append(_option(cand, "over_item_limit", slot))
         return finish(note, [], completion)
@@ -612,6 +687,14 @@ def run_slot(
     summary["rank"] = rank_counts
     if not chosen:
         return finish("the ranker returned no valid finalist", [], completion)
+    top = chosen[0][0]
+    if thumbs is not None and top.thumbnail_url:
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="thumb")
+        thumb.update(
+            future=pool.submit(fetch_traced, thumbs, top.thumbnail_url, config),
+            pool=pool,
+            product_id=top.product_id,
+        )
 
     # Stage 3: lookups. A BudgetExceededError or a 401/403 propagates; other provider errors
     # degrade. With fewer lookups than finalists (freeplay: 1) the top finalist is looked up and
@@ -642,7 +725,7 @@ def run_slot(
             candidates.append(candidate)
 
     if lookups >= len(chosen):
-        for candidate in collect(_lookup_round(chosen, lookup, budget)):
+        for candidate in collect(_lookup_round(chosen, lookup, budget, slot.category)):
             classify(candidate)
     else:
         verified = 0
@@ -652,7 +735,7 @@ def run_slot(
                 unverified.append(_unverified(sc, reason))
                 continue
             attempts += 1
-            (candidate,) = collect(_lookup_round([(sc, reason)], lookup, budget))
+            (candidate,) = collect(_lookup_round([(sc, reason)], lookup, budget, slot.category))
             if candidate.url_kind == "retailer_product":
                 verified += 1
                 classify(candidate)

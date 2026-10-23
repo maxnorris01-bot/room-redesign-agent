@@ -153,13 +153,13 @@ def mock_perception_payload() -> dict[str, Any]:
         "furniture": [
             {"id": "f1", "category": "sofa", "position": {"x": 0.3, "y": 0.6},
              "size": {"width_m": 2.0, "depth_m": 0.9}, "keepable": "unlikely",
-             "note": "MOCK sofa, marked replaceable"},
+             "note": "MOCK warm ivory sofa, marked replaceable", "matches_id": None},
             {"id": "f2", "category": "armchair", "position": {"x": 0.7, "y": 0.7},
              "size": {"width_m": 0.9, "depth_m": 0.9}, "keepable": "likely",
-             "note": "MOCK armchair, marked keepable"},
+             "note": "MOCK pale blue armchair, matches sofa f1", "matches_id": "f1"},
             {"id": "f3", "category": "desk", "position": {"x": 0.8, "y": 0.2},
              "size": {"width_m": 1.4, "depth_m": 0.7}, "keepable": "likely",
-             "note": "MOCK desk, marked keepable"},
+             "note": "MOCK desk, marked keepable", "matches_id": None},
         ],
         "furniture_gaps": [
             {"category": "coffee table", "reason": "MOCK: bare floor in front of sofa"},
@@ -233,9 +233,27 @@ def proposal_payload(
     }
 
 
-def style_payload(matches: dict[str, str], note: str = "MOCK style note") -> dict[str, Any]:
-    """A StyleCheckOutput payload: `matches` maps slot name to good, ok or poor."""
-    return {"items": [{"slot": s, "match": m, "note": note} for s, m in matches.items()]}
+def style_payload(
+    matches: dict[str, str],
+    note: str = "MOCK style note",
+    clash: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """A StyleCheckOutput payload: `matches` maps slot name to good, ok or poor; `clash` maps slot
+    name to none, mild or strong (a clash is with "armchair (f2)", the mock's kept armchair)."""
+    clash = clash or {}
+    items = []
+    for slot, match in matches.items():
+        level = clash.get(slot, "none")
+        items.append(
+            {
+                "slot": slot,
+                "match": match,
+                "note": note,
+                "clash": level,
+                "clash_with": "" if level == "none" else "armchair (f2)",
+            }
+        )
+    return {"items": items}
 
 
 def mock_proposal_payload(request_text: str) -> dict[str, Any]:
@@ -277,23 +295,35 @@ def mock_proposal_payload(request_text: str) -> dict[str, Any]:
                 "fit_note": "MOCK fit note",
             }
         )
-    return {"slots": slots, "summary": "MOCK summary: deterministic placeholder proposal."}
+    summary = "MOCK summary: deterministic placeholder proposal."
+    if "Set note:" in request_text:  # the summary must acknowledge a matching kept piece
+        summary += " It acknowledges a kept matching piece that may clash with the new item."
+    return {"slots": slots, "summary": summary}
 
 
-def mock_style_payload(request_text: str) -> dict[str, Any]:
-    """Every listed item "good", unless its title contains POOR-STYLE (a hook for tests)."""
+def mock_style_payload(request_text: str, *, v2: bool = True) -> dict[str, Any]:
+    """Every listed item "good" with no clash, unless its title contains POOR-STYLE (poor) or
+    CLASH (a strong clash with the first kept item): hooks for tests. v1 has no clash fields."""
+    kept = re.search(r"Furniture that STAYS: (.+)", request_text)
+    first_kept = ""
+    if kept and kept.group(1).strip() != "nothing":
+        first_kept = re.match(r"([^:;]+\([^)]*\))", kept.group(1)).group(1)  # type: ignore[union-attr]
     items = []
     for line in request_text.splitlines():
         match = re.match(r"^- slot: (.+?) \| (.*?) \| retailer:", line)
-        if match:
-            poor = "POOR-STYLE" in match.group(2)
-            items.append(
-                {
-                    "slot": match.group(1),
-                    "match": "poor" if poor else "good",
-                    "note": "MOCK style note",
-                }
-            )
+        if not match:
+            continue
+        title = match.group(2)
+        item: dict[str, Any] = {
+            "slot": match.group(1),
+            "match": "poor" if "POOR-STYLE" in title else "good",
+            "note": "MOCK style note",
+        }
+        if v2:
+            strong = "CLASH" in title and bool(first_kept)
+            item["clash"] = "strong" if strong else "none"
+            item["clash_with"] = first_kept if strong else ""
+        items.append(item)
     return {"items": items}
 
 
@@ -347,10 +377,23 @@ class MockAnthropicClient:
                 input_tokens=1500,
                 output_tokens=300,
             )
-        if title == "StyleCheckOutput":
+        if title in ("StyleCheckOutput", "StyleCheckOutputV1"):
+            images = (
+                sum(
+                    1
+                    for b in kwargs["messages"][0]["content"]
+                    if isinstance(b, dict) and b.get("type") == "image"
+                )
+                if not isinstance(kwargs["messages"][0]["content"], str)
+                else 0
+            )
             return response(
-                [text_block(mock_style_payload(_request_text(kwargs)))],
-                input_tokens=300,
+                [
+                    text_block(
+                        mock_style_payload(_request_text(kwargs), v2=title == "StyleCheckOutput")
+                    )
+                ],
+                input_tokens=300 + 150 * images,
                 output_tokens=60,
             )
         if title == "RankedFinalists":

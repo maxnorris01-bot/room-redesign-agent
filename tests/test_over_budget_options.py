@@ -580,7 +580,7 @@ def test_media_unit_follows_bookshelf_in_the_living_room_accents() -> None:
     p = _perception(furniture=[], furniture_gaps=[], art_and_decor=[], fixed_items=[])
     cats = [s.category for s in derive_slots(p, 800, 10)]
     assert cats[:6] == ["sofa", "coffee table", "area rug", "floor lamp", "bookshelf", "media unit"]
-    assert len(cats) == 10
+    assert len(cats) == 8  # one slot per family: console table and side table are duplicates
 
 
 @pytest.mark.parametrize(

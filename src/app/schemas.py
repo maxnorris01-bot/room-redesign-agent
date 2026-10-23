@@ -77,6 +77,11 @@ class FurnitureItem(_Strict):
         description="Whether it looks worth keeping: good condition and fits the room's style"
     )
     note: str
+    # The id of another item that is visibly part of the same set (matching sofa and armchair).
+    # Optional and additive, so schema_version stays 1 and older results still parse.
+    matches_id: str | None = Field(
+        default=None, description="Id of another item that is visibly part of the same set, or null"
+    )
 
 
 class FurnitureGap(_Strict):
@@ -159,6 +164,12 @@ class ProductCandidate(Candidate):
     # known = a shipping amount; free = stated free; unknown = nothing stated. When not given it
     # is inferred from `shipping` and `total` (see `_infer_shipping_status`).
     shipping_status: Literal["known", "free", "unknown"] = "unknown"
+    # Where `dimensions_m` came from and how far to trust it (ADR 0009): the lookup's feature text,
+    # a size written in a title (both "high"), or a number in the URL slug ("low", approximate).
+    size_source: Literal["feature", "title", "slug", "none"] = "none"
+    size_confidence: Literal["high", "low", "none"] = "none"
+    size_note: str = ""  # a size that was found but discarded as implausible, for the trace
+    thumbnail_url: str = ""  # one product thumbnail from the provider (https), for the style check
 
     @model_validator(mode="after")
     def _infer_shipping_status(self) -> ProductCandidate:
@@ -199,13 +210,31 @@ class ProposalOutput(_Strict):
     summary: str = Field(description="At most 60 words")
 
 
-class StyleItem(_Strict):
+class StyleItemV1(_Strict):
     slot: str = Field(description="The slot name exactly as given")
     match: Literal["good", "ok", "poor"]
     note: str = Field(description="At most 15 words")
 
 
+class StyleCheckOutputV1(_Strict):
+    """Style prompt v1: text only, no clash."""
+
+    items: list[StyleItemV1]
+
+
+class StyleItem(StyleItemV1):
+    # Defaults keep older payloads parsing; the API schema lists every property as required.
+    clash: Literal["none", "mild", "strong"] = Field(
+        default="none", description="Clash with furniture that stays"
+    )
+    clash_with: str = Field(
+        default="", description="The kept item it clashes with, or an empty string"
+    )
+
+
 class StyleCheckOutput(_Strict):
+    """Style prompt v2: sees images, and reports clashes with the furniture that stays."""
+
     items: list[StyleItem]
 
 
@@ -220,6 +249,9 @@ class CheckResult(_Strict):
     item: str | None = None  # the slot it concerns; None = the whole proposal
     warning: str | None = None  # something worth showing that is not a failure
     value: str | None = None  # style check only: the match word (good, ok, poor)
+    clash: Literal["none", "mild", "strong"] = "none"  # style check only
+    clash_with: str = ""
+    basis: Literal["image", "text", "none"] = "none"  # style check only: what the call saw
 
 
 class OverBudgetOption(_Strict):
@@ -268,6 +300,10 @@ class ProposalItem(_Strict):
     fit_note: str = ""
     style_match: Literal["good", "ok", "poor", "unknown"] = "unknown"
     style_note: str = ""
+    style_basis: Literal["image", "text", "none"] = "none"  # what the style check actually saw
+    style_clash: Literal["none", "mild", "strong"] = "none"  # against the furniture that stays
+    style_clash_with: str = ""
+    replace_size_note: str = ""  # new piece vs the old one it replaces, when they differ a lot
     warnings: list[str] = []
 
 
@@ -319,6 +355,8 @@ def to_output_schema(model: type[BaseModel]) -> dict[str, Any]:
         out = {k: walk(v) for k, v in node.items() if k not in _UNSUPPORTED and k != "$defs"}
         if out.get("type") == "object":
             out["additionalProperties"] = False
+            if "properties" in out:  # structured output wants every property listed as required
+                out["required"] = list(out["properties"])
         return out
 
     schema: dict[str, Any] = walk(raw)
