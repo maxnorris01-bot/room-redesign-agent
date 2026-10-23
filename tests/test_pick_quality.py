@@ -51,7 +51,7 @@ from app.schemas import (
 from app.selfcheck import StyleContext, check_fit, check_style
 from app.shopping import ProductDetails, SearchCandidate, Store
 from app.shopping_retrieval import cap_per_seller, run_slot
-from app.sizes import parse_slug_size, parse_title_sizes, resolve_size
+from app.sizes import parse_slug_size, parse_title_detail, parse_title_sizes, resolve_size
 from app.spike import format_final_list, run_spike, write_outputs
 from app.thumbnails import (
     MAX_BYTES,
@@ -1142,3 +1142,172 @@ def test_the_vision_call_is_counted_in_the_caps() -> None:
 def test_slot_inputs_and_run_slot_signatures_still_work_without_thumbnails() -> None:
     assert slot_inputs(RetrievalResult(mode="shopping")) == []
     assert run_slot.__defaults__ == (None,)  # `thumbs` is optional
+
+
+# ======================================================================================
+# Size parsing fix: compact labels, category-aware axes, height rule, depth note, style join
+# ======================================================================================
+
+ADA_TITLE = (
+    'Room & Board | Modern Ada 80" Sofa in Tepic Oatmeal | Stain-Resistant Fabric | 80w 34d 30h'
+)
+HEIDI_TITLE = (
+    'Walnut Wood Modular Narrow Bookcase, 21"x79", 5x Open Storage Shelves, Scandinavian Design'
+    " | Article Heidi Home Office Furniture"
+)
+IN = 0.0254
+
+
+def test_real_sofa_title_reads_width_depth_and_height() -> None:
+    got = parse_title_sizes(ADA_TITLE, "sofa")
+    assert got == {"width_m": round(80 * IN, 4), "depth_m": round(34 * IN, 4),
+                   "height_m": round(30 * IN, 4)}  # fmt: skip
+
+
+def test_real_bookcase_title_is_width_by_height_with_unknown_depth() -> None:
+    got, notes = parse_title_detail(HEIDI_TITLE, "bookshelf")
+    assert got == {"width_m": round(21 * IN, 4), "height_m": round(79 * IN, 4)}
+    assert any("tall category rule" in n and "depth unknown" in n for n in notes)
+    result = resolve_size("bookshelf", None, [HEIDI_TITLE], "https://x.example/p/heidi")
+    assert result.source == "title" and result.dims is not None
+    assert result.dims.depth_m is None and any("tall category rule" in n for n in result.notes)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "80w 34d 30h",
+        "80W x 34D x 30H",
+        '80"W 34"D 30"H',
+        "W80 D34 H30",
+        "Sofa W80 x D34 x H30 in",
+        "80 w 34 d 30 h inches",
+        "80W 34D 30H IN",
+    ],
+)
+def test_compact_labeled_forms(text: str) -> None:
+    got = parse_title_sizes(text, "sofa")
+    assert got == {"width_m": round(80 * IN, 4), "depth_m": round(34 * IN, 4),
+                   "height_m": round(30 * IN, 4)}  # fmt: skip
+
+
+def test_compact_labeled_forms_take_a_trailing_metric_unit() -> None:
+    got = parse_title_sizes("203w 86d 76h cm", "sofa")
+    assert got == {"width_m": 2.03, "depth_m": 0.86, "height_m": 0.76}
+    assert parse_title_sizes("W203 D86 H76 cm", "sofa") == got
+
+
+def test_prefixed_form_needs_two_axes_to_count() -> None:
+    assert parse_title_sizes("Model H30 chair", "armchair") == {}
+
+
+def test_unlabeled_pair_by_category_rule() -> None:
+    tall = parse_title_detail('21"x79"', "floor lamp")
+    assert tall[0] == {"width_m": round(21 * IN, 4), "height_m": round(79 * IN, 4)}
+    wardrobe = parse_title_sizes("79 x 21 in", "wardrobe")
+    assert wardrobe == {"width_m": round(21 * IN, 4), "height_m": round(79 * IN, 4)}
+    flat, flat_notes = parse_title_detail("5 x 8 ft rug 60 x 96 in", "rug")
+    assert flat == {"width_m": round(60 * IN, 4), "length_m": round(96 * IN, 4)}
+    assert any("flat category rule" in n for n in flat_notes)
+    other, other_notes = parse_title_detail('36" x 18"', "coffee table")
+    assert other == {"length_m": round(36 * IN, 4)}
+    assert any("longest side only" in n for n in other_notes)
+
+
+def test_unlabeled_three_numbers_follow_wdh_only_when_plausible() -> None:
+    ok = parse_title_sizes("79 x 36 x 32 in", "sofa")
+    assert ok == {"width_m": round(79 * IN, 4), "depth_m": round(36 * IN, 4),
+                  "height_m": round(32 * IN, 4)}  # fmt: skip
+    bad, notes = parse_title_detail("20 x 30 x 90 in", "sofa")
+    assert bad == {"length_m": round(90 * IN, 4)} and any("implausible" in n for n in notes)
+    tall_bad = parse_title_sizes("79 x 18 x 30 in", "bookshelf")
+    assert tall_bad == {"length_m": round(79 * IN, 4)}
+    tall_ok = parse_title_sizes("30 x 12 x 72 in", "bookshelf")
+    assert tall_ok["height_m"] == round(72 * IN, 4)
+
+
+def test_height_counts_toward_plausibility_for_tall_categories() -> None:
+    result = resolve_size("bookshelf", None, ['Shelf 21"x120"'], "https://x.example/p/a")
+    assert result.dims is None and any("outside the plausible range" in n for n in result.notes)
+
+
+def test_old_reading_is_kept_without_a_category() -> None:
+    got = parse_title_sizes("79 x 18 x 30 in")
+    assert got["width_m"] == round(79 * IN, 4) and got["height_m"] == round(30 * IN, 4)
+
+
+def _tall_fit(height: float, ceiling: float | None, width: float = 0.53) -> Any:
+    dims = {**mock_perception_payload()["dimensions"], "width_m": 4.0, "length_m": 5.0}
+    room = _perception(dimensions=dims)
+    if ceiling is None:
+        room.dimensions = room.dimensions.model_construct(**{**dims, "ceiling_height_m": None})
+    else:
+        room.dimensions = room.dimensions.model_copy(update={"ceiling_height_m": ceiling})
+    cand = _cand(dimensions_m=DimensionsM(width_m=width, height_m=height))
+    (r,) = check_fit([ProposalItem(slot="bookshelf", pick_id="p1", pick=cand)], room, Config())
+    return r
+
+
+def test_height_rule_fails_over_the_ceiling_minus_a_tenth() -> None:
+    r = _tall_fit(2.45, 2.5)
+    assert r.status == "fail" and "height 2.45 m is over the ceiling limit 2.40 m" in r.message
+    assert "sizes used: 2.45 m tall, 0.53 m wide" in r.message
+
+
+def test_height_rule_passes_and_message_names_the_axes_used() -> None:
+    r = _tall_fit(2.0066, 2.5)
+    assert r.status == "pass"
+    assert "2.01 m tall, 0.53 m wide" in r.message and "footprint rule skipped" in r.message
+
+
+def test_height_rule_is_skipped_with_unknown_ceiling_or_height() -> None:
+    assert _tall_fit(3.5, None).status == "pass"
+    no_height = _cand(dimensions_m=DimensionsM(width_m=0.5))
+    room = _perception()
+    (r,) = check_fit([ProposalItem(slot="bookshelf", pick_id="p1", pick=no_height)], room, Config())
+    assert r.status == "pass"
+
+
+def test_height_alone_fails_when_too_tall_else_stays_unknown() -> None:
+    assert _tall_fit(2.9, 2.5, width=0.5).status == "fail"
+    cand = _cand(dimensions_m=DimensionsM(height_m=3.0))
+    room = _perception()
+    room.dimensions = room.dimensions.model_copy(update={"ceiling_height_m": 2.5})
+    (r,) = check_fit([ProposalItem(slot="x", pick_id="p1", pick=cand)], room, Config())
+    assert r.status == "fail" and "ceiling limit" in r.message
+
+
+def test_replacement_note_compares_depth_when_both_known() -> None:
+    cand = _cand(dimensions_m=DimensionsM(width_m=2.0, depth_m=0.5), size_confidence="high")
+    item = ProposalItem(
+        slot="sofa", pick_id="p1", pick=cand,
+        replaces=ReplacedItem(id="f1", category="sofa", width_m=2.0, depth_m=0.9),
+    )  # fmt: skip
+    annotate_replacements([item])
+    assert "0.50 m deep" in item.replace_size_note and "44% shallower" in item.replace_size_note
+    assert "long" not in item.replace_size_note
+    both = _cand(dimensions_m=DimensionsM(width_m=1.2, depth_m=1.3))
+    item2 = ProposalItem(
+        slot="sofa", pick_id="p1", pick=both,
+        replaces=ReplacedItem(id="f1", category="sofa", width_m=2.0, depth_m=0.9),
+    )  # fmt: skip
+    annotate_replacements([item2])
+    assert "35% shorter" in item2.replace_size_note and "44% deeper" in item2.replace_size_note
+    unknown = _cand(dimensions_m=DimensionsM(width_m=2.0))
+    item3 = ProposalItem(
+        slot="sofa", pick_id="p1", pick=unknown,
+        replaces=ReplacedItem(id="f1", category="sofa", width_m=2.0, depth_m=0.9),
+    )  # fmt: skip
+    annotate_replacements([item3])
+    assert item3.replace_size_note == ""
+
+
+def test_style_note_joins_the_clash_without_stray_punctuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = style_payload({"sofa": "good"}, note="Warm and understated.", clash={"sofa": "mild"})
+    client = ScriptedClient([response([text_block(json.dumps(payload))])])
+    monkeypatch.setattr(llm, "get_client", lambda mode, max_retries=1: client)
+    results, _ = check_style(_items("sofa"), _perception(), "x", Budget(Config()), None)
+    assert results[0].message == "good: Warm and understated; mild clash with armchair (f2)"
+    assert ".;" not in results[0].message

@@ -122,6 +122,30 @@ def size_range_in(category: str) -> tuple[float, float]:
     return DEFAULT_SIZE_RANGE_IN
 
 
+# ---- axis rules for unlabeled sizes -----------------------------------------------------------
+# What an unlabeled two-number size ("21"x79"") means depends on the product. UNTUNED.
+#   tall  -> the larger number is the height, the smaller the width, depth unknown
+#   flat  -> width by length (smaller by larger)
+#   other -> only the longest side is recorded; the other axis stays unknown
+TALL_CATEGORIES = {"bookshelf", "wardrobe"}
+TALL_WORDS = {"bookcase", "bookshelf", "shelving", "shelf", "shelves", "wardrobe", "armoire"}
+TALL_PHRASES = ("floor lamp", "tall cabinet", "tall dresser", "tall bookcase", "etagere", "étagère")
+
+
+def axis_rule(category: str) -> str:
+    """'tall', 'flat' or 'other': how to assign the axes of an unlabeled two-number size."""
+    if is_flat_item(category):
+        return "flat"
+    text = norm(category)
+    if (
+        canonical_category(category) in TALL_CATEGORIES
+        or TALL_WORDS & set(re.findall(r"[a-z]+", text))
+        or any(p in text for p in TALL_PHRASES)
+    ):
+        return "tall"
+    return "other"
+
+
 def category_words(category: str) -> set[str]:
     """Words that signal the category in a URL slug: its own words and its synonym group's."""
     words = set(re.findall(r"[a-z]+", norm(category)))

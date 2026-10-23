@@ -20,6 +20,9 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 ## Later
 
+- [x] Size parsing fix (2026-10-23): compact labeled sizes, category-aware axes for unlabeled groups, height rule, depth in the replacement note, style note join. Mock-verified only; see `docs/sessions/2026-10-23-size-parsing-fix.md`.
+- [ ] Live check of the size fixes: re-run the room that showed the `80w 34d 30h` and `21"x79"` misreads and confirm the axes; tune the category table, the 2.5x three-number test and the 0.1 m height clearance.
+
 - [ ] A product-page size source, only if title and slug hints turn out not to be enough (measure how often `size_source` is `none` and how often a hint is wrong in live runs).
 - [ ] Stream slot results to the UI as they finish (each slot already completes independently).
 - [ ] A hedged second lookup when the first is slow (start the fallback finalist's lookup after a delay instead of after a failure).
