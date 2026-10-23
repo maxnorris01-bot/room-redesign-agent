@@ -1,5 +1,7 @@
 # 0003. 2D canvas from perception data for v1; photo-real is a gated experiment
 
+> Note (2026-10-23): the owner has since chosen photo-real as the main output with this 2D plan as the instant first view; see ADR 0011 (proposed). This ADR's status is unchanged.
+
 - **Status:** accepted
 - **Date:** 2026-10-18
 

@@ -493,13 +493,13 @@ ul.notes{margin:6px 0;padding-left:20px}ul.notes li{margin:4px 0}
 """
 
 
-def page(title: str, body: str) -> str:
+def page(title: str, body: str, extra_css: str = "") -> str:
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f'<meta http-equiv="Content-Security-Policy" content="{esc(CSP)}">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         '<meta name="color-scheme" content="light dark">'
-        f"<title>{esc(title)}</title><style>{CSS}</style></head><body><main>{body}</main></body></html>\n"
+        f"<title>{esc(title)}</title><style>{CSS}{extra_css}</style></head><body><main>{body}</main></body></html>\n"
     )
 
 

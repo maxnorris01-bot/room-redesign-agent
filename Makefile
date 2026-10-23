@@ -1,5 +1,5 @@
 .PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-standard-live \
-	eval-nightly eval-nightly-live spike spike-live report reports
+	eval-nightly eval-nightly-live spike spike-live report reports render render-live
  
 install:
 	uv sync
@@ -62,3 +62,13 @@ report:
 # Reports for every run under spike-output/, plus spike-output/index.html.
 reports:
 	APP_LLM_MODE=mock uv run python scripts/report.py --all
+
+# Photo-real spike (an experiment, see docs/adr/0011). Mock and offline: placeholder images stand in
+# for the renders and for any missing product image. Pass arguments with ARGS.
+render:
+	APP_LLM_MODE=mock uv run python scripts/render_spike.py $(or $(ARGS),--from-run latest --approach gemini --locate --judge)
+
+# Real, billed calls (Max's call). Needs --live arguments, the provider key in the environment, and
+# product images in render-inputs/. The plan and its estimated cost print first; --max-usd is a hard stop.
+render-live:
+	APP_LLM_MODE=live uv run python scripts/render_spike.py --live $(ARGS)

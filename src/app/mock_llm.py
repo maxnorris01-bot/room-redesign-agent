@@ -396,6 +396,33 @@ class MockAnthropicClient:
                 input_tokens=300 + 150 * images,
                 output_tokens=60,
             )
+        if title == "RenderLocateOutput":
+            slots = [
+                line.removeprefix("Item: ").split(" - ")[0]
+                for line in _request_text(kwargs).splitlines()
+                if line.startswith("Item: ")
+            ]
+            boxes = [
+                {"slot": s, "placement": f"MOCK place for {s}",
+                 "box": {"x0": 0.1 + 0.25 * (i % 3), "y0": 0.3,
+                         "x1": 0.3 + 0.25 * (i % 3), "y1": 0.8}}
+                for i, s in enumerate(slots)
+            ]  # fmt: skip
+            return response(
+                [text_block(json.dumps({"items": boxes}))], input_tokens=900, output_tokens=120
+            )
+        if title == "RenderJudgeOutput":
+            slots = [
+                line.removeprefix("Item: ").split(" (")[0]
+                for line in _request_text(kwargs).splitlines()
+                if line.startswith("Item: ")
+            ]
+            judged = {
+                "items": [{"slot": s, "look_alike": 3, "notes": "MOCK note"} for s in slots],
+                "rest_of_room_changed": False,
+                "room_notes": "MOCK: nothing noticeable",
+            }
+            return response([text_block(json.dumps(judged))], input_tokens=1500, output_tokens=120)
         if title == "RankedFinalists":
             return response(
                 [text_block(mock_rank_payload(_request_text(kwargs)))],
