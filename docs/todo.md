@@ -20,6 +20,11 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 ## Later
 
+- [x] Run report (2026-10-23): `make report`, `make reports`, `report.html` per run and `spike-output/index.html`; see `docs/sessions/2026-10-23-run-report.md`.
+- [ ] The canvas UI should reuse the plan logic in `src/app/report.py` (`plan_shapes`: x west to east as a fraction of width, y north to south as a fraction of length) instead of redrawing it.
+- [ ] Product thumbnails shown in a public page need a terms review (the report shows remote Google-hosted images in a local developer file only).
+- [ ] The report is a developer tool and not the product UI; do not grow it into one.
+
 - [x] Size parsing fix (2026-10-23): compact labeled sizes, category-aware axes for unlabeled groups, height rule, depth in the replacement note, style note join. Mock-verified only; see `docs/sessions/2026-10-23-size-parsing-fix.md`.
 - [ ] Live check of the size fixes: re-run the room that showed the `80w 34d 30h` and `21"x79"` misreads and confirm the axes; tune the category table, the 2.5x three-number test and the 0.1 m height clearance.
 

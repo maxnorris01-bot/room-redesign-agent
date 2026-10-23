@@ -1,5 +1,5 @@
 .PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-standard-live \
-	eval-nightly eval-nightly-live spike spike-live
+	eval-nightly eval-nightly-live spike spike-live report reports
  
 install:
 	uv sync
@@ -54,3 +54,11 @@ spike:
 # Costs real API money. Run deliberately (Max's call), after the Console spend limit exists.
 spike-live:
 	APP_LLM_MODE=live uv run python scripts/spike.py $(ARGS)
+
+# HTML report for a run (no network, nothing is opened for you). Latest run, or RUN=spike-output/<run id>.
+report:
+	APP_LLM_MODE=mock uv run python scripts/report.py $(RUN)
+
+# Reports for every run under spike-output/, plus spike-output/index.html.
+reports:
+	APP_LLM_MODE=mock uv run python scripts/report.py --all

@@ -668,6 +668,6 @@ def test_fake_keys_appear_in_no_output_of_the_full_pipeline(
     result = run_spike(synthetic_room_image(), budget_usd=800, style="x", config=Config())
     out_dir = write_outputs(result, tmp_path / "out")
     (tmp_path / "out" / "trace.jsonl").replace(out_dir / "trace.jsonl")
-    text = "\n".join(p.read_text() for p in out_dir.iterdir())
+    text = "\n".join(p.read_text() for p in out_dir.iterdir() if p.suffix != ".jpg")
     assert not any(k in text for k in keys)
     assert "proposal" in json.loads((out_dir / "result.json").read_text())

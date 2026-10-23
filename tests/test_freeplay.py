@@ -808,4 +808,6 @@ def test_fake_keys_appear_in_no_freeplay_output(
     result = run_spike(synthetic_room_image(), style="x", config=Config())
     out = write_outputs(result, tmp_path / "out")
     (tmp_path / "out" / "trace.jsonl").replace(out / "trace.jsonl")
-    assert not any(k in "\n".join(p.read_text() for p in out.iterdir()) for k in keys)
+    assert not any(
+        k in "\n".join(p.read_text() for p in out.iterdir() if p.suffix != ".jpg") for k in keys
+    )
