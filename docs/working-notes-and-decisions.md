@@ -86,6 +86,12 @@ this choice over the alternatives. Note what's still open or deferred within it,
   library (no jinja2 dependency, no script, a restrictive CSP), generated at the end of every run and
   from `make report(s)`. The floor plan is drawn only from perception positions; new picks with no old
   position are listed, never placed. See `docs/sessions/2026-10-23-run-report.md`.
+- **2026-10-23, photo-real is the main goal (proposed, ADR 0011).** The owner decided the output is
+  the visitor's own room photo with the picks in it, with the 2D plan as the instant first view. The
+  family is reference-based placement (room photo plus product images plus real sizes), because
+  restyle tools cannot keep or replace specific pieces and 3D/AR needs assets we lack. The spike is an
+  experiment in its own package; no thresholds come from it. Vendor facts that could not be verified
+  (OpenAI model id and price, Decor8 endpoints) block live runs until the owner supplies them.
 
 ## See also
 

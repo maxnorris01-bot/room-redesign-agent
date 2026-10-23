@@ -20,6 +20,13 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 ## Later
 
+- [x] Photo-real spike built (2026-10-23, mock only): `make render`, `make render-live`; see `docs/sessions/2026-10-23-photo-real-spike.md` and ADR 0011 (proposed).
+- [ ] Max: run the photo-real comparison live, one approach at a time (command lines are in the session doc), and judge the renders by eye. gpt needs `RENDER_OPENAI_MODEL` and `RENDER_OPENAI_USD_PER_IMAGE` set by you first; Decor8 stays a stub.
+- [ ] Progressive display in the UI: list and plan first, the render swapped in when ready.
+- [ ] Mask or segmentation options for the render (the box mask is a soft guide; try real segmentation).
+- [ ] A render check in the eval harness (only after the spike shows which signals mean anything).
+- [ ] Terms review for using retailer and Google-hosted product images as model inputs and in a public page.
+
 - [x] Run report (2026-10-23): `make report`, `make reports`, `report.html` per run and `spike-output/index.html`; see `docs/sessions/2026-10-23-run-report.md`.
 - [ ] The canvas UI should reuse the plan logic in `src/app/report.py` (`plan_shapes`: x west to east as a fraction of width, y north to south as a fraction of length) instead of redrawing it.
 - [ ] Product thumbnails shown in a public page need a terms review (the report shows remote Google-hosted images in a local developer file only).

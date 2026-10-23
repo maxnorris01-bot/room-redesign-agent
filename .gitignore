@@ -14,3 +14,6 @@ evals/reports/*.json
 # Personal room photos and spike run output: never commit (see CLAUDE.md photo rules)
 spike-photos/
 spike-output/
+# Photo-real spike: product images placed by hand, and render output
+render-inputs/
+render-output/
