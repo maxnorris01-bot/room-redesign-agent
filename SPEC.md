@@ -56,3 +56,13 @@ Spike definition of done:
 ## Explicit non-goals for the spike session
 
 Do not build the self-check loop, the canvas UI, the site page, the Vercel proxy, the Fly deployment or the eval cases. If something looks tempting to add, note it in `docs/todo.md` instead.
+
+## Viewing a run (developer report)
+
+Every `scripts/spike.py` run writes `report.html` (and `room.jpg`, the prepared room image) into its
+`spike-output/<run id>/` folder; `--no-report` turns that off, and a report problem only prints a
+warning. `make report` rebuilds the latest run, `make report RUN=spike-output/<run id>` a chosen one,
+and `make reports` every run plus `spike-output/index.html`. The commands print a file path and the
+macOS `open <path>` command; nothing opens by itself. The page is static HTML and CSS (no script, no
+external fonts), escapes every provider string, and loads product thumbnails from their hosts. It is
+a developer tool, not the product UI.

@@ -454,7 +454,7 @@ def test_step_cap_holds_across_concurrent_shopping_slots(monkeypatch: pytest.Mon
 
 
 def _all_outputs(out_dir: Path) -> str:
-    return "\n".join(p.read_text() for p in sorted(out_dir.iterdir()))
+    return "\n".join(p.read_text() for p in sorted(out_dir.iterdir()) if p.suffix != ".jpg")
 
 
 def test_fake_keys_in_the_environment_appear_in_no_output(
@@ -471,7 +471,9 @@ def test_fake_keys_in_the_environment_appear_in_no_output(
     (tmp_path / "out" / "trace.jsonl").replace(out_dir / "trace.jsonl")
     text = _all_outputs(out_dir)
     assert serper not in text and serpapi not in text
-    assert {p.name for p in out_dir.iterdir()} == {"result.json", "table.txt", "trace.jsonl"}
+    assert {p.name for p in out_dir.iterdir()} == {
+        "result.json", "table.txt", "trace.jsonl", "room.jpg",
+    }  # fmt: skip
 
 
 def test_a_failing_http_lookup_leaks_no_key_into_outputs(

@@ -82,6 +82,10 @@ this choice over the alternatives. Note what's still open or deferred within it,
   depth made a tall bookcase look like a 2 m deep footprint. A known height over ceiling minus 0.1 m
   now fails the fit check. All thresholds untuned. See ADR 0009 (amendment) and
   `docs/sessions/2026-10-23-size-parsing-fix.md`.
+- **2026-10-23, run report is a static developer page.** Plain HTML and CSS written by the standard
+  library (no jinja2 dependency, no script, a restrictive CSP), generated at the end of every run and
+  from `make report(s)`. The floor plan is drawn only from perception positions; new picks with no old
+  position are listed, never placed. See `docs/sessions/2026-10-23-run-report.md`.
 
 ## See also
 

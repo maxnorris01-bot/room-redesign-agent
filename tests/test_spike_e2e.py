@@ -214,7 +214,9 @@ def test_cli_runs_in_mock_mode(
     out = capsys.readouterr().out
     assert "MOCK MODE" in out and "TOTAL" in out
     (run_dir,) = list((tmp_path / "spike-output").iterdir())
-    assert {p.name for p in run_dir.iterdir()} == {"result.json", "table.txt", "trace.jsonl"}
+    assert {p.name for p in run_dir.iterdir()} == {
+        "result.json", "table.txt", "trace.jsonl", "room.jpg", "report.html",
+    }  # fmt: skip
     with pytest.raises(SystemExit) as exc:  # neither a photo nor --synthetic
         cli.main(["--budget", "5", "--style", "x"])
     assert exc.value.code == 2

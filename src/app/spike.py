@@ -9,6 +9,7 @@ not locked until an ADR says so - see SPEC.md and docs/working-notes-and-decisio
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 import uuid
@@ -102,6 +103,8 @@ class SpikeResult:
     seller_concentration: dict[str, Any] = field(default_factory=dict)
     proposal: dict[str, Any] = field(default_factory=dict)
     proposal_dropped: list[dict[str, str]] = field(default_factory=list)
+    # The prepared (downscaled, EXIF-free) room image; saved as room.jpg, never put in result.json.
+    room_image: bytes | None = field(default=None, repr=False)
 
     @property
     def total_cost_usd(self) -> float:
@@ -159,6 +162,7 @@ class SpikeResult:
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
+        data.pop("room_image", None)
         data["totals"] = {
             "cost_usd": self.total_cost_usd,
             "anthropic_cost_usd": self.anthropic_cost_usd,
@@ -261,6 +265,7 @@ def run_spike(
             prepared: PreparedImage = prepare_image(photo, max_edge=config.image_max_edge)
             img_rec.update(prepared.summary())
         result.image = prepared.summary()
+        result.room_image = base64.b64decode(prepared.data_b64)
         result.rows.append(StageRow("prepare_image", "-", 0, 0, 0, 0.0, time.perf_counter() - t0))
 
         t0 = time.perf_counter()
@@ -712,6 +717,8 @@ def write_outputs(result: SpikeResult, out_root: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "result.json").write_text(json.dumps(result.to_json(), indent=2, default=str) + "\n")
     (out_dir / "table.txt").write_text(format_table(result) + "\n")
+    if result.room_image:
+        (out_dir / "room.jpg").write_bytes(result.room_image)
     return out_dir
 
 

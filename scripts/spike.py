@@ -24,6 +24,7 @@ from app.config import BudgetExceededError, Config, load_env
 from app.images import synthetic_room_image
 from app.llm import LLMOutputError
 from app.preferences import PreferenceError, check_flag_overlap, split_names
+from app.report import write_report
 from app.schemas import SchemaError
 from app.shopping import ProviderError
 from app.spike import format_table, point_trace_at, run_spike, write_outputs
@@ -121,6 +122,9 @@ def main(argv: list[str] | None = None) -> int:
         "--rank-prompt-version",
         help="rank prompt version to load (default: config, currently 3; 2 is kept)",
     )
+    parser.add_argument(
+        "--no-report", action="store_true", help="do not write report.html at the end of the run"
+    )
     args = parser.parse_args(argv)
     if not args.perception_only and args.style is None:
         parser.error("--style is required unless --perception-only is given")
@@ -204,6 +208,12 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = write_outputs(result, OUT_ROOT)
     print(format_table(result))
     print(f"\nwrote {out_dir}/result.json, table.txt, and {trace_path.name}")
+    if not args.no_report:
+        try:  # a report problem must never fail a finished run
+            report_path = write_report(out_dir)
+            print(f"report: {report_path}\nopen {report_path}")
+        except Exception as exc:
+            print(f"WARNING: report not generated ({type(exc).__name__}: {exc})", file=sys.stderr)
     return 0
 
 
