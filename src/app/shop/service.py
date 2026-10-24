@@ -19,7 +19,7 @@ from app.shop.models import (
     clean_comment,
     clean_request,
 )
-from app.shop.prefs import normalize_phrase, profile_summary, remove_entry
+from app.shop.prefs import normalize_phrase, profile_summary, reapply_removed, remove_entry
 from app.shop.resolve import UnknownResult, resolve
 from app.shop.search import SearchOutcome, run_search
 from app.shop.store import (
@@ -34,8 +34,16 @@ from app.shop.store import (
     saved_ids,
 )
 from app.shopping import ProductLookup, ProviderError, SearchProvider
+from app.thumbnails import Thumbnailer, build_thumbnailer
 
 UNSET = object()
+
+
+class _Default:
+    """Marks "build the thumbnailer from the config" (an explicit None means no thumbnails)."""
+
+
+DEFAULT = _Default()
 
 
 class ApiError(Exception):
@@ -52,7 +60,11 @@ class ShopService:
         store: SessionStore,
         search: SearchProvider,
         lookup: ProductLookup,
+        thumbnailer: Thumbnailer | None | _Default = DEFAULT,
     ) -> None:
+        self.thumbnailer: Thumbnailer | None = (
+            build_thumbnailer(config) if isinstance(thumbnailer, _Default) else thumbnailer
+        )
         self.config = config
         self.store = store
         self.search_provider = search
@@ -115,6 +127,12 @@ class ShopService:
                 "seconds": last.seconds,
                 "kind": last.kind,
                 "note": last.note,
+                "queries": last.queries,
+                "alignment": (
+                    {"matches": last.alignment_matches, "total": last.alignment_total}
+                    if last.alignment_matches is not None
+                    else None
+                ),
                 "serper_calls": last.serper_calls,
                 "serper_credits": (
                     last.serper_credits
@@ -207,6 +225,10 @@ class ShopService:
                 kind=outcome.kind,
                 serper_credits=outcome.serper_credits,
                 note=note,
+                queries=outcome.queries,
+                pages=outcome.pages,
+                alignment_matches=outcome.alignment[0] if outcome.alignment else None,
+                alignment_total=outcome.alignment[1] if outcome.alignment else None,
             )
         )
 
@@ -287,7 +309,9 @@ class ShopService:
                 f"Shop Again limit reached ({self.config.shop_agains_per_session} per session)",
             )
         try:
-            outcome, profile, query = run_shop_again(session, self.search_provider, self.config)
+            outcome, profile, query = run_shop_again(
+                session, self.search_provider, self.config, self.thumbnailer
+            )
         except ProviderError as exc:
             raise ApiError(502, str(exc)) from None
         except BudgetExceededError as exc:
@@ -298,13 +322,7 @@ class ShopService:
             # ratings made while the search ran are kept; the profile replaces the old one except
             # that entries deleted meanwhile stay deleted
             if live.profile is not None:
-                profile = profile.model_copy(
-                    update={
-                        "removed": live.profile.removed,
-                        "likes": [x for x in profile.likes if x not in live.profile.removed],
-                        "dislikes": [x for x in profile.dislikes if x not in live.profile.removed],
-                    }
-                )
+                profile = reapply_removed(profile, live.profile.removed)
             live.profile = profile
             live.shop_agains_used += 1
             self._record(live, live.searches[-1].request if live.searches else "", outcome,
@@ -313,8 +331,8 @@ class ShopService:
 
     def remove_preference(self, session_id: Any, kind: Any, phrase: Any) -> dict[str, Any]:
         """Delete one preference chip; its phrase is never added back by a later merge."""
-        if kind not in ("like", "dislike"):
-            raise ApiError(400, "kind must be like or dislike")
+        if kind not in ("like", "dislike", "inferred", "guess"):
+            raise ApiError(400, "kind must be like, dislike, inferred or guess")
         if not isinstance(phrase, str) or not phrase.strip() or len(phrase) > 80:
             raise ApiError(400, "phrase must be short text")
         self._load(session_id)

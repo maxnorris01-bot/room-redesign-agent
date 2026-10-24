@@ -195,23 +195,53 @@ MOCK_INVENTED_ID = "mock-invented-id"
 
 
 def _shop_mock_order(request_text: str, ids: list[str]) -> list[str]:
-    """Shop Mode mock ranking: results whose titles share words with the style, material and
-    must-have lines first (more shared words first), ties in list order; "Avoid" words sink."""
+    """Shop Mode mock ranking: results whose titles share words with the wanted terms first (more
+    shared words first), ties in list order; avoided and disliked words sink. Wanted terms are the
+    request's style, materials and must-haves and, for a Shop Again, the profile's stated and
+    inferred likes (never the parser's style guesses), plus a boost for the favoured seller and for
+    a price inside the price band."""
 
-    def words(label: str) -> set[str]:
-        found = re.search(rf"^{label}: (.*)$", request_text, flags=re.MULTILINE)
+    def words(pattern: str) -> set[str]:
+        found = re.search(rf"^{pattern}: (.*)$", request_text, flags=re.MULTILINE)
         text = found.group(1) if found and found.group(1) != "none" else ""
         return set(re.findall(r"[a-z]+", text.lower()))
 
-    want = words("Style") | words("Materials") | words("Must have") | words("Profile likes")
-    avoid = words("Avoid") | words("Profile dislikes")
+    want = (
+        words("Style")
+        | words("Materials")
+        | words("Must have")
+        | words(r"Profile likes[^:\n]*")
+        | words(r"Inferred likes[^:\n]*")
+    )
+    avoid = words("Avoid") | words(r"Profile dislikes[^:\n]*") | words(r"Inferred dislikes")
     if "dark" in avoid:  # "too dark" in a profile: the mock reads it as these colours
         avoid |= {"black", "navy", "charcoal"}
-    titles = dict(re.findall(r"^- id: (\S+) \| (.*?) \| seller:", request_text, flags=re.MULTILINE))
+    seller = re.search(r"^Seller the shopper likes: (.*)$", request_text, flags=re.MULTILINE)
+    favoured = seller.group(1).strip().lower() if seller and seller.group(1) != "none" else ""
+    band = re.search(r"^Price band[^:\n]*: .*?\$([\d,]+) to \$([\d,]+)", request_text, flags=re.M)
+    low, high = (
+        (float(band.group(1).replace(",", "")), float(band.group(2).replace(",", "")))
+        if band
+        else (None, None)
+    )
+    rows = {
+        m[0]: m
+        for m in re.findall(
+            r"^- id: (\S+) \| (.*?) \| seller: (.*?) \| USD ([\d.]+|no price)",
+            request_text,
+            flags=re.M,
+        )
+    }
 
     def score(i: str) -> int:
-        title = set(re.findall(r"[a-z]+", titles.get(i, "").lower()))
-        return len(want & title) - 5 * len(avoid & title)
+        _, title, who, price = rows.get(i, (i, "", "", ""))
+        got = set(re.findall(r"[a-z]+", title.lower()))
+        points = len(want & got) - 5 * len(avoid & got)
+        if favoured and who.strip().lower() == favoured:
+            points += 3
+        if low is not None and high is not None and price.replace(".", "").isdigit():
+            points += 2 if low <= float(price) <= high else 0
+        return points
 
     return sorted(ids, key=lambda i: -score(i))  # sorted is stable
 
@@ -376,6 +406,7 @@ MOCK_SHOP_PARSES: dict[str, dict[str, Any]] = {
     "coffee tables with a mix of wood and metal with storage": _sample(
         "wood and metal coffee table with storage",
         "coffee table",
+        style=("industrial",),  # a parser guess: the request never says it (see guess_style_terms)
         material=("wood", "metal"),
         must=("storage",),
     ),
@@ -523,6 +554,111 @@ def mock_prefs_payload(request_text: str) -> dict[str, Any]:
     }
 
 
+MOCK_ATTR_PHRASES = (
+    ("brushed brass", "color_finish"), ("solid walnut", "quality_cue"),
+    ("solid wood", "quality_cue"),
+    ("brass", "material"), ("walnut", "material"), ("boucle", "material"), ("velvet", "material"),
+    ("oak", "material"), ("rattan", "material"), ("marble", "material"), ("glass", "material"),
+    ("lift-top", "shape"), ("drum", "shape"), ("round", "shape"), ("low profile", "shape"),
+    ("tufted", "shape"), ("curved", "shape"), ("metal legs", "frame_or_legs"),
+    ("metal frame", "frame_or_legs"),
+)  # fmt: skip
+_PREF_ROW_V2 = re.compile(
+    r"^- (love|like|dislike) \| id: (\S+) \| (.*?) \| (\$[\d,]+|no price) \| (.*?) \| "
+    r"comment: (.*?) \| (image \d+|image none)$"
+)
+
+
+def _phrases_in(title: str) -> list[tuple[str, str]]:
+    """The most specific MOCK_ATTR_PHRASES in a title (one inside a longer match is dropped)."""
+    low = title.lower()
+    found = [(p, k) for p, k in MOCK_ATTR_PHRASES if p in low]
+    return [(p, k) for p, k in found if not any(p != q and p in q for q, _ in found)]
+
+
+def mock_prefs_v2_payload(request_text: str) -> dict[str, Any]:
+    """A v2 profile read from the rated rows, deterministic. Stated likes and dislikes come from
+    comments only. Inferred attributes are the MOCK_ATTR_PHRASES found in loved or liked titles (as
+    likes) and disliked titles (as dislikes), each with the ids that show it; the mock proposes
+    single-item attributes too, so the rules in app.shop.prefs are what filters them. Sellers and a
+    price band are proposed (the code ignores them). When two or more loved or liked rows come with
+    an image, a visual "premium metal finish" cue is added. A parser style guess that no loved or
+    liked title shows is reported as contradicted when something is loved."""
+    rows = [m.groups() for m in map(_PREF_ROW_V2.match, request_text.splitlines()) if m]
+    likes: list[str] = []
+    dislikes: list[str] = []
+    cheaper = False
+    evidence: dict[tuple[str, str, str], list[str]] = {}
+    for rating, rid, title, _price, _seller, comment, _img in rows:
+        pol = "dislike" if rating == "dislike" else "like"
+        for phrase, kind in _phrases_in(title):
+            evidence.setdefault((phrase, kind, pol), []).append(rid)
+        low = comment.lower()
+        if rating != "dislike":
+            likes += [p for p, _ in MOCK_ATTR_PHRASES if p in low and p not in likes]
+        for m in re.finditer(r"too (\w+)", low):
+            if m.group(1) in ("expensive", "pricey", "costly"):
+                cheaper = True
+            elif f"too {m.group(1)}" not in dislikes:
+                dislikes.append(f"too {m.group(1)}")
+        if "flimsy" in low and "flimsy legs" not in dislikes:
+            dislikes.append("flimsy legs")
+
+    def carried(label: str) -> list[str]:
+        found = re.search(rf"^  {label}: (.*)$", request_text, flags=re.MULTILINE)
+        text = found.group(1) if found else "none"
+        return [] if text == "none" else [x.strip() for x in text.split(";") if x.strip()]
+
+    likes = [*carried("likes"), *[x for x in likes if x not in carried("likes")]]
+    dislikes = [*carried("dislikes"), *[x for x in dislikes if x not in carried("dislikes")]]
+    inferred: list[dict[str, Any]] = [
+        {"kind": kind, "text": phrase, "polarity": pol, "evidence": ids,
+         "confidence": round(min(0.95, 0.4 + 0.2 * len(ids)), 2)}
+        for (phrase, kind, pol), ids in evidence.items()
+    ]  # fmt: skip
+    positive = [r for r in rows if r[0] != "dislike"]
+    with_image = [r[1] for r in positive if r[6] != "image none"]
+    if len(with_image) >= 2:
+        inferred.append({"kind": "quality_cue", "text": "premium metal finish", "polarity": "like",
+                         "evidence": with_image[:4], "confidence": 0.6})  # fmt: skip
+    for who in dict.fromkeys(r[4] for r in positive):
+        ids = [r[1] for r in positive if r[4] == who]
+        inferred.append({"kind": "seller", "text": f"seller: {who}", "polarity": "like",
+                         "evidence": ids, "confidence": 0.9})  # fmt: skip
+    if positive:
+        inferred.append({"kind": "price_band", "text": "upper price", "polarity": "like",
+                         "evidence": [r[1] for r in positive], "confidence": 0.5})  # fmt: skip
+    guess_line = re.search(
+        r"^Style guessed by the request parser[^:\n]*: (.*)$", request_text, flags=re.M
+    )
+    guesses = [g.strip() for g in guess_line.group(1).split(",")] if guess_line else []
+    loved = [r for r in rows if r[0] == "love"]
+    contradicted = [
+        {"text": g, "evidence": [r[1] for r in loved][:2]}
+        for g in guesses
+        if g
+        and g != "none"
+        and loved
+        and not any(w in r[2].lower() for r in positive for w in re.findall(r"[a-z]+", g.lower()))
+    ]
+    cap = re.search(r"price=up to \$([\d,]+)", request_text)
+    price_max = float(cap.group(1).replace(",", "")) * 0.85 if cheaper and cap else None
+    return {
+        "likes": likes,
+        "dislikes": dislikes,
+        "inferred": inferred,
+        "contradicted_guesses": contradicted,
+        "query_adjustments": {
+            "search_text": "", "style_terms": [], "material_terms": [], "must_have": [],
+            "avoid": ["dark"] if "too dark" in dislikes else [],
+            "price_max": price_max,
+            "price_note": "Lowered the price limit about 15% because of a comment."
+            if price_max
+            else "",
+        },
+    }  # fmt: skip
+
+
 def _request_text(kwargs: dict[str, Any]) -> str:
     content = kwargs["messages"][0]["content"]
     if isinstance(content, str):
@@ -591,6 +727,21 @@ class MockAnthropicClient:
                 ],
                 input_tokens=300 + 150 * images,
                 output_tokens=60,
+            )
+        if title == "PreferenceProfileV2":
+            images = (
+                sum(
+                    1
+                    for b in kwargs["messages"][0]["content"]
+                    if isinstance(b, dict) and b.get("type") == "image"
+                )
+                if not isinstance(kwargs["messages"][0]["content"], str)
+                else 0
+            )
+            return response(
+                [text_block(mock_prefs_v2_payload(_request_text(kwargs)))],
+                input_tokens=1200 + 90 * images,
+                output_tokens=350,
             )
         if title == "PreferenceProfile":
             return response(

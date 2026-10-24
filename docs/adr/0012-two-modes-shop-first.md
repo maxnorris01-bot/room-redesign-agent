@@ -30,7 +30,7 @@ tool in the run report; nothing in the product depends on it.
 
 **2. Lazy lookups to control SerpApi cost.** A search makes no lookup. Each result carries the Google
 product link from the search. A lookup (SerpApi `google_product`, about $0.025 at the assumed rate, the
-dominant cost) runs only when the visitor opens a result or loves it, for a result actually shown in the
+dominant cost) runs only when the visitor opens a result (stage 2b removed "or loves it"), for a result actually shown in the
 session, at most `APP_SHOP_LOOKUPS_PER_SESSION` (default 12) per session, and never twice for the same
 result (the outcome is cached in the session, including "no retailer link"). Past the cap the Google
 link is returned and marked as such. For scale: looking up all 24 results of a search would be about
@@ -130,3 +130,57 @@ affiliate API). This is not legal advice.
   one rank call (Anthropic about $0.01 or less; the mock bills fractions of a cent), no lookups.
 - **Not verified live:** that Serper accepts `page` 3, what the model does with real comments, and
   whether "unseen" holds up when result sets are small or repeat the same listings.
+
+## Amendment, stage 2b (2026-10-24): learn from the items, not only the comments; lookups on Open only
+
+Live use of stage 2 showed Shop Again results that did not feel aligned with what the owner loved unless a
+comment said so. The preference chips mostly restated the typed request plus comment text; nothing was
+learned from the rated items; a style the parser had guessed ("industrial") was treated as a settled like;
+and Shop Again re-ran nearly the same Google search and removed what was seen, leaving the ranker little
+to work with. Two loved West Elm tables shared a seller and a premium finish, not a shape.
+
+- **Learn from the items** (`shop_prefs.md` v2; v1 kept). The preference call now gets every rated item
+  (id, title, price, seller, rating, comment) and, for up to 6 loved, 6 liked and 4 disliked items, the
+  thumbnail, fetched with the existing guarded fetcher (https only, public addresses, size and time
+  limits; a failed fetch leaves that item to go by title and is recorded in the profile's image report,
+  never with a URL). It returns inferred attributes (shape, material, color_finish, frame_or_legs, size,
+  style, quality_cue, seller, price_band) each with polarity, evidence ids and confidence. Stated likes and
+  dislikes are only the shopper's own words.
+- **Rules held in code, not trusted to the model** (`app.shop.prefs.validate_inferred` and friends):
+  evidence ids must be rated results of the right polarity; an attribute needs evidence from two items,
+  unless a comment on an evidence item names it or the one item is loved and has a comment; a like needs a
+  positive net weight (loved 3, liked 1, minus disliked results that show it); a dislike is refused when a
+  loved or liked title shows it, unless a comment backs it; a quality cue must be visible in a title, in an
+  image that was sent, or be about the price band; a seller affinity needs two loved or liked items from
+  the seller and no dislike of it, and the price band is worked out from where the loved and liked prices
+  sit among every price shown (upper or lower third), both computed from the ratings and never taken from
+  the model; the band informs ranking and the summary line but never changes the typed price filter.
+- **Guesses.** A style term the parser produced that the typed request does not contain is a guess. It is
+  shown as a guess chip (dotted, not counted as a like, not given to the ranker as a like) and dropped
+  automatically when the model reports a loved or liked item that contradicts it and no loved or liked
+  title shows it, or when the visitor deletes it.
+- **Chips.** Inferred chips are tagged "inferred", look different from the shopper's own words and from
+  guesses, show the evidence titles in a tooltip (text nodes only) and are deletable; deleted phrases are
+  never re-added (the removed list from stage 2). The summary line is written in code from the profile.
+- **Wider pool.** Up to three phrasings per Shop Again (the adjusted query; the product plus the strongest
+  inferred material, finish and shape; the seller's name plus the product, when a seller affinity exists)
+  within `APP_SHOP_AGAIN_MAX_SERPER_CALLS` (4) Serper calls. Every phrasing's first page runs; further
+  pages run only while the pool is under 60. A phrasing the session already fetched starts after the pages
+  it took (a typed search that used pages 1 and 2 is continued at page 3), so the same results are not
+  fetched again. Exclusions and filters are unchanged. The ranker sees up to 80 candidates (`shop_rank.md`
+  v3; v1 and v2 kept) with the profile parts labelled by reliability and the loved, liked and disliked
+  titles as examples. The seller cap is 4, or 8 for the affinity seller.
+- **Lookups only on Open.** Loving a result no longer triggers a SerpApi lookup; only Open does (cached,
+  capped as before). A loved item keeps its Google link until opened. This supersedes "or loves it" in
+  decision 2.
+- **Alignment measure.** `preference_alignment(results, profile)` is the fraction of results that match at
+  least one inferred like (title shows the phrase, the affinity seller, or inside the price band) and none
+  of the dislikes. It is logged in every Shop Again record and shown in the footer ("matches your
+  preferences: N of 24") as a diagnostic for the stage 3 eval, not a gate.
+- **Cost per Shop Again (design).** Up to 4 Serper calls (8 credits, about $0.008), one preference call
+  (about 3,000 input tokens including up to 16 small photos, about 700 output) and one rank call (about
+  4,500 input, 600 output): an Anthropic estimate of about $0.002 at Haiku 5.5 prices (an estimate from
+  assumed token counts, not a measurement), no lookups.
+- **Not verified live:** Serper pages 3 and 4, how well the model reads real photos and titles, whether
+  "premium" cues and seller affinity hold on real results, and the share of fresh results the extra
+  phrasings really add.

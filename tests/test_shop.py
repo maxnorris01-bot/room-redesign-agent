@@ -26,6 +26,7 @@ from app.llm import Budget
 from app.mock_llm import (
     MOCK_SHOP_PARSES,
     mock_prefs_payload,
+    mock_prefs_v2_payload,
     mock_shop_parse_payload,
     response,
     text_block,
@@ -111,12 +112,17 @@ class FakeSearch:
         self.name = name
         self.pages = pages
         self.calls: list[tuple[str, int]] = []
+        # when set, results come in call order (whatever the page number) and then run out
+        self.sequence: list[list[SearchCandidate] | Exception] | None = None
 
     def search(
         self, query: str, gl: str = "us", hl: str = "en", page: int = 1
     ) -> list[SearchCandidate]:
         self.calls.append((query, page))
-        out = self.pages[page - 1] if page <= len(self.pages) else []
+        if self.sequence is not None:
+            out = self.sequence.pop(0) if self.sequence else []
+        else:
+            out = self.pages[page - 1] if page <= len(self.pages) else []
         if isinstance(out, Exception):
             raise out
         return out
@@ -171,11 +177,20 @@ class RouterClient:
     def _create(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
         title = kwargs["output_config"]["format"]["schema"]["title"]
-        text = kwargs["messages"][0]["content"]
+        content = kwargs["messages"][0]["content"]
+        text = (
+            content
+            if isinstance(content, str)
+            else " ".join(b["text"] for b in content if b.get("type") == "text")
+        )
         if title == "ShopParse":
             if isinstance(self.parse, str):
                 return response([text_block(self.parse)])
             return response([text_block(self.parse or mock_shop_parse_payload(text))])
+        if title == "PreferenceProfileV2":
+            if isinstance(self.prefs, str):
+                return response([text_block(self.prefs)])
+            return response([text_block(self.prefs or mock_prefs_v2_payload(text))])
         if title == "PreferenceProfile":
             if isinstance(self.prefs, str):
                 return response([text_block(self.prefs)])
@@ -505,7 +520,7 @@ def test_page_two_failure_degrades_but_page_one_failure_raises(
         "sofa", FakeSearch([pool_of(5), ProviderError("serper", "HTTP 429")]), config()
     )
     assert len(out.results) == 5 and out.serper_calls == 2
-    assert any("Second page unavailable" in w for w in out.warnings)
+    assert any("Search page 2 unavailable" in w for w in out.warnings)
     with pytest.raises(ProviderError):
         run_search("sofa", FakeSearch([ProviderError("serper", "HTTP 402")]), config())
 
@@ -1132,5 +1147,5 @@ def test_live_cost_lines_state_the_expected_cost_per_search() -> None:
     text = "\n".join(script.cost_lines(config()))
     assert "$0.01" in text and "at most 12" in text
     assert "2 credits per call" in text and "4 credits, $0.0040" in text
-    assert "Shop Again: up to 3 Serper pages (6 credits, $0.0060)" in text
-    assert "Link lookups: none during a search" in text
+    assert "Shop Again: up to 4 Serper calls (8 credits, $0.0080)" in text
+    assert "none when you love a result" in text and "Only Open runs one SerpApi lookup" in text

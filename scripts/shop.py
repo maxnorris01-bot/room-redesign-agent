@@ -36,21 +36,21 @@ def cost_lines(config: Config) -> list[str]:
     credits = config.serper_credits_per_call
     per_credit = config.serper_usd_per_credit
     call_usd = config.serper_usd_per_call
+    calls = config.shop_again_max_serper_calls
     return [
         "Expected cost (estimates, from the APP_*_USD and APP_SERPER_* settings):",
         f"  Serper bills {credits} credits per call at ${per_credit:.4f} a credit "
         f"(${call_usd:.4f} a call).",
-        "  Search: 1 call ("
-        f"{credits} credits, ${call_usd:.4f}), or 2 if fewer than 24 results survive "
-        f"({2 * credits} credits, ${2 * call_usd:.4f}); Anthropic about $0.01 or less "
+        f"  Search: 1 call ({credits} credits, ${call_usd:.4f}), or 2 if fewer than 24 results "
+        f"survive ({2 * credits} credits, ${2 * call_usd:.4f}); Anthropic about $0.01 or less "
         "(parse the request, rank the pool).",
-        "  Shop Again: up to 3 Serper pages "
-        f"({3 * credits} credits, ${3 * call_usd:.4f}); Anthropic about $0.01 or less "
-        "(update the preference profile, rank); at most "
-        f"{config.shop_agains_per_session} per session.",
-        f"  Link lookups: none during a search. Each Open or Love runs one SerpApi lookup "
-        f"(about ${config.serpapi_usd_per_search:.3f}), at most {config.shop_lookups_per_session} "
-        "per session, never twice for the same result.",
+        f"  Shop Again: up to {calls} Serper calls ({calls * credits} credits, "
+        f"${calls * call_usd:.4f}) over up to 3 search phrasings; Anthropic about $0.002 to $0.01 "
+        "(one preference call that also reads up to 16 small product photos, one rank call over up "
+        f"to 80 candidates); at most {config.shop_agains_per_session} per session.",
+        "  Link lookups: none during a search or a Shop Again, and none when you love a result. "
+        f"Only Open runs one SerpApi lookup (about ${config.serpapi_usd_per_search:.3f}), at most "
+        f"{config.shop_lookups_per_session} per session, never twice for the same result.",
     ]
 
 
