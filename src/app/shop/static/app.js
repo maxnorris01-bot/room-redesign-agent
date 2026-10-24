@@ -173,12 +173,21 @@
     q.avoid.forEach(function (t) { add('Avoid', t, 'avoid'); });
   }
 
-  function prefChip(kind, text) {
+  // One chip. `tip` is an array of plain lines shown in a hover/focus tooltip (text nodes only).
+  function prefChip(kind, polarity, text, tag, tip) {
     var x = h('button', { type: 'button', class: 'x', 'aria-label': 'Remove ' + text }, ['×']);
     x.addEventListener('click', function () { removePref(kind, text, x); });
-    return h('span', { class: 'chip pref ' + kind, 'data-kind': kind }, [
-      h('span', { class: 'k' }, [kind === 'like' ? '+' : '−']), text, x
-    ]);
+    var marker = kind === 'guess' ? '?' : (polarity === 'dislike' ? '−' : '+');
+    var cls = 'chip pref ' + polarity + (kind === 'inferred' || kind === 'guess' ? ' ' + kind : '');
+    var kids = [h('span', { class: 'k' }, [marker]), h('span', { class: 'txt' }, [text])];
+    if (tag) kids.push(h('span', { class: 'tag' }, [tag]));
+    kids.push(x);
+    if (tip && tip.length) {
+      kids.push(h('span', { class: 'tip', role: 'tooltip' }, tip.map(function (line, i) {
+        return h('span', { class: i === 0 ? 'tip-head' : 'tip-line' }, [line]);
+      })));
+    }
+    return h('span', { class: cls, 'data-kind': kind, tabindex: '0' }, kids);
   }
 
   function renderPrefs() {
@@ -186,13 +195,29 @@
     var p = state.profile;
     // shown whenever there are results, so the first Shop Again does not move the grid
     box.hidden = !state.search;
-    $('prefs-summary').textContent = state.summary || (p && (p.likes.length || p.dislikes.length)
-      ? '' : 'Rate a few results, then press Shop Again to steer the next set.');
+    var learned = p && (p.likes.length || p.dislikes.length || p.inferred.length);
+    $('prefs-summary').textContent = state.summary || (p && !learned
+      ? 'Nothing learned from your ratings yet. Rate a few more results to steer the next set.'
+      : (learned ? '' : 'Rate a few results, then press Shop Again to steer the next set.'));
     var chips = $('pref-chips');
     chips.textContent = '';
     if (!p) return;
-    p.likes.forEach(function (t) { chips.appendChild(prefChip('like', t)); });
-    p.dislikes.forEach(function (t) { chips.appendChild(prefChip('dislike', t)); });
+    var inferred = function (pol) {
+      return p.inferred.filter(function (e) { return e.polarity === pol; });
+    };
+    var inferredChip = function (e) {
+      var tip = ['Learned from what you rated:'].concat(e.evidence_titles);
+      return prefChip('inferred', e.polarity, e.text, 'inferred', tip);
+    };
+    p.likes.forEach(function (t) { chips.appendChild(prefChip('like', 'like', t, '', ['From your own words'])); });
+    inferred('like').forEach(function (e) { chips.appendChild(inferredChip(e)); });
+    p.dislikes.forEach(function (t) { chips.appendChild(prefChip('dislike', 'dislike', t, '', ['From your own words'])); });
+    inferred('dislike').forEach(function (e) { chips.appendChild(inferredChip(e)); });
+    (p.guesses || []).forEach(function (t) {
+      chips.appendChild(prefChip('guess', 'guess', t, 'guess', [
+        'A guess from your request wording', 'Nothing you rated confirms it, so it is not counted as a like.'
+      ]));
+    });
   }
 
   function removePref(kind, phrase, button) {
@@ -219,12 +244,15 @@
     var calls = s.serper_calls;
     el.textContent = [
       (s.kind === 'shop_again' ? 'Shop Again took ' : 'Search took ') + s.seconds.total.toFixed(1) + ' s',
-      calls + (calls === 1 ? ' Serper call' : ' Serper calls') + ' = ' + s.serper_credits + ' credits (' + usd(s.provider_usd) + ')',
+      calls + (calls === 1 ? ' Serper call' : ' Serper calls') +
+        (s.queries && s.queries.length > 1 ? ' (' + s.queries.length + ' searches)' : '') +
+        ' = ' + s.serper_credits + ' credits (' + usd(s.provider_usd) + ')',
       'Anthropic ' + usd(s.anthropic_usd),
       'est. total ' + usd(s.total_usd),
+      s.alignment ? 'matches your preferences: ' + s.alignment.matches + ' of ' + s.alignment.total : '',
       'session ' + usd(state.sessionUsd),
       lookups
-    ].join(' · ');
+    ].filter(Boolean).join(' · ');
   }
 
   /* ---- cards (the grid and the Saved panel share them) ---- */
@@ -309,9 +337,6 @@
     updateButtons();
     if (savedIdsNow().join() !== before) renderSaved();
     api('POST', '/api/rate', { session_id: state.sessionId, result_id: id, rating: next })
-      .then(function () {
-        if (next === 'love') return resolve(id, true).catch(function () { /* shown on Open instead */ });
-      })
       .catch(function (err) {
         state.ratings[id] = prev;
         syncAll(id);
@@ -406,7 +431,9 @@
     });
     body.appendChild(note);
 
-    var open = h('button', { type: 'button', class: 'open' }, ['Open']);
+    var open = h('button', {
+      type: 'button', class: 'open', title: 'Look up the retailer link and open it'
+    }, ['Open']);
     open.addEventListener('click', function () { openResult(r.id, open); });
     body.appendChild(h('div', { class: 'open-row' }, [open]));
     body.appendChild(h('div', { class: 'resolved', role: 'status' }));

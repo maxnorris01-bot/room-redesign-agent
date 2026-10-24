@@ -132,6 +132,84 @@ class PreferenceProfile(_Strict):
     query_adjustments: QueryAdjustments
 
 
+ATTR_KINDS = (
+    "shape",
+    "material",
+    "color_finish",
+    "frame_or_legs",
+    "size",
+    "style",
+    "quality_cue",
+    "seller",
+    "price_band",
+)
+AttrKind = Literal[
+    "shape",
+    "material",
+    "color_finish",
+    "frame_or_legs",
+    "size",
+    "style",
+    "quality_cue",
+    "seller",
+    "price_band",
+]
+
+
+class InferredAttribute(_Strict):
+    """One attribute the model infers from the rated items themselves (prompt shop_prefs v2)."""
+
+    kind: AttrKind = Field(description="What sort of attribute this is")
+    text: str = Field(description="Short phrase, e.g. 'brushed brass'")
+    polarity: Literal["like", "dislike"]
+    evidence: list[str] = Field(description="Ids of the rated results that show it")
+    confidence: float = Field(description="0 to 1")
+
+
+class ContradictedGuess(_Strict):
+    text: str = Field(description="A parser-guessed style term a loved or liked item contradicts")
+    evidence: list[str] = Field(description="Ids of the loved or liked results that contradict it")
+
+
+class PreferenceProfileV2(_Strict):
+    """What the v2 preference call returns: stated likes and dislikes (from the shopper's own
+    comments), attributes inferred from the items, contradicted guesses, and query adjustments."""
+
+    likes: list[str] = Field(description="Things the shopper said they like, in their own words")
+    dislikes: list[str] = Field(description="Things the shopper said they dislike")
+    inferred: list[InferredAttribute]
+    contradicted_guesses: list[ContradictedGuess]
+    query_adjustments: QueryAdjustments
+
+
+class ProfileEntry(BaseModel):
+    """An inferred chip as stored: sanitized, with the evidence that earned it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    attr_kind: str
+    polarity: Literal["like", "dislike"]
+    evidence: list[str] = []  # result ids
+    evidence_titles: list[str] = []  # plain text for the tooltip
+    confidence: float = 0.0
+    weight: int = 0  # loved 3, liked 1 (likes); disliked count (dislikes)
+    low: float | None = None  # price_band only: the band's bounds in USD
+    high: float | None = None
+    band: str = ""  # price_band only: "upper" or "lower"
+
+
+class ImageReport(BaseModel):
+    """What happened to the thumbnails offered to the preference call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    offered: int = 0  # rated items that had a thumbnail url and were picked
+    used: int = 0  # fetched and sent
+    failed: int = 0  # could not be fetched; the item went by title only
+    reasons: list[str] = []  # short failure reasons (hosts and reasons, never urls)
+
+
 class StoredProfile(BaseModel):
     """The profile as kept in the session: sanitized, with the entries the visitor deleted."""
 
@@ -146,6 +224,10 @@ class StoredProfile(BaseModel):
     removed: list[str] = []  # normalized phrases the visitor deleted; never added back
     updated_at: str = ""
     rated_count: int = 0  # ratings the profile was built from
+    inferred: list[ProfileEntry] = []  # learned from the rated items (v2)
+    guesses: list[str] = []  # style terms the parser guessed that nothing has confirmed or dropped
+    dropped_guesses: list[str] = []  # guesses a loved or liked item contradicted
+    images: ImageReport = ImageReport()
 
 
 def jsonable(model: BaseModel) -> dict[str, Any]:

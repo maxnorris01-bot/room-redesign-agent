@@ -16,7 +16,7 @@ The product has two modes. **Shop Mode** comes first; **Redesign Mode** follows.
 category, price range, style, material, must-have and avoid terms); Serper shopping search (page 2 only
 when fewer than 24 results survive); hard filters for price and category, dedupe, at most 4 results per
 seller; an id-only ranking against the soft preferences; the top 24 with size hints; lazy retailer-link
-lookups (only on Open or Love, at most 12 per session, never twice); JSON sessions under `shop-data/`
+lookups (only on Open, at most 12 per session, never twice); JSON sessions under `shop-data/`
 holding every search, every result shown, every rating and comment, and every resolved link; a local web
 page (127.0.0.1 only).
 
@@ -25,6 +25,8 @@ comments, shown as chips the visitor can delete; a fresh set of up to 24 results
 already seen, ranked with the profile, from up to 3 Serper pages, 10 per session); a Saved panel (loved and
 liked results from every search, re-ratable, remembered open or closed); Start over; Serper cost counted
 in credits; a loading state and a retry on errors.
+
+**Shipped in stage 2b:** Shop Again learns from the rated items themselves (titles, prices, sellers and, when they can be fetched, thumbnails), not only from comments: inferred preference chips with evidence tooltips, a seller affinity and a price band worked out in code, parser-guessed styles shown as guesses, up to three search phrasings in a wider pool (up to 4 Serper calls), a ranker that sees the profile, a summary line, an alignment diagnostic, and lookups only on Open.
 
 **Later:** an eval of about 12 prompts (stage 3), deployment as a portfolio-site tab, then Redesign Mode. The **2D room plan is dropped from the product**
 (ADR 0012); step 2 of "Product" below is superseded, and the plan code survives only in the developer run
@@ -102,8 +104,8 @@ a developer tool, not the product UI.
 `make shop` starts the page in mock mode (fixture results, no network, no key) on
 `http://127.0.0.1:8765/`; stop it with Ctrl-C. `make shop-live` does the same with real Anthropic,
 Serper and SerpApi calls and prints the expected cost first: a search is 1 or 2 Serper calls (2 credits
-each, about $0.001 a credit) plus about $0.01 or less of Anthropic; a Shop Again is up to 3 Serper calls
-(6 credits) plus a preference and a rank call; a SerpApi lookup runs only on Open or Love, at most 12 per
+each, about $0.001 a credit) plus about $0.01 or less of Anthropic; a Shop Again is up to 4 Serper calls
+(8 credits) plus a preference call (which also reads up to 16 small product photos) and a rank call; a SerpApi lookup runs only on Open (loving a result looks nothing up), at most 12 per
 session. Sessions are saved
 in `shop-data/` (gitignored). `make shop-check` drives the page in a headless browser in mock mode and
 writes screenshots to `spike-output/shop-screenshots/`. The server listens on 127.0.0.1 only and

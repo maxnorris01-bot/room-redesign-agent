@@ -42,6 +42,7 @@ select = ["E", "F", "I", "B", "UP"]
 "src/app/report.py" = ["E501"]
 "src/photoreal/*.py" = ["E501"]
 "tests/test_photoreal.py" = ["E501"]
+"tests/test_shop_learn.py" = ["E501"]  # long fixture titles and ids
 
 [tool.mypy]
 python_version = "3.11"

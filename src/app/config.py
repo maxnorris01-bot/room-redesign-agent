@@ -117,6 +117,8 @@ class Config:
     shop_lookups_per_session: int = 12
     # Shop Again (ADR 0012, stage 2): per session. A guess.
     shop_agains_per_session: int = 10
+    # Serper calls one Shop Again may make across its (up to 3) search phrasings. A guess.
+    shop_again_max_serper_calls: int = 4
     # Serper bills credits, not calls: a shopping call took 2 credits in the live test. USD per
     # credit is the owner's figure from the live test (about $0.001), not a documented price.
     # Shop Mode costs Serper from these two; the room pipeline still uses serper_usd_per_query.
@@ -165,6 +167,8 @@ class Config:
             raise ValueError("APP_SHOP_LOOKUPS_PER_SESSION must be >= 0")
         if self.shop_agains_per_session < 0:
             raise ValueError("APP_SHOP_AGAINS_PER_SESSION must be >= 0")
+        if self.shop_again_max_serper_calls < 1:
+            raise ValueError("APP_SHOP_AGAIN_MAX_SERPER_CALLS must be >= 1")
         if self.serper_credits_per_call < 0 or self.serper_usd_per_credit < 0:
             raise ValueError(
                 "APP_SERPER_CREDITS_PER_CALL and APP_SERPER_USD_PER_CREDIT must be >= 0"
@@ -248,6 +252,9 @@ class Config:
             ),
             shop_agains_per_session=int(
                 os.environ.get("APP_SHOP_AGAINS_PER_SESSION", cls.shop_agains_per_session)
+            ),
+            shop_again_max_serper_calls=int(
+                os.environ.get("APP_SHOP_AGAIN_MAX_SERPER_CALLS", cls.shop_again_max_serper_calls)
             ),
             serper_credits_per_call=int(
                 os.environ.get("APP_SERPER_CREDITS_PER_CALL", cls.serper_credits_per_call)

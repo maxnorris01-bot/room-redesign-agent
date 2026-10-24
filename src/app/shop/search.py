@@ -38,13 +38,15 @@ from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.shopping_retrieval import _record_provider_call, cap_per_seller, seller_key
 from app.sizes import IN_M, resolve_size
 
-MAX_PAGES_AGAIN = 3  # Serper pages a Shop Again may fetch
 MAX_EXAMPLES = 8  # loved/liked and disliked titles shown to the ranker, each
 RANK_VERSION = "1"  # typed searches
-RANK_VERSION_AGAIN = "2"  # Shop Again: also sees the profile and the examples
+RANK_VERSION_AGAIN = "3"  # Shop Again: profile, inferred chips, examples (v2 kept, unused)
 RESULT_COUNT = 24  # results returned, and the fewest that avoid a second Serper page
 SELLER_CAP = 4  # most results one seller may have in the returned list. UNTUNED GUESS.
 MAX_POOL = 60  # candidates shown to the ranker (keeps the prompt small)
+MAX_POOL_AGAIN = 80  # a Shop Again pools several phrasings, so the ranker sees more
+POOL_TARGET_AGAIN = 60  # extra pages are fetched only while the pool is smaller than this
+AFFINITY_SELLER_CAP = 8  # results allowed from a seller the shopper has shown an affinity for
 RANK_MAX_TOKENS = 2500
 MAX_TITLE_CHARS = 100
 # Titles with these words are parts or covers, not the product (applied only for a known category).
@@ -59,11 +61,23 @@ class AgainContext:
     exclude_ids: set[str] = field(default_factory=set)  # result ids shown earlier in the session
     exclude_title_keys: set[str] = field(default_factory=set)  # same listing under another id
     deprioritize_sellers: set[str] = field(default_factory=set)  # seller keys, ranked last
-    likes: list[str] = field(default_factory=list)  # profile phrases
+    affinity_sellers: set[str] = field(
+        default_factory=set
+    )  # seller keys allowed `AFFINITY_SELLER_CAP`
+    likes: list[str] = field(default_factory=list)  # stated profile phrases (from comments)
     dislikes: list[str] = field(default_factory=list)
+    inferred_likes: list[str] = field(default_factory=list)  # learned from the rated items
+    inferred_dislikes: list[str] = field(default_factory=list)
+    guesses: list[str] = field(default_factory=list)  # parser-guessed styles: not likes
+    seller_affinity: str = ""
+    price_band: str = ""
     more_like: list[tuple[ShopResult, str]] = field(default_factory=list)  # (result, love|like)
     less_like: list[ShopResult] = field(default_factory=list)
-    max_pages: int = MAX_PAGES_AGAIN
+    extra_queries: list[str] = field(default_factory=list)  # phrasings after the adjusted query
+    max_calls: int = 4  # Serper calls in all
+    pool_target: int = POOL_TARGET_AGAIN
+    # phrasing key (`query_key`) -> pages already fetched this session; a repeat starts after them
+    skip_pages: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -80,6 +94,9 @@ class SearchOutcome:
     kind: str = "search"  # "search" or "shop_again"
     serper_credits: int = 0
     note: str = ""
+    queries: list[str] = field(default_factory=list)  # Serper phrasings used
+    pages: dict[str, int] = field(default_factory=dict)  # phrasing key -> highest page fetched
+    alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
 
     @property
     def total_usd(self) -> float:
@@ -195,9 +212,20 @@ def rank_user_text(
         line("Avoid", query.avoid),
     ]
     if again is not None:
+        styles = [t for t in query.style_terms if t not in again.guesses]
+        lines[3] = line("Style", styles)
         lines += [
-            line("Profile likes", again.likes),
-            line("Profile dislikes", again.dislikes),
+            line(
+                "Style guessed by the request parser (not the shopper's, do not treat as likes)",
+                again.guesses,
+            ),
+            line("Profile likes (the shopper's own words)", again.likes),
+            line("Profile dislikes (the shopper's own words)", again.dislikes),
+            line("Inferred likes (learned from the rated items)", again.inferred_likes),
+            line("Inferred dislikes", again.inferred_dislikes),
+            f"Seller the shopper likes: {again.seller_affinity or 'none'}",
+            f"Price band of the loved and liked items: {again.price_band or 'none'}"
+            " (a preference signal; the price filter above is unchanged)",
             "More like these (the shopper loved or liked them):",
             *[
                 f"  * {r.title[:MAX_TITLE_CHARS]} | {_price(r.price)} | {r.seller or '?'} | {how}"
@@ -264,9 +292,14 @@ def _link(candidate: SearchCandidate) -> tuple[str, LinkKind]:
 
 
 def build_results(
-    ordered: list[tuple[SearchCandidate, str]], query: ShopQuery, pool_index: dict[str, int]
+    ordered: list[tuple[SearchCandidate, str]],
+    query: ShopQuery,
+    pool_index: dict[str, int],
+    affinity_sellers: set[str] | None = None,
 ) -> tuple[list[ShopResult], int]:
-    """Walk the ranked order keeping at most `SELLER_CAP` per seller, up to `RESULT_COUNT`."""
+    """Walk the ranked order keeping at most `SELLER_CAP` per seller (`AFFINITY_SELLER_CAP` for a
+    seller the shopper has shown an affinity for), up to `RESULT_COUNT`."""
+    affinity = affinity_sellers or set()
     per_seller: dict[str, int] = {}
     results: list[ShopResult] = []
     capped = 0
@@ -274,7 +307,7 @@ def build_results(
         if len(results) >= RESULT_COUNT:
             break
         key = seller_key(candidate.seller)
-        if per_seller.get(key, 0) >= SELLER_CAP:
+        if per_seller.get(key, 0) >= (AFFINITY_SELLER_CAP if key in affinity else SELLER_CAP):
             capped += 1
             continue
         per_seller[key] = per_seller.get(key, 0) + 1
@@ -304,13 +337,13 @@ def build_results(
 
 
 def _search_page(
-    search: SearchProvider, query: ShopQuery, page: int, budget: Budget
+    search: SearchProvider, text: str, page: int, budget: Budget
 ) -> list[SearchCandidate]:
     config: Config = budget.config
     usd = config.serper_usd_per_call if search.name == "serper" else config.serpapi_usd_per_search
     started = time.perf_counter()
     try:
-        found = search.search(query.search_text, page=page)
+        found = search.search(text, page=page)
     except ProviderError:
         _record_provider_call(
             budget, "search", f"shop p{page}", search.name, usd,
@@ -339,8 +372,9 @@ def _exclusions(
     return kept, len(pool) - len(kept)
 
 
-def _ordinal(page: int) -> str:
-    return {2: "Second", 3: "Third"}.get(page, f"Page {page}")
+def query_key(text: str) -> str:
+    """A search phrasing normalized for comparison (case, punctuation and spacing ignored)."""
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
 
 def run_query(
@@ -354,13 +388,14 @@ def run_query(
 ) -> SearchOutcome:
     """Search, filter, (exclude), rank and cap for an already parsed `query`.
 
-    Typed searches fetch page 2 only when fewer than `RESULT_COUNT` results could be shown; a Shop
-    Again keeps going to `again.max_pages` pages while fewer than that many unseen results survive
-    (it also stops at a page that returns nothing). Page 1 failing raises `ProviderError`; a later
-    page failing, or ranking failing, degrades with a warning.
+    A typed search fetches page 2 only when fewer than `RESULT_COUNT` results could be shown. A Shop
+    Again runs page 1 of each of its phrasings (the adjusted query, then up to two built from the
+    profile: `again.extra_queries`), and further pages while fewer than `again.pool_target`
+    candidates survive the filters and exclusions, at most `again.max_calls` Serper calls in all; a
+    phrasing that returns nothing is not paged further. The first call failing raises
+    `ProviderError`; a later call failing, or ranking failing, degrades with a warning.
     """
     t_start = time.perf_counter()
-    max_pages = again.max_pages if again is not None else 2
 
     def filtered(raw: list[SearchCandidate]) -> tuple[list[SearchCandidate], FilterCounts]:
         pool, counts = apply_filters(raw, query)
@@ -368,30 +403,53 @@ def run_query(
         counts.kept = len(pool)
         return pool, counts
 
-    calls = 1
-    raw = _search_page(search, query, 1, budget)
-    pool, counts = filtered(raw)
-    page = 1
-    # Only Serper pages (see SerpApiSearch.search); count what could be shown after the seller cap.
-    while (
-        search.name == "serper"
-        and page < max_pages
-        and len(cap_per_seller(pool, SELLER_CAP)[0]) < RESULT_COUNT
-    ):
-        page += 1
+    texts = [query.search_text, *(again.extra_queries if again is not None else [])]
+    max_calls = again.max_calls if again is not None else 2
+    if search.name != "serper":  # only Serper pages; other providers get one call
+        texts, max_calls = texts[:1], 1
+    # the first page of every phrasing (after any pages the session already fetched for the same
+    # words), then further pages of each while the pool is thin
+    skip = again.skip_pages if again is not None else {}
+    first = [skip.get(query_key(t), 0) + 1 for t in texts]
+    plan = [(i, first[i]) for i in range(len(texts))]
+    plan += [(i, first[i] + k) for k in range(1, max_calls) for i in range(len(texts))]
+
+    def enough(pool: list[SearchCandidate]) -> bool:
+        if again is not None:
+            return len(pool) >= again.pool_target
+        return len(cap_per_seller(pool, SELLER_CAP)[0]) >= RESULT_COUNT
+
+    calls = 0
+    raw: list[SearchCandidate] = []
+    pool: list[SearchCandidate] = []
+    counts = FilterCounts()
+    finished: set[int] = set()  # phrasings that ran out of results
+    used: list[str] = []
+    pages: dict[str, int] = {}
+    for i, page in plan:
+        if calls >= max_calls:
+            break
+        if page > first[i] and (enough(pool) or i in finished):
+            continue
         calls += 1
         try:
-            more = _search_page(search, query, page, budget)
+            more = _search_page(search, texts[i], page, budget)
         except ProviderError as exc:
-            warnings.append(f"{_ordinal(page)} page unavailable ({exc}); showing what was found.")
-            break
+            if calls == 1:
+                raise  # nothing to show without the first page
+            warnings.append(f"Search page {page} unavailable ({exc}); showing what was found.")
+            finished.add(i)
+            continue
+        if texts[i] not in used:
+            used.append(texts[i])
+        pages[query_key(texts[i])] = max(pages.get(query_key(texts[i]), 0), page)
+        if not more:
+            finished.add(i)
         raw = raw + more
         pool, counts = filtered(raw)
-        if not more:
-            break
     t_search = time.perf_counter()
 
-    pool = pool[:MAX_POOL]
+    pool = pool[: (MAX_POOL_AGAIN if again is not None else MAX_POOL)]
     pool_index = {c.product_id: i + 1 for i, c in enumerate(pool)}
     ranked = False
     ordered: list[tuple[SearchCandidate, str]] = []
@@ -404,7 +462,9 @@ def run_query(
         keep = [x for x in ordered if seller_key(x[0].seller) not in again.deprioritize_sellers]
         later = [x for x in ordered if seller_key(x[0].seller) in again.deprioritize_sellers]
         ordered = keep + later
-    results, capped = build_results(ordered, query, pool_index)
+    results, capped = build_results(
+        ordered, query, pool_index, again.affinity_sellers if again is not None else None
+    )
     counts.seller_capped = capped
     t_end = time.perf_counter()
     if again is not None and len(results) < RESULT_COUNT:
@@ -432,6 +492,8 @@ def run_query(
         warnings=warnings,
         kind="shop_again" if again is not None else "search",
         serper_credits=calls * config.serper_credits_per_call if search.name == "serper" else 0,
+        queries=used,
+        pages=pages,
     )
 
 

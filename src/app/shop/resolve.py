@@ -1,9 +1,10 @@
 """Lazy link resolve: one SerpApi `google_product` lookup for one result, on demand.
 
-Searching never looks anything up. A lookup runs only when the visitor opens a result or loves it,
-for a result that was actually shown in the session, at most `Config.shop_lookups_per_session` times
-per session, and never twice for the same result (the outcome, including "no retailer link found",
-is cached in the session). Past the cap the Google product link is returned, marked as such.
+Searching never looks anything up. A lookup runs only when the visitor opens a result (loving one
+looks nothing up), for a result that was actually shown in the session, at most
+`Config.shop_lookups_per_session` times per session, and never twice for the same result (the
+outcome, including "no retailer link found", is cached in the session). Past the cap the Google
+product link is returned, marked as such.
 
 Link hygiene is the room pipeline's (`app.shopping_retrieval._lookup_one`): tracking parameters
 stripped, the store matched to the search seller, a store URL that is only a listing or search page

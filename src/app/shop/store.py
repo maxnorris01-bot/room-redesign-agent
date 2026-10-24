@@ -76,6 +76,10 @@ class SearchRecord(_Model):
     kind: str = "search"  # "search" (typed) or "shop_again"
     serper_credits: int | None = None  # None in files from before credits were tracked
     note: str = ""
+    queries: list[str] = []  # Serper phrasings used (a Shop Again may use up to three)
+    pages: dict[str, int] = {}  # phrasing key -> highest Serper page fetched
+    alignment_matches: int | None = None  # Shop Again: results matching the inferred preferences
+    alignment_total: int | None = None
 
 
 class RatingRecord(_Model):

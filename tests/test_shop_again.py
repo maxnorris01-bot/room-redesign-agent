@@ -210,12 +210,15 @@ def test_prompt_text_carries_ratings_comments_the_profile_and_removed_entries(
     svc.rate(sid, res[1]["id"], "dislike", "too dark")
     session = svc.store.load(sid)
     session.profile = StoredProfile(likes=["wood"], removed=["glass"])
-    text = prefs_user_text(session, session.searches[0].query)
+    text = prefs_user_text(session, session.searches[0].query, {res[0]["id"]: 1})
     assert text.startswith("Original request: boho curtains")
     assert "likes: wood" in text and "never bring these back): glass" in text
     lines = [line for line in text.splitlines() if line.startswith("- ")]
-    assert lines[0].startswith("- love | A Curtain 0 | $40 |") and "love the / texture" in lines[0]
-    assert lines[1].startswith("- dislike |") and lines[1].endswith("comment: too dark")
+    assert lines[0].startswith(f"- love | id: {res[0]['id']} | A Curtain 0 | $40 |")
+    assert "love the / texture" in lines[0] and lines[0].endswith("| image 1")
+    assert lines[1].startswith("- dislike |") and lines[1].endswith(
+        "comment: too dark | image none"
+    )
 
 
 def test_mock_reads_comments_without_fixed_tags() -> None:
@@ -295,18 +298,18 @@ def test_everything_seen_in_any_search_is_excluded(
     a = items("a", 30)
     svc, search, _, first = start(tmp_path, monkeypatch, [a])
     sid = first["session_id"]
-    search.pages = [items("b", 30)]
+    search.sequence = [items("b", 30)]
     second = svc.search(sid, "boho curtains")
     seen = set(ids_of(first)) | set(ids_of(second))
     assert len(seen) == 2 * RESULT_COUNT
     svc.rate(sid, ids_of(second)[0], "love")
     svc.rate(sid, ids_of(first)[1], "dislike")  # a disliked item from the FIRST search
-    search.pages = [[*a, *items("b", 30), *items("c", 30)]]
+    search.sequence = [[*a, *items("b", 30), *items("c", 30)]]
     again = svc.shop_again(sid)
     got = ids_of(again)
     assert len(got) == RESULT_COUNT and not set(got) & seen
     assert again["search"]["counts"]["seen_excluded"] == 48
-    assert again["search"]["kind"] == "shop_again" and again["search"]["serper_calls"] == 1
+    assert again["search"]["kind"] == "shop_again" and again["search"]["serper_calls"] <= 4
 
 
 def test_the_same_listing_under_another_id_is_excluded(
@@ -318,7 +321,7 @@ def test_the_same_listing_under_another_id_is_excluded(
     svc.rate(sid, ids_of(first)[0], "like")
     clone = cand("zzz", 41.0, title=first_items[0].title, seller=first_items[0].seller)
     fresh = cand("fresh", 50.0, title="Brand New Curtain")
-    search.pages = [[clone, fresh], []]
+    search.sequence = [[clone, fresh], []]
     again = svc.shop_again(sid)
     assert ids_of(again) == ["fresh"]
 
@@ -334,7 +337,7 @@ def test_shop_again_results_replace_the_grid_and_keep_the_typed_query_hard_filte
     assert all(r["price"] <= 1000 for r in first["search"]["results"])
     svc.rate(sid, ids_of(first)[0], "love")
     more = [cand(f"n{i}", 150.0 * (i + 1), title=f"Sofa N{i}") for i in range(12)]
-    search.pages = [more, []]
+    search.sequence = [more, []]
     again = svc.shop_again(sid)
     prices = [r["price"] for r in again["search"]["results"]]
     assert prices and max(prices) <= 1000  # the price filter is still the typed one
@@ -359,7 +362,7 @@ def test_sellers_are_deprioritized_only_with_two_dislikes_and_no_like(
         svc.rate(sid, by_title["Good 0"], "love")
         fresh = [cand(f"bad{i}", 40.0, title=f"Fresh Bad {i}", seller="BadShop") for i in range(2)]
         fresh += [cand(f"ok{i}", 40.0, title=f"Fresh OK {i}", seller="OkShop") for i in range(2)]
-        search.pages = [fresh, []]
+        search.sequence = [fresh, []]
         again = svc.shop_again(sid)
         return ids_of(again), sellers_to_deprioritize(svc.store.load(sid))
 
@@ -372,19 +375,22 @@ def test_sellers_are_deprioritized_only_with_two_dislikes_and_no_like(
     assert flagged == set() and order == ["bad0", "bad1", "ok0", "ok1"]  # a like from it saves it
 
 
-def test_fewer_than_24_unseen_results_stop_at_three_pages_with_a_message(
+def test_fewer_than_24_unseen_results_stop_at_four_calls_with_a_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     svc, search, _, first = start(tmp_path, monkeypatch, [items("a", 6), []])
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[0], "love")
-    search.pages = [items("p", 5), items("q", 3), items("r", 2), items("s", 9), items("t", 9)]
+    typed_pages = max(p for _, p in search.calls)  # the typed search used pages 1 and 2
+    search.sequence = [items("p", 5), items("q", 3), items("r", 2), items("s", 9), items("t", 9)]
     again = svc.shop_again(sid)
     found = again["search"]
-    assert len(found["results"]) == 10 and found["serper_calls"] == 3  # never a 4th page
-    assert [p for _, p in search.calls][-3:] == [1, 2, 3]
-    assert "Only 10 new results found. Try changing the request." in found["warnings"]
-    assert found["serper_credits"] == 6 and found["provider_usd"] == pytest.approx(0.006)
+    assert len(found["results"]) == 19 and found["serper_calls"] == 4  # never a 5th call
+    assert len(search.sequence) == 1  # the fifth page was not fetched
+    again_pages = [p for _, p in search.calls][-4:]
+    assert again_pages == [typed_pages + 1, typed_pages + 2, typed_pages + 3, typed_pages + 4]
+    assert "Only 19 new results found. Try changing the request." in found["warnings"]
+    assert found["serper_credits"] == 8 and found["provider_usd"] == pytest.approx(0.008)
 
 
 def test_an_empty_page_stops_the_paging_and_zero_results_say_so(
@@ -393,11 +399,11 @@ def test_an_empty_page_stops_the_paging_and_zero_results_say_so(
     svc, search, _, first = start(tmp_path, monkeypatch, [items("a", 6), []])
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[0], "love")
-    search.pages = [items("p", 4), [], items("never", 9)]
+    search.sequence = [items("p", 4), [], items("never", 9)]
     again = svc.shop_again(sid)
-    assert again["search"]["serper_calls"] == 2
+    assert again["search"]["serper_calls"] == 2  # an empty page ends that phrasing
     assert "Only 4 new results found. Try changing the request." in again["search"]["warnings"]
-    search.pages = [items("a", 6), []]  # nothing but what was already shown
+    search.sequence = [items("a", 6), []]  # nothing but what was already shown
     nothing = svc.shop_again(sid)
     assert nothing["search"]["results"] == []
     assert "No new results found. Try changing the request." in nothing["search"]["warnings"]
@@ -409,11 +415,11 @@ def test_a_later_page_failing_keeps_what_was_found(
     svc, search, _, first = start(tmp_path, monkeypatch, [items("a", 6), []])
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[0], "love")
-    search.pages = [items("p", 5), ProviderError("serper", "HTTP 429")]
+    search.sequence = [items("p", 5), ProviderError("serper", "HTTP 429")]
     again = svc.shop_again(sid)
     assert len(again["search"]["results"]) == 5
-    assert any("Second page unavailable" in w for w in again["search"]["warnings"])
-    search.pages = [ProviderError("serper", "HTTP 402")]
+    assert any("Search page 4 unavailable" in w for w in again["search"]["warnings"])
+    search.sequence = [ProviderError("serper", "HTTP 402")]
     with pytest.raises(ApiError) as err:
         svc.shop_again(sid)
     assert err.value.status == 502 and err.value.message == "serper: HTTP 402"
@@ -425,7 +431,7 @@ def test_shop_again_has_a_per_session_cap(tmp_path: Path, monkeypatch: pytest.Mo
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[0], "love")
     for n in range(2):
-        search.pages = [items(f"n{n}x", 3), []]
+        search.sequence = [items(f"n{n}x", 3), []]
         view = svc.shop_again(sid)
     assert view["shop_agains_used"] == 2 and view["shop_agains_cap"] == 2
     calls_before = len(search.calls)
@@ -448,7 +454,7 @@ def test_the_default_cap_comes_from_the_environment(monkeypatch: pytest.MonkeyPa
 # ---- Shop Again: the profile reaches the ranker and the query ----
 
 
-def test_rank_v2_is_used_for_shop_again_and_v1_for_a_typed_search(
+def test_rank_v3_is_used_for_shop_again_and_v1_for_a_typed_search(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = RouterClient()
@@ -460,10 +466,10 @@ def test_rank_v2_is_used_for_shop_again_and_v1_for_a_typed_search(
     svc.rate(sid, res[0]["id"], "love", "boucle texture")
     svc.rate(sid, res[1]["id"], "like")
     svc.rate(sid, res[2]["id"], "dislike", "too dark")
-    search.pages = [items("n", 6), []]
+    search.sequence = [items("n", 6), []]
     svc.shop_again(sid)
     titles = [c["output_config"]["format"]["schema"]["title"] for c in client.calls]
-    assert titles[-2:] == ["PreferenceProfile", "RankedFinalists"]
+    assert titles[-2:] == ["PreferenceProfileV2", "RankedFinalists"]
     rank = client.calls[-1]
     assert "repeat search" in rank["system"]
     text = rank["messages"][0]["content"]
@@ -471,7 +477,7 @@ def test_rank_v2_is_used_for_shop_again_and_v1_for_a_typed_search(
     assert f"* {res[0]['title']} | $40 | {res[0]['seller']} | love" in text
     assert f"* {res[1]['title']} | $41 | {res[1]['seller']} | like" in text
     assert text.split("Less like these")[1].count("* ") == 1 and res[2]["title"] in text
-    assert "Profile dislikes: too dark" in text
+    assert "Profile dislikes (the shopper's own words): too dark" in text
     assert text.startswith("Shopper request:") and "Candidates:" in text
 
 
@@ -484,7 +490,7 @@ def test_a_comment_can_lower_the_price_cap_and_the_page_says_so(
     )
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[-1], "dislike", "way too expensive")
-    search.pages = [[cand(f"n{i}", 90.0 * (i + 1), title=f"Sofa N{i}") for i in range(11)], []]
+    search.sequence = [[cand(f"n{i}", 90.0 * (i + 1), title=f"Sofa N{i}") for i in range(11)], []]
     again = svc.shop_again(sid)
     used = again["search"]["query"]
     assert used["price_max"] == 850.0 and used["price_min"] is None
@@ -504,7 +510,7 @@ def test_shop_again_adjusts_the_typed_query_each_time_not_the_previous_again(
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[-1], "dislike", "too expensive")
     for n in range(2):
-        search.pages = [
+        search.sequence = [
             [cand(f"n{n}{i}", 80.0 * (i + 1), title=f"Sofa {n}{i}") for i in range(11)],
             [],
         ]
@@ -519,14 +525,14 @@ def test_profile_is_stored_and_deleted_chips_stay_deleted_after_the_next_shop_ag
     pool = [cand(f"a{i}", 50.0, title=f"Boucle Curtain {i}") for i in range(6)]
     svc, search, _, first = start(tmp_path, monkeypatch, [pool, []])
     sid = first["session_id"]
-    svc.rate(sid, ids_of(first)[0], "love")
-    search.pages = [items("n", 6), []]
+    svc.rate(sid, ids_of(first)[0], "love", "I love the boucle")
+    search.sequence = [items("n", 6), []]
     one = svc.shop_again(sid)
-    assert one["profile"]["likes"] == ["boucle"]
+    assert one["profile"]["likes"] == ["boucle"]  # the shopper's own word, shown once
     assert svc.store.load(sid).profile is not None
     gone = svc.remove_preference(sid, "like", "Boucle")
     assert gone["profile"]["likes"] == [] and gone["profile"]["removed"] == ["boucle"]
-    search.pages = [items("m", 6), []]
+    search.sequence = [items("m", 6), []]
     two = svc.shop_again(sid)  # the mock "model" proposes boucle again; the code refuses it
     assert two["profile"]["likes"] == [] and two["profile"]["removed"] == ["boucle"]
     assert "boucle" not in json.dumps(two["profile"]["adjustments"])
@@ -541,7 +547,7 @@ def test_an_unusable_preference_answer_still_searches_with_a_warning(
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[0], "love")
     client.prefs = "garbage"
-    search.pages = [items("n", 6), []]
+    search.sequence = [items("n", 6), []]
     again = svc.shop_again(sid)
     assert len(again["search"]["results"]) == 6
     assert any("Could not update your preferences" in w for w in again["search"]["warnings"])
@@ -559,11 +565,11 @@ def test_saved_comes_from_every_search_and_shop_again(
     svc.rate(sid, a[0], "love", "keeper")
     svc.rate(sid, a[1], "like")
     svc.rate(sid, a[2], "dislike")
-    search.pages = [items("b", 8), []]
+    search.sequence = [items("b", 8), []]
     second = svc.search(sid, "boho curtains")
     b = ids_of(second)
     svc.rate(sid, b[0], "like")
-    search.pages = [items("c", 8), []]
+    search.sequence = [items("c", 8), []]
     third = svc.shop_again(sid)
     c = ids_of(third)
     svc.rate(sid, c[0], "love")
@@ -616,13 +622,13 @@ def test_shop_again_cost_includes_the_preference_call(
     svc, search, _, first = start(tmp_path, monkeypatch, [items("a", 30)])
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[0], "love")
-    search.pages = [items("p", 5), items("q", 4), items("r", 3)]
+    search.sequence = [items("p", 5), items("q", 4), items("r", 3)]
     again = svc.shop_again(sid)["search"]
-    assert again["serper_calls"] == 3 and again["serper_credits"] == 6
-    assert again["provider_usd"] == pytest.approx(0.006)
+    assert again["serper_calls"] == 4 and again["serper_credits"] == 8  # the 4th found nothing
+    assert again["provider_usd"] == pytest.approx(0.008)
     # the mock bills 900/150 tokens for the profile call and 900/80 for the rank call
     assert again["anthropic_usd"] > first["search"]["anthropic_usd"] * 0.5
-    assert again["total_usd"] == pytest.approx(again["anthropic_usd"] + 0.006)
+    assert again["total_usd"] == pytest.approx(again["anthropic_usd"] + 0.008)
     view = svc.session_view(sid)
     assert view["session_usd"] == pytest.approx(
         first["search"]["total_usd"] + again["total_usd"], abs=1e-6
@@ -700,10 +706,11 @@ def test_shop_again_endpoint_end_to_end_and_validation(app: ShopApp) -> None:
 def test_preference_remove_endpoint_validates_and_removes(app: ShopApp) -> None:
     sid, res = searched(app)
     for r in res[:2]:
-        post(app, "/api/rate", {"session_id": sid, "result_id": r["id"], "rating": "love"})
+        body = {"session_id": sid, "result_id": r["id"], "rating": "love", "comment": "love walnut"}
+        post(app, "/api/rate", body)
     again = json.loads(post(app, "/api/shop-again", {"session_id": sid}).body)
     likes = again["profile"]["likes"]
-    assert likes, "the mock should have found something both loved results share"
+    assert likes == ["walnut"], "the shopper said walnut in both comments"
     path = "/api/preference/remove"
     assert post(app, path, {"session_id": sid, "kind": "love", "phrase": likes[0]}).status == 400
     assert post(app, path, {"session_id": sid, "kind": "like"}).status == 400
