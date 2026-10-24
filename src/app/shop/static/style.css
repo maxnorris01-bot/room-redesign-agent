@@ -228,3 +228,19 @@ button.outline:hover { border-color: var(--accent); }
   .grid { gap: 12px; }
   .search button { padding: 0 14px; }
 }
+
+.prefs-note {
+  margin: 8px 0 0; padding: 8px 12px; border-radius: 10px; font-size: 14px;
+  background: var(--chip); border-left: 4px solid #b45f06;
+}
+.why-toggle { margin-top: 6px; padding-left: 0; text-decoration: underline dotted; }
+.why { margin-top: 8px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; font-size: 13px; }
+.why[hidden] { display: none; }
+.why-dim { margin: 10px 0 14px; padding-bottom: 10px; border-bottom: 1px dashed var(--line); }
+.why-dim h4 { margin: 0 0 6px; font-size: 13px; text-transform: capitalize; }
+.why-line { margin: 4px 0; color: var(--muted); }
+.why-reason { margin: 4px 0 0; font-style: italic; }
+.why-table { border-collapse: collapse; width: 100%; max-width: 560px; margin: 4px 0; }
+.why-table th, .why-table td { text-align: left; padding: 2px 10px 2px 0; border-bottom: 1px solid var(--line); font-weight: normal; }
+.why-table th { color: var(--muted); font-size: 12px; }
+@media (max-width: 520px) { .why { overflow-x: auto; } }

@@ -254,6 +254,9 @@ eval to tune):
 | CONVERGE_SHARE | 0.70 | one value's share of the like mass to converge |
 | OPEN_SHARE | 0.30 | share each of two or more values needs for open |
 | MIN_SUPPORT_ITEMS | 2 | items behind a converged value (a loved item with a naming comment may be the second) |
+| KNOWN_COVERAGE_MIN | 0.70 | share of the like mass (and of the shown titles) that must have a known value before a dimension can converge or run the lift test |
+| PRICE_BAND_MIN_MASS | 0.80 | share of the liked mass a price band must hold, or price is mixed |
+| CONVERGED_MAX_SHARE | 0.80 | most of a batch a converged value may take |
 | LIFT_MIN | 1.3 | like share over exposure share needed to call a value preferred |
 | DISLIKE_MIN_ITEMS | 2 | disliked items sharing a value before a dislike chip |
 | SELLER_DISLIKES_TO_DEPRIORITIZE | 2 | dislikes (and no love or like) before a seller is ranked last |
@@ -265,7 +268,7 @@ eval to tune):
 | PRICE_MIXED_LIKED_SPAN | 0.6667 | share of the shown price range the liked prices must span for mixed |
 | MIN_SHOWN_PRICES | 8 | fewest shown prices before any price signal |
 | RESULT_COUNT | 24 | results in a batch (the base of the share caps) |
-| DIVERSITY_MAX_SHARE | 0.60 | most of a batch one known value of a guarded dimension may take |
+| DIVERSITY_MAX_SHARE | 0.60 | most of a batch one value of shape or of an open dimension may take (a converged value: 0.80; a dimension the typed request names: no cap) |
 | SELLER_MAX_SHARE | 0.50 | most of a batch an affinity seller may take |
 | SELLER_PINNED_SHARE | 0.80 | most of a batch a pinned seller may take |
 | SELLER_DEFAULT_CAP | 4 | results from any other seller |
@@ -282,3 +285,43 @@ unchanged: up to 4 Serper calls (8 credits), one preference call (about 1,000 mo
 per-item tags) and one rank call, an Anthropic estimate of about $0.002 to $0.003 (assumed token counts,
 not measured). Not verified live: how well the model tags real photos, whether the lexicon's baseline is
 close enough on real result pages, and whether the thresholds feel right on the owner's ratings.
+
+## Amendment, stage 2d (2026-10-24): coverage, honest fallback, and a decision trace
+
+**What failed (observed live with 2c).** The preference call hit max_tokens, so the profile was decided
+from titles alone; the title-only lexicon then converged shape on "round" from four keyword titles while
+four rectangular titles were silent, and "industrial" from two titles. The price band read $450 to $1,950
+though the liked items cost $143.99 to $799; no seller chip showed though 8 of 10 liked items were West
+Elm; a "could not keep material mixed" warning fired though the request said wood and metal.
+
+**Changes.**
+- *Call robustness.* max_tokens comes from the schema and the item count (twice the estimate, 3,000 to
+  12,000), the answer is asked for compactly, and a failed call is retried once as two split calls (loved
+  and liked, then disliked). The response and footer say items tagged N of M, photos used, and whether a
+  retry or the fallback happened.
+- *Honest fallback.* With no model tags, only the seller affinity, the price classification and what the
+  comments state are decided. Shape, material, finish, frame and style never converge from titles alone.
+  The page says "Could not read item details; only seller and price were learned."
+- *Coverage.* Shares are over all like mass, so unknown items count against every value. A dimension
+  converges only if known values cover at least 70% of that mass, then the 70% share, two items and lift
+  1.3 apply. Open uses the same shares. The exposure baseline counts known values only, and a dimension
+  with under 70% known coverage in what was shown skips the lift test and cannot converge.
+- *Price.* A band must hold at least 80% of the liked mass (loved weighted) and 80% of the liked items, or
+  price is mixed (a neutral chip with the loved and liked ranges, no pressure). The typed cap is untouched.
+- *Guards.* The diversity guard covers shape and any open dimension at 60%; a converged value is capped at
+  80%; material is no longer always guarded; a dimension the typed request names is exempt and gets no
+  warning. Seller caps are unchanged. Warnings give the real share and the limit.
+- *Trace.* "How I decided" (closed by default) lists, per dimension, the like mass by value, known
+  coverage, exposure share by value, lift, the decision and why it did not converge; for seller and price,
+  the numbers and the rule that fired. The same trace is in the Shop Again response and the session file.
+
+**Replay.** The owner's recorded ratings are a fixture (`tests/fixtures/shop/owner_session_replay.json`)
+run offline: shape open (57/43), material not converged (lift 1.286, and the request names it), price
+mixed (a $450 to $800 band would hold 86% of the like mass but 75% of the liked items), West Elm affinity
+chip (86% of the like mass, 50% of what was shown, lift 1.714), no "industrial" or "round" like. In
+fallback the same session decides only seller and price.
+
+**Limits.** Dimensions with no lexicon (frame or legs, size class) cannot converge. The 80% price rule on
+both mass and items is a judgement call. Not verified live: model tagging on real photos, the lexicon
+against real pages, and the thresholds on real ratings. A retry adds the failed call and two split calls
+(still under about $0.01 of Anthropic cost by the estimate).

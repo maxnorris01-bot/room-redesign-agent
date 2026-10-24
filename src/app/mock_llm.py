@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -660,6 +661,23 @@ def mock_prefs_v2_payload(request_text: str) -> dict[str, Any]:
     }  # fmt: skip
 
 
+_REPLAY_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "tests"
+    / "fixtures"
+    / "shop"
+    / "owner_session_replay.json"
+)
+
+
+def _replay_attrs() -> dict[str, dict[str, Any]]:
+    """The owner's replay items' real attributes by id (see tests/fixtures/shop/README.md)."""
+    if not _REPLAY_PATH.is_file():
+        return {}
+    data = json.loads(_REPLAY_PATH.read_text())
+    return {r["id"]: r["attrs"] for r in data["rated"]}
+
+
 def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
     """A v3 answer: per-item tags read from title keywords (the shopper's own words from comments,
     parser-guess contradictions and price asks come from the v2 mock). It describes only; it never
@@ -668,6 +686,7 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
     from app.shop.decide import lexicon_match
 
     base = mock_prefs_v2_payload(request_text)
+    replay = _replay_attrs()
     items: list[dict[str, Any]] = []
     for line in request_text.splitlines():
         m = _PREF_ROW_V2.match(line)
@@ -675,6 +694,17 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
             continue
         _rating, rid, title, _price, _seller, _comment, image = m.groups()
         low = title.lower()
+        if rid in replay:  # the owner's real session: tags from its real attributes, not keywords
+            a = replay[rid]
+            items.append(
+                {
+                    "id": rid, "shape": a.get("shape"), "material": a.get("material"),
+                    "color_finish": a.get("color_finish"), "frame_or_legs": None,
+                    "frame_color": a.get("frame_color"), "style": a.get("style"),
+                    "size_class": None, "quality_cues": [],
+                }
+            )  # fmt: skip
+            continue
 
         def raw(dim: str, text: str = title) -> str | None:
             found = lexicon_match(dim, text)
@@ -789,6 +819,16 @@ class MockAnthropicClient:
                 if isinstance(content, str)
                 else sum(1 for b in content if isinstance(b, dict) and b.get("type") == "image")
             )
+            ask = _request_text(kwargs)
+            ratings = set(re.findall(r"^- (love|like|dislike) \|", ask, flags=re.MULTILINE))
+            unsplit = "dislike" in ratings and bool(ratings & {"love", "like"})  # not yet split
+            if "MOCK_TRUNCATE_ALL" in ask or ("MOCK_TRUNCATE_FIRST" in ask and unsplit):
+                # a mock-only switch (it lives in a rated item's comment): the answer is cut off
+                return response(
+                    [text_block('{"items": [{"id": "')],
+                    stop_reason="max_tokens",
+                    output_tokens=2000,
+                )
             return response(
                 [text_block(mock_prefs_v3_payload(_request_text(kwargs)))],
                 input_tokens=1200 + 90 * n_images,

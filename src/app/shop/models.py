@@ -275,6 +275,8 @@ class StoredProfile(BaseModel):
     dropped_guesses: list[str] = []  # guesses a loved or liked item contradicted
     images: ImageReport = ImageReport()
     pinned_sellers: list[str] = []  # seller keys the visitor pinned (stage 2c)
+    trace: dict[str, Any] = {}  # how every entry was decided: numbers and reasons (stage 2d)
+    tagging: dict[str, Any] = {}  # items tagged N of M, images, retry, fallback (stage 2d)
 
 
 def jsonable(model: BaseModel) -> dict[str, Any]:

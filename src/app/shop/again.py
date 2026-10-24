@@ -15,7 +15,7 @@ import time
 
 from app.config import Config
 from app.llm import Budget
-from app.shop.decide import DIMENSIONS
+from app.shop.decide import DIMENSIONS, LEXICON_DIMENSIONS, typed_dimensions
 from app.shop.models import ShopQuery, StoredProfile
 from app.shop.prefs import (
     alignment_counts,
@@ -32,6 +32,7 @@ from app.shop.search import (
     run_query,
 )
 from app.shop.store import Session, rated_results, sellers_to_deprioritize
+from app.shop.thresholds import CONVERGED_MAX_SHARE, DIVERSITY_MAX_SHARE
 from app.shopping import SearchProvider
 from app.shopping_retrieval import seller_key
 from app.thumbnails import Thumbnailer
@@ -66,9 +67,10 @@ def again_context(
 ) -> AgainContext:
     """Exclusions, seller rules, the profile (stated, converged, open, guesses), the phrasings.
 
-    Only converged entries press on search and ranking. Open dimensions and a mixed price are passed
-    to the ranker as "keep mixed" and "no signal", and the dimensions the final list must not let
-    one value dominate are the open ones plus shape and material when they have not converged.
+    Only converged entries press on search and ranking. Open dimensions and a mixed price are
+    passed to the ranker as "keep mixed" and "no signal". The final list is held to a 60%
+    single-value cap on shape and on every open dimension and 80% on a converged one, except
+    dimensions the typed request names.
     """
     seen = session.results
     rows = rated_results(session)
@@ -84,9 +86,15 @@ def again_context(
         and e.values
     }
     open_dims = {e.dimension: list(e.values) for e in inferred if e.status == "open"}
-    guard = list(
-        dict.fromkeys([*open_dims, *[d for d in ("shape", "material") if d not in converged]])
-    )
+    base = base_query(session)
+    typed_dims = typed_dimensions(base) if base is not None else set()
+    # shape is always guarded (60%); an open dimension too; a converged one is capped at 80%
+    caps: dict[str, float] = {dim: DIVERSITY_MAX_SHARE for dim in open_dims}
+    if "shape" not in converged:
+        caps["shape"] = DIVERSITY_MAX_SHARE
+    for dim in converged:
+        caps[dim] = CONVERGED_MAX_SHARE
+    caps = {d: c for d, c in caps.items() if d not in typed_dims and d in LEXICON_DIMENSIONS}
     price_line = ""
     if price is not None:
         price_line = f"mixed ({price.detail})" if price.status == "mixed" else price.text
@@ -96,7 +104,8 @@ def again_context(
         deprioritize_sellers=sellers_to_deprioritize(session),
         affinity_sellers={seller_key(seller_name(seller))} if seller is not None else set(),
         pinned_sellers=set(profile.pinned_sellers),
-        guard_dims=guard,
+        guard_caps=caps,
+        typed_dims=typed_dims,
         converged=converged,
         open_dims=open_dims,
         price_line=price_line,
@@ -147,5 +156,7 @@ def run_shop_again(
         again_context(session, profile, config, queries, dropped),
     )  # fmt: skip
     outcome.display_query = base  # the request chips keep showing only what the parser read
+    outcome.trace = profile.trace
+    outcome.tagging = profile.tagging
     outcome.alignment = alignment_counts(outcome.results, profile)
     return outcome, profile, query

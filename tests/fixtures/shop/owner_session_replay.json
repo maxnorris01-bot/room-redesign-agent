@@ -1,0 +1,337 @@
+{
+ "request": "coffee tables with a mix of wood and metal with storage",
+ "rated": [
+  {
+   "id": "R1",
+   "title": "Agnelli 44\" Coffee Table",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "love",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "walnut",
+    "color_finish": "walnut",
+    "frame_color": null,
+    "style": null
+   }
+  },
+  {
+   "id": "R2",
+   "title": "Volume 36\" Storage Coffee Table",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "love",
+   "comment": "",
+   "attrs": {
+    "shape": "round",
+    "material": "walnut",
+    "color_finish": "walnut",
+    "frame_color": null,
+    "style": null
+   }
+  },
+  {
+   "id": "R3",
+   "title": "Ericsson 45\" Open Closed Storage Coffee Table",
+   "price": 479.97,
+   "seller": "West Elm",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "walnut",
+    "color_finish": "walnut",
+    "frame_color": "metal legs",
+    "style": null
+   }
+  },
+  {
+   "id": "R4",
+   "title": "Industrial Solid Wood Storage Pop-Up Coffee Table (36\"-50\")",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "light wood",
+    "color_finish": "light wood",
+    "frame_color": "black metal",
+    "style": "industrial"
+   }
+  },
+  {
+   "id": "R5",
+   "title": "Open Box Drum Storage Coffee Table",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "round",
+    "material": "brass",
+    "color_finish": "brushed brass",
+    "frame_color": null,
+    "style": null
+   }
+  },
+  {
+   "id": "R6",
+   "title": "Melli Storage Coffee Table",
+   "price": 799.0,
+   "seller": "West Elm",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "round",
+    "material": "walnut",
+    "color_finish": "walnut",
+    "frame_color": null,
+    "style": null
+   }
+  },
+  {
+   "id": "R7",
+   "title": "Drum Storage 32\" Coffee Table",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "round",
+    "material": "brass",
+    "color_finish": "brushed brass",
+    "frame_color": null,
+    "style": null
+   }
+  },
+  {
+   "id": "R8",
+   "title": "Baxton Studio Franklin Oak Brown Finished Wood and Black Finished Metal Coffee Table",
+   "price": 143.99,
+   "seller": "Lowe's",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "oak",
+    "color_finish": "oak",
+    "frame_color": "black metal",
+    "style": null
+   }
+  },
+  {
+   "id": "R9",
+   "title": "Industrial Storage Coffee Table",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "wood",
+    "color_finish": null,
+    "frame_color": "black metal",
+    "style": "industrial"
+   }
+  },
+  {
+   "id": "R10",
+   "title": "Khalani Wood and Metal Fluted Coffee Table",
+   "price": 449.99,
+   "seller": "World Market",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "wood",
+    "color_finish": null,
+    "frame_color": "black metal",
+    "style": null
+   }
+  }
+ ],
+ "shown_extras": [
+  {
+   "id": "X1",
+   "title": "Round Walnut Coffee Table 30\"",
+   "price": 263.53,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X2",
+   "title": "Rectangular Wood and Metal Coffee Table 31\"",
+   "price": 235.73,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X3",
+   "title": "Oval Steel Coffee Table 32\"",
+   "price": 162.95,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X4",
+   "title": "Square Oak Coffee Table 33\"",
+   "price": 388.63,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X5",
+   "title": "Round Oak Coffee Table 34\"",
+   "price": 121.99,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X6",
+   "title": "Rectangular Marble Coffee Table 35\"",
+   "price": 275.86,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X7",
+   "title": "Oval Glass Top Black Metal Coffee Table 36\"",
+   "price": 398.47,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X8",
+   "title": "Square Walnut Coffee Table 37\"",
+   "price": 145.05,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X9",
+   "title": "Round Walnut Coffee Table 38\"",
+   "price": 291.82,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X10",
+   "title": "Rectangular Wood and Metal Coffee Table 39\"",
+   "price": 311.16,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X11",
+   "title": "Oval Steel Coffee Table 40\"",
+   "price": 132.68,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X12",
+   "title": "Square Oak Coffee Table 41\"",
+   "price": 237.5,
+   "seller": "West Elm"
+  },
+  {
+   "id": "X13",
+   "title": "Round Oak Coffee Table 42\"",
+   "price": 338.08,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "X14",
+   "title": "Rectangular Marble Coffee Table 43\"",
+   "price": 260.13,
+   "seller": "Article"
+  },
+  {
+   "id": "X15",
+   "title": "Oval Glass Top Black Metal Coffee Table 44\"",
+   "price": 344.77,
+   "seller": "Walmart"
+  },
+  {
+   "id": "X16",
+   "title": "Square Walnut Coffee Table 45\"",
+   "price": 168.72,
+   "seller": "Overstock"
+  },
+  {
+   "id": "X17",
+   "title": "Round Walnut Coffee Table 46\"",
+   "price": 193.78,
+   "seller": "Etsy"
+  },
+  {
+   "id": "X18",
+   "title": "Rectangular Wood and Metal Coffee Table 47\"",
+   "price": 154.39,
+   "seller": "Home Depot"
+  },
+  {
+   "id": "X19",
+   "title": "Oval Steel Coffee Table 48\"",
+   "price": 276.94,
+   "seller": "Crate & Barrel"
+  },
+  {
+   "id": "X20",
+   "title": "Square Oak Coffee Table 49\"",
+   "price": 406.39,
+   "seller": "Joss & Main"
+  },
+  {
+   "id": "X21",
+   "title": "Round Oak Coffee Table 50\"",
+   "price": 303.03,
+   "seller": "IKEA"
+  },
+  {
+   "id": "X22",
+   "title": "Rectangular Marble Coffee Table 51\"",
+   "price": 360.0,
+   "seller": "Target"
+  },
+  {
+   "id": "X23",
+   "title": "Oval Glass Top Black Metal Coffee Table 52\"",
+   "price": 238.94,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "X24",
+   "title": "Square Walnut Coffee Table 53\"",
+   "price": 351.29,
+   "seller": "Article"
+  },
+  {
+   "id": "X25",
+   "title": "Round Walnut Coffee Table 54\"",
+   "price": 465.0,
+   "seller": "Walmart"
+  },
+  {
+   "id": "X26",
+   "title": "Rectangular Wood and Metal Coffee Table 55\"",
+   "price": 470.0,
+   "seller": "Overstock"
+  },
+  {
+   "id": "X27",
+   "title": "Steel Coffee Table 56\"",
+   "price": 485.0,
+   "seller": "Etsy"
+  },
+  {
+   "id": "X28",
+   "title": "Oak Coffee Table 57\"",
+   "price": 520.0,
+   "seller": "Home Depot"
+  },
+  {
+   "id": "X29",
+   "title": "Oak Coffee Table 58\"",
+   "price": 560.0,
+   "seller": "Crate & Barrel"
+  },
+  {
+   "id": "X30",
+   "title": "Marble Coffee Table 59\"",
+   "price": 610.0,
+   "seller": "Joss & Main"
+  }
+ ]
+}

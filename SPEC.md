@@ -30,6 +30,8 @@ in credits; a loading state and a retry on errors.
 
 **Shipped in stage 2c:** the model describes, code decides. The per-item tags come from the model; whether a shape, material, finish, seller or price is a preference is decided in code from all the ratings, against what was shown (so liking round and rectangular makes shape *open*, not round, and a mostly-round batch does not teach "likes round"). Open and mixed-price chips exert no pressure; the request chips never change; search phrasings come only from converged values (one per value of an open dimension); the final 24 are held to a 60% single-value cap on guarded dimensions and a 50% seller cap (80% when pinned). Every threshold is in `src/app/shop/thresholds.py` and the table in ADR 0012.
 
+**Shipped in stage 2d:** the preference decisions are honest about what was read. The preference call sizes its own token budget and retries once in two parts; with no item details only seller and price are learned (and the page says so); a dimension converges only when known values cover at least 70% of the like mass; a price band must hold 80% of the liked mass or price is mixed; the diversity guard covers shape and open dimensions (60%), a converged value is capped at 80%, and a dimension the typed request names is exempt. A "How I decided" panel shows the numbers behind each decision. The owner's real session is an offline replay fixture. Thresholds: ADR 0012.
+
 **Later:** an eval of about 12 prompts (stage 3), deployment as a portfolio-site tab, then Redesign Mode. The **2D room plan is dropped from the product**
 (ADR 0012); step 2 of "Product" below is superseded, and the plan code survives only in the developer run
 report.

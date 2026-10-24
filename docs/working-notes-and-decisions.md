@@ -100,6 +100,13 @@ this choice over the alternatives. Note what's still open or deferred within it,
   restyle tools cannot keep or replace specific pieces and 3D/AR needs assets we lack. The spike is an
   experiment in its own package; no thresholds come from it. Vendor facts that could not be verified
   (OpenAI model id and price, Decor8 endpoints) block live runs until the owner supplies them.
+- **2026-10-24, stage 2d: decide only what was read (ADR 0012 amended).** Live use showed titles-only
+  fallback inventing preferences and a price band wider than the liked items. Decisions: shares count
+  unknowns against every value with a 70% known-coverage floor; fallback learns only seller and price;
+  a price band must hold 80% of the liked mass and of the liked items or price is mixed; the guard covers
+  shape and open dimensions only, typed dimensions are exempt; every decision gets a visible trace. The
+  80% rule on both mass and items was my choice where the brief said mass. See
+  `docs/sessions/2026-10-24-shop-mode-stage-2d.md`.
 
 ## See also
 

@@ -29,6 +29,9 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import BrowserContext, Page, Route, sync_playwright
 
+from app.shop.replay import seed_session
+from app.shop.store import SessionStore
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "spike-output" / "shop-screenshots"
 EXAMPLES = [
@@ -197,7 +200,153 @@ def wait_pref_chip(page: Page, text: str) -> Any:
     return chip.first
 
 
-def run_checks(base: str, shots: Path) -> None:
+def seed_replays(data_dir: str) -> dict[str, str]:
+    """Put the owner's recorded session (and a copy whose preference call is forced to fail) in the
+    server's session folder; the page opens them by id."""
+    store = SessionStore(Path(data_dir))
+    clean = seed_session(store)
+    broken = seed_session(
+        store,
+        comments={"R1": "MOCK_TRUNCATE_ALL"},
+        extra_ratings={"X20": ("dislike", "MOCK_TRUNCATE_ALL")},
+    )
+    return {"replay": clean.session_id, "fallback": broken.session_id}
+
+
+def open_session(browser: Any, base: str, session_id: str, width: int = 1280) -> tuple[Any, Page]:
+    context = browser.new_context(viewport={"width": width, "height": 900})
+    install_routes(context, 0)
+    context.add_init_script(
+        "if (!window.localStorage.getItem('shop.session')) "
+        f"window.localStorage.setItem('shop.session', '{session_id}');"
+    )
+    page = context.new_page()
+    page.goto(base)
+    wait_for_results(page)
+    return context, page
+
+
+def run_replay(
+    browser: Any, base: str, shots: Path, ids: dict[str, str], console_errors: list[str]
+) -> None:
+    print("the owner's real session, replayed through the page")
+    context, page = open_session(browser, base, ids["replay"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    request_chips = chips(page)
+    before = title_texts(page)
+    check(len(before) == 24, f"{len(before)} results restored from the recorded search")
+    check(page.locator("#shop-again").is_enabled(), "Shop Again is enabled (10 ratings recorded)")
+    check(page.locator("#why-toggle").is_hidden(), "no How I decided before the first Shop Again")
+    page.click("#shop-again")
+    wait_for_results(page)
+    page.locator("#prefs").wait_for(state="visible")
+    shape_chip = wait_pref_chip(page, "shape: open")
+    check(
+        "liked rectangular and round" in shape_chip.inner_text(),
+        "shape is open, round and rectangular",
+    )
+    price_chip = wait_pref_chip(page, "price: mixed")
+    check(
+        "loved $699, liked" in price_chip.inner_text()
+        and "liked $144 to $799" in price_chip.inner_text(),
+        "price is mixed",
+    )
+    seller_chip = page.locator("#pref-chips .chip.pref").filter(
+        has=page.locator(".txt", has_text="seller: West Elm")
+    )
+    check(
+        seller_chip.count() == 1,
+        "the West Elm seller chip appears (the lift test passes at 50% exposure)",
+    )
+    like_text = " ".join(
+        page.locator("#pref-chips .chip.pref.inferred:not(.neutral) .txt").all_inner_texts()
+    ).lower()
+    check(
+        "round" not in like_text and "industrial" not in like_text,
+        "no round or industrial like chip",
+    )
+    check(chips(page) == request_chips, "the request chips are unchanged")
+    summary = page.inner_text("#prefs-summary")
+    check("Shape is open" in summary and "Price is mixed." in summary, f"summary: {summary}")
+    batch = title_texts(page)
+    check(not set(batch) & set(before), "the Shop Again batch shows nothing seen before")
+    check(
+        max_shape_share(page) <= 0.6,
+        f"no shape above 60% of the batch ({max_shape_share(page):.0%})",
+    )
+    top, share = seller_share(page)
+    check(share <= 0.5, f"no unpinned seller above 50% of the batch ({top} {share:.0%})")
+    print("   footer:", lookups_text(page))
+    check("tagged 10 of 10 items" in lookups_text(page), "footer shows items tagged 10 of 10")
+    page.screenshot(path=str(shots / "12-replay-chips.png"))
+
+    toggle = page.locator("#why-toggle")
+    check(
+        toggle.is_visible() and page.locator("#why").is_hidden(),
+        "How I decided is shown and closed by default",
+    )
+    toggle.click()
+    why = page.locator("#why")
+    check(why.is_visible(), "the panel opens")
+    names = [t.lower() for t in why.locator(".why-dim h4").all_inner_texts()]
+    check(len(names) >= 9, f"the panel lists {len(names)} decisions")
+    check(
+        any(n.startswith("shape: open") for n in names)
+        and any(n.startswith("price: mixed") for n in names),
+        "shape open and price mixed are listed",
+    )
+    check(any(n.startswith("seller: chip") for n in names), "the seller decision is listed")
+    text = why.inner_text()
+    check(
+        "known coverage" in text and "like mass" in text and "lift" in text, "the numbers are shown"
+    )
+    check(
+        "would hold 86% of the like mass and 75% of the liked items" in text,
+        "the reason price is not a band is shown",
+    )
+    page.screenshot(path=str(shots / "13-replay-how-i-decided.png"), full_page=True)
+    page.reload()
+    wait_for_results(page)
+    check(page.locator("#why").is_visible(), "the panel's open state is remembered after a reload")
+    page.set_viewport_size({"width": 390, "height": 844})
+    check(
+        page.evaluate("document.documentElement.scrollWidth - window.innerWidth") <= 1,
+        "no sideways scroll at 390 px",
+    )
+    page.screenshot(path=str(shots / "14-replay-mobile.png"))
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.screenshot(path=str(shots / "15-replay-grid.png"))
+    context.close()
+
+    print("the same session with the preference call forced to fail")
+    context, page = open_session(browser, base, ids["fallback"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    page.click("#shop-again")
+    wait_for_results(page)
+    page.locator("#prefs-note").wait_for(state="visible")
+    check(
+        page.inner_text("#prefs-note")
+        == "Could not read item details; only seller and price were learned.",
+        "the fallback banner appears",
+    )
+    chip_text = page.inner_text("#pref-chips")
+    check(
+        "shape" not in chip_text
+        and "open" not in chip_text.lower()
+        and "seller: West Elm" in chip_text,
+        "only seller and price chips remain",
+    )
+    check(
+        "tagged 0 of 11 items" in lookups_text(page) and "fallback" in lookups_text(page),
+        "footer says the details were not read",
+    )
+    page.locator("#why-toggle").click()
+    check("Mode: fallback" in page.locator("#why").inner_text(), "the panel says fallback")
+    page.screenshot(path=str(shots / "16-fallback-banner.png"), full_page=True)
+    context.close()
+
+
+def run_checks(base: str, shots: Path, replay_ids: dict[str, str]) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -456,6 +605,7 @@ def run_checks(base: str, shots: Path) -> None:
             )
             page.screenshot(path=str(shots / "11-scenario-b-grid-after.png"))
 
+            run_replay(browser, base, shots, replay_ids, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -484,7 +634,7 @@ def main() -> int:
             if "127.0.0.1" not in first:
                 print("ERROR: the server did not start", file=sys.stderr)
                 return 1
-            run_checks(f"http://127.0.0.1:{port}/", OUT)
+            run_checks(f"http://127.0.0.1:{port}/", OUT, seed_replays(data_dir))
         finally:
             server.terminate()
             try:

@@ -136,6 +136,8 @@ class ShopService:
                     else None
                 ),
                 "dropped_phrasings": last.dropped_phrasings,
+                "trace": last.trace,
+                "tagging": last.tagging,
                 "queries": last.queries,
                 "alignment": (
                     {"matches": last.alignment_matches, "total": last.alignment_total}
@@ -237,6 +239,8 @@ class ShopService:
                 note=note,
                 queries=outcome.queries,
                 dropped_phrasings=outcome.dropped_phrasings,
+                trace=outcome.trace,
+                tagging=outcome.tagging,
                 diversity={d: [v[0], v[1]] for d, v in outcome.diversity.items()},
                 seller_share=list(outcome.seller_share) if outcome.seller_share else None,
                 pages=outcome.pages,

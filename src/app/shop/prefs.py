@@ -36,6 +36,7 @@ from app.prompts import load_prompt
 from app.schemas import SchemaError, parse_model, to_output_schema
 from app.shop.decide import (
     DIMENSION_LABELS,
+    FALLBACK_NOTE,
     PHRASE_DIMS,
     decide,
     lexicon_value,
@@ -76,7 +77,11 @@ from app.thumbnails import Thumbnailer, fetch_traced
 MAX_PROFILE_TERMS = 12
 MAX_PRICE_CUT = 0.20  # price_max may fall by at most this fraction of the typed cap. A guess.
 MAX_RATED_IN_PROMPT = 60
-PREFS_MAX_TOKENS = 2000
+PREFS_MAX_TOKENS = (
+    3000  # the least the preference call may be given (stage 2c had 2000 and ran out)
+)
+MAX_PREFS_TOKENS = 12000
+ESTIMATED_BASE_TOKENS = 450  # stated likes and dislikes, guesses, adjustments
 MAX_IMAGES = {"love": 6, "like": 6, "dislike": 4}  # thumbnails offered to the model, by rating
 IMAGE_WORKERS = 8
 MAX_INFERRED = 10
@@ -480,12 +485,14 @@ def merge_profile_v3(
     base: ShopQuery,
     images: ImageReport,
     image_ids: set[str],
+    tagging: dict[str, Any] | None = None,
 ) -> StoredProfile:
     """The stored profile after one v3 preference call: the model's per-item tags go to
     `app.shop.decide`, which decides every inferred entry from ALL the session's ratings. The
     shopper's own words (stated likes and dislikes, a price ask from a comment) come from the model
-    as before and keep full weight. If the call failed (`proposed=None`) the entries are still
-    decided, from the title lexicon alone, and the stated part is kept as it was."""
+    as before and keep full weight. If the call failed (`proposed=None`, or it tagged no item) the
+    profile is decided in fallback mode: no attribute at all (titles alone are biased), only seller
+    affinity and price, and the stated part is kept as it was."""
     previous = existing or StoredProfile()
     rated_count = sum(1 for rec in session.ratings.values() if rec.rating is not None)
     rated = rated_map(session)
@@ -507,9 +514,21 @@ def merge_profile_v3(
         tags = {t.id: t for t in proposed.items if t.id in rated}
         model_guesses = list(proposed.contradicted_guesses)
     removed = stated.removed
+    fallback = proposed is None or (not tags and bool(rated))
     decisions = decide(
-        rated, tags, list(session.results.values()), removed, typed_terms_of(base), image_ids
+        rated,
+        tags,
+        list(session.results.values()),
+        removed,
+        typed_terms_of(base),
+        image_ids,
+        fallback=fallback,
     )
+    info = dict(tagging or {})
+    info.setdefault("items_total", len(rated))
+    info["items_tagged"] = len(tags)
+    info["fallback"] = fallback
+    info["mode"] = "fallback" if fallback else "model"
     pinned = list(previous.pinned_sellers)
     entries = [
         e.model_copy(update={"pinned": decide_seller_key(seller_name(e)) in pinned})
@@ -528,6 +547,8 @@ def merge_profile_v3(
             "images": images,
             "pinned_sellers": pinned,
             "rated_count": rated_count,
+            "trace": decisions.trace,
+            "tagging": info,
         }
     )
 
@@ -912,7 +933,10 @@ def _flat(text: str, limit: int) -> str:
 
 
 def prefs_user_text(
-    session: Session, base: ShopQuery, image_numbers: dict[str, int] | None = None
+    session: Session,
+    base: ShopQuery,
+    image_numbers: dict[str, int] | None = None,
+    only_ids: set[str] | None = None,
 ) -> str:
     """The v2 preference call's text. Each rated item is one line with its id (cited as
     evidence) and, when a thumbnail is attached, its image number (images come first, in order)."""
@@ -946,6 +970,8 @@ def prefs_user_text(
     rows = rated_results(session)
     order = {"love": 0, "like": 1, "dislike": 2}
     rows.sort(key=lambda r: order[r["rating"]])  # stable: newest first within a rating
+    if only_ids is not None:
+        rows = [row for row in rows if row["result"].id in only_ids]
     for row in rows[:MAX_RATED_IN_PROMPT]:
         r: ShopResult = row["result"]
         comment = _flat(row["comment"], 200) or "none"
@@ -1004,6 +1030,67 @@ def fetch_images(
     return images, report
 
 
+def estimate_item_tokens() -> int:
+    """Output tokens one tagged item takes, from the schema: a worst-case item (every field filled
+    with a long value, three cues, a long id) as compact JSON, at about 3 characters a token."""
+    sample = ItemTags(
+        id="5100000000001004736", shape="rectangular", material="walnut wood",
+        color_finish="brushed brass", frame_or_legs="tapered hairpin legs",
+        frame_color="black powder-coated metal", style="mid-century modern", size_class="medium",
+        quality_cues=["solid wood construction", "brushed brass finish", "natural stone top"],
+    )  # fmt: skip
+    return int(len(sample.model_dump_json()) / 3) + 1
+
+
+def prefs_max_tokens(n_items: int) -> int:
+    """`max_tokens` for the preference call: twice the estimated output (items plus the stated
+    likes, dislikes, guesses and adjustments), never under `PREFS_MAX_TOKENS`, never over 12,000."""
+    needed = ESTIMATED_BASE_TOKENS + n_items * estimate_item_tokens()
+    return min(MAX_PREFS_TOKENS, max(PREFS_MAX_TOKENS, 2 * needed))
+
+
+def split_groups(session: Session) -> list[set[str]]:
+    """How the retry splits the rated items: loved and liked first, then disliked. With no disliked
+    item, loved then liked. Empty groups are left out."""
+    rows = rated_results(session)[:MAX_RATED_IN_PROMPT]
+    positive = {r["result"].id for r in rows if r["rating"] in ("love", "like")}
+    disliked = {r["result"].id for r in rows if r["rating"] == "dislike"}
+    if disliked:
+        groups = [positive, disliked]
+    else:
+        groups = [
+            {r["result"].id for r in rows if r["rating"] == "love"},
+            {r["result"].id for r in rows if r["rating"] == "like"},
+        ]
+    return [g for g in groups if g]
+
+
+def merge_tag_answers(answers: list[PreferenceTags]) -> PreferenceTags:
+    """One answer from the split calls: items joined, stated lists united, the first answer's
+    adjustments with the lowest price cap any answer asked for."""
+    items: dict[str, ItemTags] = {}
+    likes: list[str] = []
+    dislikes: list[str] = []
+    guesses: dict[str, Any] = {}
+    for a in answers:
+        for t in a.items:
+            items.setdefault(t.id, t)
+        likes += [x for x in a.likes if x not in likes]
+        dislikes += [x for x in a.dislikes if x not in dislikes]
+        for c in a.contradicted_guesses:
+            guesses.setdefault(c.text, c)
+    adjustments = answers[0].query_adjustments
+    caps = [a.query_adjustments.price_max for a in answers if a.query_adjustments.price_max]
+    notes = [a.query_adjustments.price_note for a in answers if a.query_adjustments.price_note]
+    adjustments = adjustments.model_copy(
+        update={"price_max": min(caps) if caps else None, "price_note": notes[0] if notes else ""}
+    )
+    return PreferenceTags(
+        items=list(items.values()), likes=likes, dislikes=dislikes,
+        contradicted_guesses=list(guesses.values()), query_adjustments=adjustments,
+    )  # fmt: skip
+
+
 def build_profile(
     session: Session,
     base: ShopQuery,
@@ -1011,32 +1098,71 @@ def build_profile(
     thumbnailer: Thumbnailer | None = None,
     fetcher: Callable[..., tuple[dict[str, PreparedImage], ImageReport]] = fetch_images,
 ) -> tuple[StoredProfile, str]:
-    """Update the session's profile from its ratings (prompt v3). Returns (profile, warning).
+    """Update the session's profile from its ratings (prompt v4). Returns (profile, warning).
 
     The model tags each rated item (with its thumbnail when it can be fetched) and reads the
-    comments; `merge_profile_v3` decides the preferences in code. An unusable model answer still
-    gives a profile: entries are decided from the title lexicon alone, the stated part is kept.
-    A budget error propagates.
+    comments; `merge_profile_v3` decides the preferences in code. The call gets a token budget
+    computed from the schema (twice the estimate). If it ends with max_tokens or invalid JSON it is
+    retried ONCE as split calls (loved and liked, then disliked); a failed split leaves its items
+    untagged; if nothing could be tagged the profile is decided in fallback mode (seller and price
+    only) and the warning says so. A budget error propagates. The profile records, in `tagging`,
+    items tagged of rated, images used, and whether a retry or the fallback happened.
     """
     config = budget.config
     rows = select_image_rows(session)
     images, report = fetcher(rows, thumbnailer, budget)
-    ordered = [r.id for r in rows if r.id in images]
-    numbers = {rid: n for n, rid in enumerate(ordered, start=1)}
-    try:
+    n_rated = sum(1 for rec in session.ratings.values() if rec.rating is not None)
+    calls = 0
+    failures: list[str] = []
+
+    def call(only: set[str] | None) -> PreferenceTags:
+        nonlocal calls
+        subset = [r for r in rows if r.id in images and (only is None or r.id in only)]
+        ordered = [r.id for r in subset]
+        numbers = {rid: n for n, rid in enumerate(ordered, start=1)}
+        count = n_rated if only is None else len(only)
+        calls += 1
         completion = complete(
             span_name="llm.shop_prefs",
             prompt=load_prompt("shop_prefs"),
             model=config.model_retrieval,
-            user_text=prefs_user_text(session, base, numbers),
+            user_text=prefs_user_text(session, base, numbers, only),
             budget=budget,
-            max_tokens=PREFS_MAX_TOKENS,
+            max_tokens=prefs_max_tokens(count),
             schema=to_output_schema(PreferenceTags),
             images=[images[rid] for rid in ordered] or None,
             effort=config.effort_retrieval,
         )
-        proposed = parse_model(PreferenceTags, completion.text, what="shop_prefs")
+        return parse_model(PreferenceTags, completion.text, what="shop_prefs")
+
+    proposed: PreferenceTags | None = None
+    retried = False
+    try:
+        proposed = call(None)
     except (LLMOutputError, SchemaError) as exc:
-        kept = merge_profile_v3(session.profile, None, session, base, report, set(images))
-        return kept, f"Could not read the items' details ({exc}); decided from titles alone."
-    return merge_profile_v3(session.profile, proposed, session, base, report, set(images)), ""
+        failures.append(str(exc)[:120])
+        retried = True
+        answers: list[PreferenceTags] = []
+        for group in split_groups(session):
+            try:
+                answers.append(call(group))
+            except (LLMOutputError, SchemaError) as again:
+                failures.append(str(again)[:120])
+        proposed = merge_tag_answers(answers) if answers else None
+    tagging: dict[str, Any] = {
+        "items_total": n_rated,
+        "images_offered": report.offered,
+        "images_used": report.used,
+        "retried": retried,
+        "model_calls": calls,
+        "failures": failures,
+    }
+    profile = merge_profile_v3(
+        session.profile, proposed, session, base, report, set(images), tagging
+    )
+    warning = ""
+    if profile.tagging.get("fallback"):
+        warning = FALLBACK_NOTE
+    elif profile.tagging["items_tagged"] < n_rated:
+        warning = f"Read details for {profile.tagging['items_tagged']} of {n_rated} rated items."
+    return profile, warning
