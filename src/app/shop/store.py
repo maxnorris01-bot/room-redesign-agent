@@ -82,6 +82,8 @@ class SearchRecord(_Model):
     diversity: dict[str, list[Any]] = {}  # dimension -> [most common value, its share]
     seller_share: list[Any] | None = None  # [largest seller, its share of the batch]
     dropped_phrasings: list[str] = []  # phrasings cut to fit the Serper call cap
+    trace: dict[str, Any] = {}  # a Shop Again: how the preferences were decided (stage 2d)
+    tagging: dict[str, Any] = {}  # a Shop Again: items tagged, images, retry, fallback
     alignment_matches: int | None = None  # Shop Again: results matching the inferred preferences
     alignment_total: int | None = None
 

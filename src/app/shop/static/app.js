@@ -11,6 +11,7 @@
   var RATINGS = [['love', 'Love'], ['like', 'Like'], ['dislike', 'Dislike']];
   var KEY_SESSION = 'shop.session';
   var KEY_SAVED_OPEN = 'shop.savedOpen';
+  var KEY_WHY_OPEN = 'shop.whyOpen';
   var SEARCH_MSG = 'Searching, usually about 10 seconds';
   var AGAIN_MSG = 'Finding new results, usually about 10 seconds';
   var LOOKUP_MSG = 'Looking up the retailer link';
@@ -19,7 +20,7 @@
     sessionId: null, search: null, ratings: {}, resolved: {}, known: {},
     profile: null, summary: '', used: 0, cap: 0, againsUsed: 0, againsCap: 0,
     sessionUsd: 0, busy: 0, busyMessage: '', savedOpen: false, savedTab: 'love',
-    confirming: false
+    confirming: false, whyOpen: false
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -250,6 +251,11 @@
     $('prefs-summary').textContent = state.summary || (p && !learned
       ? 'Nothing learned from your ratings yet. Rate a few more results to steer the next set.'
       : (learned ? '' : 'Rate a few results, then press Shop Again to steer the next set.'));
+    var note = $('prefs-note');
+    var fb = p && p.tagging && p.tagging.fallback;
+    note.hidden = !fb;
+    note.textContent = fb ? 'Could not read item details; only seller and price were learned.' : '';
+    renderWhy();
     var chips = $('pref-chips');
     chips.textContent = '';
     if (!p) return;
@@ -268,6 +274,87 @@
         'A guess from your request wording', 'Nothing you rated confirms it, so it is not counted as a like.'
       ]));
     });
+  }
+
+  /* ---- "How I decided": the numbers behind every preference (text nodes only) ---- */
+
+  function pct(x) { return Math.round(Number(x) * 100) + '%'; }
+
+  function whyTable(head, rows) {
+    var table = h('table', { class: 'why-table' });
+    table.appendChild(h('thead', {}, [h('tr', {}, head.map(function (c) { return h('th', {}, [c]); }))]));
+    var body = h('tbody');
+    rows.forEach(function (r) {
+      body.appendChild(h('tr', {}, r.map(function (c) { return h('td', {}, [String(c)]); })));
+    });
+    table.appendChild(body);
+    return table;
+  }
+
+  function dimensionBlock(name, d) {
+    var box = h('div', { class: 'why-dim' });
+    var decision = d.decision || 'none';
+    box.appendChild(h('h4', {}, [name.replace(/_/g, ' ') + ': ' + decision]));
+    if (d.like_mass) {
+      var values = Object.keys(d.like_mass);
+      var rows = values.map(function (v) {
+        var share = d.total_mass ? d.like_mass[v] / d.total_mass : 0;
+        var exp = d.exposure && d.exposure[v] !== undefined ? pct(d.exposure[v]) : '-';
+        return [v, d.like_mass[v], pct(share), exp];
+      });
+      box.appendChild(whyTable(['value', 'like mass', 'share of all', 'shown share'], rows));
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'known coverage ' + pct(d.known_coverage) + ' of the like mass; ' +
+        pct(d.exposure_coverage) + ' of shown titles have a keyword for it' +
+        (d.lift !== undefined && d.lift !== null ? '; lift ' + d.lift : '')
+      ]));
+    }
+    box.appendChild(h('p', { class: 'why-reason' }, [d.reason || '']));
+    return box;
+  }
+
+  function renderWhy() {
+    var panel = $('why');
+    var toggle = $('why-toggle');
+    var trace = state.profile && state.profile.trace;
+    var has = trace && trace.dimensions;
+    toggle.hidden = !has;
+    toggle.textContent = state.whyOpen ? 'Hide how I decided' : 'How I decided';
+    toggle.setAttribute('aria-expanded', state.whyOpen ? 'true' : 'false');
+    panel.hidden = !(has && state.whyOpen);
+    panel.textContent = '';
+    if (!has || !state.whyOpen) return;
+    var tg = state.profile.tagging || {};
+    panel.appendChild(h('p', { class: 'why-line' }, [
+      'Mode: ' + trace.mode + '. Item details read for ' + (tg.items_tagged || 0) + ' of ' + (tg.items_total || 0) +
+      ' rated items; photos used ' + (tg.images_used || 0) + ' of ' + (tg.images_offered || 0) +
+      (tg.retried ? '; the first call failed and was retried in two parts' : '') +
+      (tg.fallback ? '; the details could not be read at all' : '') + '.'
+    ]));
+    Object.keys(trace.dimensions).forEach(function (name) {
+      panel.appendChild(dimensionBlock(name, trace.dimensions[name]));
+    });
+    var sel = trace.seller || {};
+    var seller = h('div', { class: 'why-dim' }, [h('h4', {}, ['seller: ' + (sel.decision || 'none')])]);
+    if (sel.candidates && sel.candidates.length) {
+      seller.appendChild(whyTable(['seller', 'items', 'like share', 'shown share', 'lift', 'verdict'],
+        sel.candidates.map(function (c) {
+          return [c.seller, c.items, pct(c.like_share), c.exposure === null ? '-' : pct(c.exposure),
+            c.lift === null ? '-' : c.lift, c.verdict];
+        })));
+    }
+    seller.appendChild(h('p', { class: 'why-reason' }, [sel.reason || '']));
+    panel.appendChild(seller);
+    var pr = trace.price || {};
+    var price = h('div', { class: 'why-dim' }, [h('h4', {}, ['price: ' + (pr.decision || 'none')])]);
+    var bits = ['shown prices ' + (pr.shown_prices || 0)];
+    if (pr.loved) bits.push('loved $' + pr.loved[0] + ' to $' + pr.loved[1]);
+    if (pr.liked) bits.push('liked $' + pr.liked[0] + ' to $' + pr.liked[1]);
+    if (pr.mean_position !== undefined) bits.push('mean position ' + pr.mean_position);
+    if (pr.band) bits.push('band ' + pr.band + ' holds ' + pct(pr.mass_in_band) + ' of like mass, ' + pct(pr.liked_in_band) + ' of liked');
+    price.appendChild(h('p', { class: 'why-line' }, [bits.join('; ')]));
+    price.appendChild(h('p', { class: 'why-reason' }, [pr.reason || '']));
+    panel.appendChild(price);
   }
 
   function removePref(kind, phrase, button) {
@@ -295,6 +382,16 @@
     return parts.length ? 'largest share: ' + parts.join(', ') : '';
   }
 
+  function taggingText(s) {
+    var tg = s.tagging;
+    if (s.kind !== 'shop_again' || !tg || tg.items_total === undefined) return '';
+    var bits = ['tagged ' + tg.items_tagged + ' of ' + tg.items_total + ' items',
+      tg.images_used ? 'photos ' + tg.images_used : 'no photos'];
+    if (tg.retried) bits.push('retried');
+    if (tg.fallback) bits.push('fallback');
+    return bits.join(', ');
+  }
+
   function renderStats() {
     var s = state.search;
     var el = $('stats');
@@ -310,6 +407,7 @@
       'est. total ' + usd(s.total_usd),
       s.alignment ? 'matches your preferences: ' + s.alignment.matches + ' of ' + s.alignment.total : '',
       diversityText(s),
+      taggingText(s),
       'session ' + usd(state.sessionUsd),
       lookups
     ].filter(Boolean).join(' · ');
@@ -660,6 +758,11 @@
       storeSet(KEY_SAVED_OPEN, state.savedOpen ? '1' : '0');
       renderSaved();
     });
+    $('why-toggle').addEventListener('click', function () {
+      state.whyOpen = !state.whyOpen;
+      storeSet(KEY_WHY_OPEN, state.whyOpen ? '1' : '0');
+      renderWhy();
+    });
     $('tab-loved').addEventListener('click', function () { state.savedTab = 'love'; renderSaved(); });
     $('tab-liked').addEventListener('click', function () { state.savedTab = 'like'; renderSaved(); });
     $('start-over').addEventListener('click', function () {
@@ -673,6 +776,7 @@
     $('start-over-yes').addEventListener('click', startOver);
 
     state.savedOpen = storeGet(KEY_SAVED_OPEN) === '1';
+    state.whyOpen = storeGet(KEY_WHY_OPEN) === '1';
     var saved = storeGet(KEY_SESSION);
     var path = '/api/session' + (saved ? '?id=' + encodeURIComponent(saved) : '');
     api('GET', path).then(function (data) {

@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.categories import category_hits
 from app.config import Config
@@ -68,7 +69,12 @@ class AgainContext:
     deprioritize_sellers: set[str] = field(default_factory=set)  # seller keys, ranked last
     affinity_sellers: set[str] = field(default_factory=set)  # seller keys: up to 50% of a batch
     pinned_sellers: set[str] = field(default_factory=set)  # seller keys the visitor pinned: 80%
-    guard_dims: list[str] = field(default_factory=list)  # dimensions no value may dominate
+    guard_caps: dict[str, float] = field(
+        default_factory=dict
+    )  # dimension -> most one value may take
+    typed_dims: set[str] = field(
+        default_factory=set
+    )  # dimensions the typed request names: no warning
     converged: dict[str, str] = field(default_factory=dict)  # dimension -> the preferred value
     open_dims: dict[str, list[str]] = field(default_factory=dict)  # dimension -> liked values
     price_line: str = ""  # "mixed (...)" or a band; empty: no price signal
@@ -108,6 +114,8 @@ class SearchOutcome:
     diversity: dict[str, tuple[str, float]] = field(default_factory=dict)  # dim -> (value, share)
     seller_share: tuple[str, float] | None = None  # the largest seller and its share of the batch
     display_query: ShopQuery | None = None  # what the request chips show (the typed parse)
+    trace: dict[str, Any] = field(default_factory=dict)  # how the preferences were decided
+    tagging: dict[str, Any] = field(default_factory=dict)  # items tagged, images, retry, fallback
     pages: dict[str, int] = field(default_factory=dict)  # phrasing key -> highest page fetched
     alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
 
@@ -322,23 +330,27 @@ def build_results(
     affinity_sellers: set[str] | None = None,
     pinned_sellers: set[str] | None = None,
     guard_dims: list[str] | None = None,
+    guard_caps: dict[str, float] | None = None,
 ) -> tuple[list[ShopResult], int, int]:
     """Walk the ranked order, up to `RESULT_COUNT`, keeping:
 
       * at most `SELLER_CAP` results per seller, except a seller the shopper has an affinity for
         (up to `SELLER_MAX_SHARE` of a batch) and a pinned seller (`SELLER_PINNED_SHARE`);
-      * for each guarded dimension, at most `DIVERSITY_MAX_SHARE` of a batch from any one known
-        value (titles with no keyword for the dimension are unknown and never counted); an item
-        over that is skipped and the next best ranked item of another value takes its place.
+      * for each guarded dimension, at most its share of a batch (`guard_caps`:
+        `DIVERSITY_MAX_SHARE` for an open dimension or shape, `CONVERGED_MAX_SHARE` for a converged
+        one; `guard_dims` alone means the former) from any one known value (titles with no keyword
+        for the dimension are unknown and never counted); an item over that is skipped and the next
+        best ranked item of another value takes its place.
 
     Returns (results, skipped by the seller cap, skipped by the diversity guard).
     """
     affinity = affinity_sellers or set()
     pinned = pinned_sellers or set()
-    guard = guard_dims or []
+    caps = dict(guard_caps) if guard_caps else {d: DIVERSITY_MAX_SHARE for d in (guard_dims or [])}
+    guard = list(caps)
     affinity_cap = int(SELLER_MAX_SHARE * RESULT_COUNT)
     pinned_cap = int(SELLER_PINNED_SHARE * RESULT_COUNT)
-    value_cap = int(DIVERSITY_MAX_SHARE * RESULT_COUNT)
+    value_caps = {d: int(share * RESULT_COUNT) for d, share in caps.items()}
     value_counts: dict[tuple[str, str], int] = {}
     diversity_skipped = 0
     per_seller: dict[str, int] = {}
@@ -354,7 +366,7 @@ def build_results(
             continue
         tags = lexicon_tags(candidate.title) if guard else {}
         if any(
-            (v := tags.get(dim)) is not None and value_counts.get((dim, v), 0) >= value_cap
+            (v := tags.get(dim)) is not None and value_counts.get((dim, v), 0) >= value_caps[dim]
             for dim in guard
         ):
             diversity_skipped += 1
@@ -520,13 +532,14 @@ def run_query(
         pool_index,
         again.affinity_sellers if again is not None else None,
         again.pinned_sellers if again is not None else None,
-        again.guard_dims if again is not None else None,
+        None,
+        again.guard_caps if again is not None else None,
     )
     counts.seller_capped = capped
     diversity: dict[str, tuple[str, float]] = {}
     seller_share: tuple[str, float] | None = None
     if again is not None and results:
-        dims = list(dict.fromkeys(["shape", "material", *again.guard_dims]))
+        dims = list(dict.fromkeys(["shape", *again.guard_caps]))
         for dim, top in value_shares([r.title for r in results], dims).items():
             if top is not None:
                 diversity[dim] = top
@@ -535,13 +548,16 @@ def run_query(
             by_seller[r.seller] = by_seller.get(r.seller, 0) + 1
         name = max(sorted(by_seller), key=lambda k: by_seller[k])
         seller_share = (name, round(by_seller[name] / len(results), 4))
-        for dim in again.guard_dims:
+        for dim, cap in again.guard_caps.items():
             top = diversity.get(dim)
-            if top is not None and top[1] > DIVERSITY_MAX_SHARE:
-                warnings.append(
-                    f"Could not keep {dim.replace('_', ' ')} mixed: the pool is mostly {top[0]} "
-                    f"({top[1]:.0%} of these results)."
-                )
+            if dim in again.typed_dims or top is None or top[1] <= cap:
+                continue  # a dimension the typed request names is not a thing to warn about
+            label = dim.replace("_", " ")
+            what = "mixed" if cap <= DIVERSITY_MAX_SHARE else f"under {cap:.0%}"
+            warnings.append(
+                f"Could not keep {label} {what}: the pool is mostly {top[0]} "
+                f"({top[1]:.0%} of these results, limit {cap:.0%})."
+            )
         if again.dropped_phrasings:
             warnings.append(
                 f"Left out {len(again.dropped_phrasings)} search phrasing(s) to stay within the "

@@ -1151,7 +1151,7 @@ def test_shop_again_still_works_when_the_model_returns_nonsense(
     search.sequence = [[cand(f"n{i}", 45.0) for i in range(30)]]
     again = svc.shop_again(sid)
     assert len(again["search"]["results"]) == 24
-    assert any("Could not read the items" in w for w in again["search"]["warnings"])
+    assert any("only seller and price were learned" in w for w in again["search"]["warnings"])
     assert again["profile"]["inferred"] == []
 
 

@@ -1,4 +1,4 @@
-"""Every number that decides a preference, in one place (ADR 0012, stage 2c amendment).
+"""Every number that decides a preference, in one place (ADR 0012, stage 2c and 2d amendments).
 
 The model describes the rated items; code decides what they say about the shopper, using these
 numbers. They are starting points, not measurements: the stage 3 eval should tune them, and
@@ -18,6 +18,10 @@ MIN_SUPPORT_ITEMS = (
     2  # items behind a converged value (a loved item with a comment naming it can be the 2nd)
 )
 LIFT_MIN = 1.3  # like share over exposure share (what was shown) needed to call a value preferred
+# stage 2d: shares are over ALL like mass (an item with no known value counts against every value);
+# a dimension needs this share of the like mass to have a known value, and of what was shown to
+# have a keyword for it (the lift test cannot run otherwise), before it can converge
+KNOWN_COVERAGE_MIN = 0.70
 
 # dislikes
 DISLIKE_MIN_ITEMS = 2  # disliked items that share a value before it becomes a dislike chip
@@ -31,6 +35,7 @@ QUALITY_CUE_MIN_SHARE = 0.50
 QUALITY_CUE_MIN_ITEMS = 2
 
 # price: positions are within the sorted prices of everything shown in the session
+PRICE_BAND_MIN_MASS = 0.80  # a price band must hold this share of the like mass (and of liked-only)
 PRICE_UPPER_PERCENTILE = 0.67  # loved prices clustering at or above this: upper cluster
 PRICE_LOWER_PERCENTILE = 0.33
 PRICE_MIXED_LIKED_SPAN = 2 / 3  # liked prices spanning this much of the shown range: mixed
@@ -38,7 +43,8 @@ MIN_SHOWN_PRICES = 8  # fewest shown prices before any price signal
 
 # a Shop Again batch
 RESULT_COUNT = 24
-DIVERSITY_MAX_SHARE = 0.60  # no single known value of a guarded dimension above this share
+DIVERSITY_MAX_SHARE = 0.60  # no single known value of an open dimension (or shape) above this
+CONVERGED_MAX_SHARE = 0.80  # no single known value of a converged dimension above this share
 SELLER_MAX_SHARE = 0.50  # an affinity seller's share of a batch
 SELLER_PINNED_SHARE = 0.80  # a pinned seller's share
 SELLER_DEFAULT_CAP = 4  # results from any other seller (as in a typed search)
@@ -53,17 +59,20 @@ def all_thresholds() -> dict[str, float | int]:
         "OPEN_SHARE": OPEN_SHARE,
         "MIN_SUPPORT_ITEMS": MIN_SUPPORT_ITEMS,
         "LIFT_MIN": LIFT_MIN,
+        "KNOWN_COVERAGE_MIN": KNOWN_COVERAGE_MIN,
         "DISLIKE_MIN_ITEMS": DISLIKE_MIN_ITEMS,
         "SELLER_DISLIKES_TO_DEPRIORITIZE": SELLER_DISLIKES_TO_DEPRIORITIZE,
         "MIN_AFFINITY_ITEMS": MIN_AFFINITY_ITEMS,
         "QUALITY_CUE_MIN_SHARE": QUALITY_CUE_MIN_SHARE,
         "QUALITY_CUE_MIN_ITEMS": QUALITY_CUE_MIN_ITEMS,
+        "PRICE_BAND_MIN_MASS": PRICE_BAND_MIN_MASS,
         "PRICE_UPPER_PERCENTILE": PRICE_UPPER_PERCENTILE,
         "PRICE_LOWER_PERCENTILE": PRICE_LOWER_PERCENTILE,
         "PRICE_MIXED_LIKED_SPAN": round(PRICE_MIXED_LIKED_SPAN, 4),
         "MIN_SHOWN_PRICES": MIN_SHOWN_PRICES,
         "RESULT_COUNT": RESULT_COUNT,
         "DIVERSITY_MAX_SHARE": DIVERSITY_MAX_SHARE,
+        "CONVERGED_MAX_SHARE": CONVERGED_MAX_SHARE,
         "SELLER_MAX_SHARE": SELLER_MAX_SHARE,
         "SELLER_PINNED_SHARE": SELLER_PINNED_SHARE,
         "SELLER_DEFAULT_CAP": SELLER_DEFAULT_CAP,

@@ -24,3 +24,10 @@ and glass, 12 sellers and prices from about $140 to $900. Hartwell & Co has 40 i
 80th), none above $900. The mock search engine puts the seller's items first for a query that names it or
 its materials, and items with a named shape first for a query that names a shape.
 
+Stage 2d: `owner_session_replay.json` is the owner's real session in miniature: the ten rated items
+(2 loved, 8 liked; West Elm for 8 of them, $143.99 to $799) with the attributes the model should read
+from them (`attrs`; null where a title or photo shows nothing), and 30 invented shown extras (26 with a
+shape word, 24 under $440 and the rest $465 to $610 (so the upper third of the shown prices starts at
+$450, as it did live), 12 from West Elm so West Elm is half of the 40 shown results). The mock
+preference call reads these attributes by id (`R1` to `R10`), so a replay can run through the service
+and the page with tags derived from the real attributes rather than from title keywords.

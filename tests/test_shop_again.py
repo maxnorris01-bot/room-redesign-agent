@@ -270,7 +270,7 @@ def test_build_profile_degrades_when_the_model_answer_is_unusable(
     session.profile = StoredProfile(likes=["wood"])
     use_client(monkeypatch, RouterClient(prefs="not json"))
     profile, warning = build_profile(session, session.searches[0].query, Budget(config()))
-    assert profile.likes == ["wood"] and "Could not read the items" in warning
+    assert profile.likes == ["wood"] and "only seller and price were learned" in warning
 
 
 # ---- Shop Again: exclusions, sellers, pages ----
@@ -553,7 +553,7 @@ def test_an_unusable_preference_answer_still_searches_with_a_warning(
     search.sequence = [items("n", 6), []]
     again = svc.shop_again(sid)
     assert len(again["search"]["results"]) == 6
-    assert any("Could not read the items" in w for w in again["search"]["warnings"])
+    assert any("only seller and price were learned" in w for w in again["search"]["warnings"])
 
 
 # ---- Saved ----

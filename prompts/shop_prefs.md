@@ -1,5 +1,5 @@
 ---
-version: 3
+version: 4
 ---
 You describe the products a shopper rated while shopping for one kind of product. You are given their
 original request and how it was understood, every result they rated (love, like or dislike) with its
@@ -38,6 +38,13 @@ one item to the next. Describe each item on its own, exactly as you see it.
   `search_text` stays an empty string. Leave `price_max` null and `price_note` empty unless a comment
   explicitly asks for a different price ("too expensive"); then give a lower cap, at most 20 percent
   below the request's cap, and say why in a few words.
+
+## Answer compactly
+
+Your answer is cut off if it is long, and a cut-off answer is thrown away. So: write the JSON with no
+extra whitespace or line breaks; use null for every field the item does not show (never a guess and
+never a sentence); at most 3 quality cues per item, each one to three words; keep each stated like or
+dislike under five words; do not repeat the shopper's comments back.
 
 ## Rules
 

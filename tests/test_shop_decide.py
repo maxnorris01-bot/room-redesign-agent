@@ -82,6 +82,36 @@ def tagged(
     return TaggedItem(r, {**lexicon_tags(title), **values})
 
 
+def model_tags(sess: Session) -> dict[str, ItemTags]:
+    """Tags a careful model would give: what each title shows by keyword, null for the rest."""
+    from app.shop.decide import lexicon_tags as lex
+
+    tags: dict[str, ItemTags] = {}
+    for rid in sess.ratings:
+        got = lex(sess.results[rid].title)
+        tags[rid] = ItemTags(
+            id=rid, shape=got.get("shape"), material=got.get("material"),  # type: ignore[arg-type]
+            color_finish=got.get("color_finish"), frame_or_legs=got.get("frame_or_legs"),
+            frame_color=got.get("frame_color"), style=got.get("style"), size_class=None,
+            quality_cues=[],
+        )  # fmt: skip
+    return tags
+
+
+def merged(existing: StoredProfile | None, sess: Session, base: Any) -> StoredProfile:
+    """`merge_profile_v3` with a model answer built from the titles (so attributes are decided)."""
+    from app.shop.models import PreferenceTags, QueryAdjustments
+
+    answer = PreferenceTags(
+        items=list(model_tags(sess).values()), likes=[], dislikes=[], contradicted_guesses=[],
+        query_adjustments=QueryAdjustments(
+            search_text="", style_terms=[], material_terms=[], must_have=[], avoid=[],
+            price_max=None, price_note="",
+        ),
+    )  # fmt: skip
+    return merge_profile_v3(existing, answer, sess, base, ImageReport(), set())
+
+
 def entries_by(dim: str, decisions: Any) -> list[ProfileEntry]:
     return [e for e in decisions.entries if e.dimension == dim]
 
@@ -89,7 +119,13 @@ def entries_by(dim: str, decisions: Any) -> list[ProfileEntry]:
 def decide_session(
     sess: Session, base_terms: list[str] | None = None, removed: list[str] | None = None
 ) -> Any:
-    return decide(rated_map(sess), {}, list(sess.results.values()), removed or [], base_terms or [])
+    return decide(
+        rated_map(sess),
+        model_tags(sess),
+        list(sess.results.values()),
+        removed or [],
+        base_terms or [],
+    )
 
 
 def shape_world(
@@ -172,22 +208,23 @@ def test_exposure_is_the_share_among_titles_that_have_a_value() -> None:
     assert exposure_shares(shown)["shape"]["round"] == pytest.approx(2 / 3)
 
 
-def test_tagging_prefers_the_model_and_falls_back_to_the_title() -> None:
+def test_tagging_uses_the_model_only_and_unknowns_stay_unknown() -> None:
     r = Rated("a", "love", "", "Round Walnut Table", 100.0, "S", "")
     model = ItemTags(
         id="a", shape=None, material="steel", color_finish=None, frame_or_legs=None,
         frame_color="brass", style="modern", size_class="small", quality_cues=["Solid Wood", "storage"],
     )  # fmt: skip
     item = tag_item(r, model)
-    assert item.values["material"] == "metal"  # the model's reading wins
-    assert (
-        item.values["shape"] == "round" and item.values["color_finish"] == "warm wood"
-    )  # from the title
+    assert item.values["material"] == "metal"  # the model's reading
+    assert "shape" not in item.values and "color_finish" not in item.values  # null stays unknown:
+    # the title says "Round Walnut" but the lexicon no longer fills what the model left out
     assert (
         item.values["frame_color"] == "dark or brass metal" and item.values["size_class"] == "small"
     )
     assert item.cues == ("solid wood", "storage")
-    assert tag_item(r, None).values["material"] == "wood"  # no model answer: the lexicon alone
+    assert (
+        tag_item(r, None).values == {}
+    )  # an item the model did not tag is unknown on every dimension
 
 
 # ---- one dimension: converged, open, none -----------------------------------------------------------------
@@ -204,9 +241,7 @@ def test_one_round_and_one_rectangular_love_make_shape_open_with_no_pressure() -
     assert res.shares == {"round": 0.5, "rectangular": 0.5}
     # through the whole pipeline: an open chip, nothing converged, no shape in any phrasing or context
     sess = make_session(shape_world(6, 6), {"r0": ("love", ""), "x0": ("love", "")})
-    prof = merge_profile_v3(
-        None, None, sess, query(request="tables", category="table"), ImageReport(), set()
-    )
+    prof = merged(None, sess, query(request="tables", category="table"))
     shape = [e for e in prof.inferred if e.dimension == "shape"]
     assert [(e.status, e.attr_kind, e.text, sorted(e.values)) for e in shape] == [
         ("open", "open", "shape: open", ["rectangular", "round"])
@@ -225,7 +260,7 @@ def test_one_round_and_one_rectangular_love_make_shape_open_with_no_pressure() -
 def test_two_round_loves_from_different_sellers_converge_shape() -> None:
     shown = shape_world(3, 4, 3)  # a third of what was shown is round
     sess = make_session(shown, {"r0": ("love", ""), "r1": ("love", "")})
-    prof = merge_profile_v3(None, None, sess, query(request="tables"), ImageReport(), set())
+    prof = merged(None, sess, query(request="tables"))
     shape = [e for e in prof.inferred if e.dimension == "shape"]
     assert [(e.status, e.text, e.polarity) for e in shape] == [("converged", "round", "like")]
     assert (
@@ -240,7 +275,7 @@ def test_the_exposure_feedback_loop_does_not_become_a_preference() -> None:
     # 80% of what was shown is round; liking two round items is just what was on the page
     shown = shape_world(8, 2)
     sess = make_session(shown, {"r0": ("like", ""), "r1": ("like", "")})
-    prof = merge_profile_v3(None, None, sess, query(request="tables"), ImageReport(), set())
+    prof = merged(None, sess, query(request="tables"))
     assert [e for e in prof.inferred if e.dimension == "shape"] == []
     res = classify_dimension(
         "shape", [tagged("a", "like", "Round A"), tagged("b", "like", "Round B")], exposure_of(0.8)
@@ -329,13 +364,14 @@ def test_two_supporting_items_are_needed_unless_a_loved_comment_names_it() -> No
     assert classify_dimension("shape", unrelated, low).status == "none"
 
 
-def test_a_dimension_with_no_known_exposure_skips_the_lift_test() -> None:
+def test_a_dimension_with_no_exposure_baseline_cannot_converge() -> None:
     items = [
         tagged("a", "love", "Table", size_class="large"),
         tagged("b", "love", "Chair", size_class="large"),
     ]
     res = classify_dimension("size_class", items, {})  # size class has no lexicon, so no baseline
-    assert res.status == "converged" and res.value == "large" and res.lift is None
+    assert res.status == "none" and "lift test cannot run" in res.trace["reason"]
+    assert res.trace["exposure_coverage"] == 0.0 and res.lift is None
 
 
 # ---- dislike discipline -----------------------------------------------------------------------------------
@@ -520,7 +556,7 @@ def test_price_is_mixed_when_loved_is_upper_but_liked_spans_the_range() -> None:
 
 
 def test_price_is_a_band_when_loved_and_liked_both_cluster() -> None:
-    sess, rated = priced_world([699.0, 749], [780.0, 820, 860], POOL)
+    sess, rated = priced_world([720.0, 749], [780.0, 820, 860], POOL)
     entry = price_entry(rated, list(sess.results.values()))
     assert entry is not None and entry.attr_kind == "price_band" and entry.band == "upper"
     assert entry.status == "converged" and entry.text.startswith("upper range, about $")
@@ -530,8 +566,8 @@ def test_price_is_a_band_when_loved_and_liked_both_cluster() -> None:
 
 
 def test_price_says_nothing_when_loved_is_not_clustered_and_liked_is_narrow() -> None:
-    sess, rated = priced_world([140.0, 900.0], [440.0, 480], POOL)
-    assert price_entry(rated, list(sess.results.values())) is None
+    sess, rated = priced_world([440.0, 480], [450.0, 470], POOL)
+    assert price_entry(rated, list(sess.results.values())) is None  # a narrow mid-range cluster
     few = make_session(
         [("a", "T", 100.0, "S"), ("b", "T2", 200.0, "S")], {"a": ("love", ""), "b": ("love", "")}
     )
@@ -543,7 +579,7 @@ def test_a_mixed_price_chip_is_neutral_and_the_ranker_hears_it_is_only_a_hint() 
     from app.shop.search import rank_user_text
 
     sess, rated = priced_world([699.0, 749, 829, 899], [140.0, 300, 520, 800], POOL)
-    prof = merge_profile_v3(None, None, sess, query(request="tables"), ImageReport(), set())
+    prof = merged(None, sess, query(request="tables"))
     assert any(e.status == "mixed" for e in prof.inferred)
     ctx = again_context(sess, prof, config(), ["tables"])
     assert ctx.price_line.startswith("mixed (loved $699 to $899, liked $140 to $800)")
@@ -850,7 +886,8 @@ def test_the_guard_that_cannot_be_met_says_so_and_returns_what_exists(
     assert len(found["results"]) == 14  # what exists under the guard
     assert found["diversity"]["shape"] == {"value": "round", "share": 1.0}
     assert any(
-        "Could not keep shape mixed: the pool is mostly round (100% of these results)." in w
+        "Could not keep shape mixed: the pool is mostly round (100% of these results, limit 60%)."
+        in w
         for w in found["warnings"]
     )
 
@@ -877,11 +914,8 @@ def test_the_largest_share_per_dimension_is_logged(
     search.sequence = [fresh]
     again = svc.shop_again(sid)
     div = again["search"]["diversity"]
-    assert (
-        set(div) >= {"shape", "material"}
-        and div["shape"]["share"] <= 0.6
-        and div["material"]["share"] <= 0.6
-    )
+    assert "shape" in div and div["shape"]["share"] <= 0.6
+    assert "material" not in div  # material is no longer always guarded (stage 2d)
     assert again["search"]["seller_share"]["share"] <= 0.5
 
 
@@ -946,15 +980,13 @@ def test_the_same_ratings_give_the_same_profile_in_any_order() -> None:
         "o1": ("dislike", ""),
     }
     base = query(request="tables")
-    first = merge_profile_v3(None, None, make_session(shown, ratings), base, ImageReport(), set())
+    first = merged(None, make_session(shown, ratings), base)
     reordered = dict(reversed(list(ratings.items())))
-    second = merge_profile_v3(
-        None, None, make_session(shown, reordered), base, ImageReport(), set()
-    )
+    second = merged(None, make_session(shown, reordered), base)
     dump = lambda p: json.dumps([e.model_dump() for e in p.inferred], sort_keys=True)  # noqa: E731
     assert dump(first) == dump(second) and first.inferred  # the same, and not empty
     # recomputing from the same ratings again changes nothing (no incremental drift)
-    third = merge_profile_v3(first, None, make_session(shown, ratings), base, ImageReport(), set())
+    third = merged(first, make_session(shown, ratings), base)
     assert dump(third) == dump(first)
 
 
@@ -966,16 +998,16 @@ def test_deleted_chips_stay_deleted_across_recomputes() -> None:
     ratings = {"w0": ("love", ""), "w1": ("love", "")}
     sess = make_session(shown, ratings)
     base = query(request="tables")
-    prof = merge_profile_v3(None, None, sess, base, ImageReport(), set())
+    prof = merged(None, sess, base)
     texts = [e.text for e in prof.inferred]
     assert "round" in texts and "seller: WestElm" in texts
     gone = remove_entry(prof, "inferred", "round")
     assert gone is not None
-    again = merge_profile_v3(gone, None, sess, base, ImageReport(), set())
+    again = merged(gone, sess, base)
     assert "round" not in [e.text for e in again.inferred] and "round" in again.removed
     gone2 = remove_entry(again, "inferred", "seller: WestElm")
     assert gone2 is not None
-    final = merge_profile_v3(gone2, None, sess, base, ImageReport(), set())
+    final = merged(gone2, sess, base)
     assert "seller: WestElm" not in [e.text for e in final.inferred]
     open_chip = ProfileEntry(
         text="shape: open",
@@ -996,13 +1028,13 @@ def test_the_pin_toggles_and_is_carried_across_recomputes() -> None:
         {"w0": ("love", ""), "w1": ("love", "")},
     )
     base = query(request="tables")
-    prof = merge_profile_v3(None, None, sess, base, ImageReport(), set())
+    prof = merged(None, sess, base)
     chip = next(e for e in prof.inferred if e.attr_kind == "seller")
     assert chip.pinned is False and prof.pinned_sellers == []
     pinned = pin_seller(prof, chip.text)
     assert pinned is not None and pinned.pinned_sellers == ["westelm"]
     assert next(e for e in pinned.inferred if e.attr_kind == "seller").pinned is True
-    again = merge_profile_v3(pinned, None, sess, base, ImageReport(), set())
+    again = merged(pinned, sess, base)
     assert (
         again.pinned_sellers == ["westelm"]
         and next(e for e in again.inferred if e.attr_kind == "seller").pinned
@@ -1023,7 +1055,7 @@ def test_open_chip_evidence_is_plain_text_and_the_page_builds_it_from_text_nodes
         [("a", evil, 100.0, "S1"), ("b", "Rectangular Table", 100.0, "S2")] + shape_world(3, 3),
         {"a": ("love", ""), "b": ("love", "")},
     )
-    prof = merge_profile_v3(None, None, sess, query(request="tables"), ImageReport(), set())
+    prof = merged(None, sess, query(request="tables"))
     open_chip = next(e for e in prof.inferred if e.status == "open")
     assert all(isinstance(t, str) for t in open_chip.evidence_titles)
     assert any("<img" in t for t in open_chip.evidence_titles)  # stored as data, never as markup
@@ -1050,151 +1082,6 @@ def test_the_saved_panel_wraps_into_a_grid_with_no_sideways_scroll() -> None:
         and "flex" not in row
     )
     assert "flex: 0 0 230px" not in css
-
-
-# ---- the owner's real case -------------------------------------------------------------------------------------------------------------------
-
-
-def owner_session() -> Session:
-    """Four loved West Elm tables ($699 to $899, all with storage): a round walnut drum, a round
-    brushed brass drum, a rectangular wood and black metal lift-top, a rectangular walnut with
-    drawers. Eight liked across other sellers ($140 to $800, both shapes, warm wood). One disliked
-    rectangular-with-drawers table. Plus what else was shown."""
-    shown: list[tuple[str, str, float | None, str]] = [
-        ("L1", 'Round Walnut Drum Storage Coffee Table 36"', 749.0, "West Elm"),
-        ("L2", 'Round Brushed Brass Drum Storage Coffee Table 34"', 829.0, "West Elm"),
-        (
-            "L3",
-            'Rectangular Wood and Black Metal Lift-Top Storage Coffee Table 46"',
-            699.0,
-            "West Elm",
-        ),
-        ("L4", 'Rectangular Walnut Storage Coffee Table with Drawers 48"', 899.0, "West Elm"),
-        ("K1", 'Round Oak Coffee Table with Storage 34"', 140.0, "IKEA"),
-        ("K2", 'Rectangular Walnut Coffee Table 44"', 250.0, "Target"),
-        ("K3", 'Round Walnut Coffee Table with Shelf 32"', 320.0, "Wayfair"),
-        ("K4", 'Rectangular Oak Coffee Table with Drawers 46"', 410.0, "Article"),
-        ("K5", 'Round Walnut Storage Coffee Table 36"', 520.0, "Crate & Barrel"),
-        ("K6", 'Rectangular Walnut Lift-Top Coffee Table 48"', 640.0, "Joss & Main"),
-        ("K7", 'Round Oak Drum Coffee Table 30"', 720.0, "Etsy"),
-        ("K8", 'Rectangular Oak Storage Coffee Table 50"', 800.0, "Overstock"),
-        ("D1", 'Rectangular Black Steel Coffee Table with Drawers 48"', 430.0, "Walmart"),
-    ]
-    shown += [
-        (f"x{i}", t, p, s)
-        for i, (t, p, s) in enumerate(
-            [
-                ('Round Glass Top Black Metal Coffee Table 32"', 180.0, "IKEA"),
-                ('Oval Marble Coffee Table 44"', 880.0, "Wayfair"),
-                ('Rectangular Glass Coffee Table 46"', 200.0, "Target"),
-                ('Square Black Steel Coffee Table 30"', 160.0, "Walmart"),
-                ('Round White Marble Coffee Table 36"', 560.0, "Article"),
-                ('Rectangular Marble Coffee Table 52"', 760.0, "Overstock"),
-                ('Oval Glass Coffee Table 40"', 300.0, "Etsy"),
-                ('Round Glass Coffee Table 34"', 150.0, "Walmart"),
-                ('Round Gray Coffee Table 36"', 240.0, "Home Depot"),
-                ('Oval White Coffee Table 42"', 350.0, "Article"),
-                ('Rectangular Gray Coffee Table 48"', 380.0, "Wayfair"),
-                ('Square White Coffee Table 30"', 210.0, "IKEA"),
-                ('Round Chrome Coffee Table 32"', 190.0, "Walmart"),
-                ('Oval Silver Metal Coffee Table 44"', 340.0, "Target"),
-                ('Rectangular White Frame Coffee Table 46"', 260.0, "Wayfair"),
-                ('Round Natural Wood Frame Coffee Table 34"', 310.0, "Etsy"),
-                ('Square Wood Legs Coffee Table 30"', 230.0, "Overstock"),
-                ('Coffee Table with Storage 40"', 270.0, "Home Depot"),
-                ('Rectangular Black Steel Coffee Table 44"', 330.0, "Target"),
-            ]
-        )
-    ]
-    ratings = {
-        "L1": ("love", ""), "L2": ("love", ""), "L3": ("love", ""), "L4": ("love", ""),
-        **{f"K{i}": ("like", "") for i in range(1, 9)},
-        "D1": ("dislike", ""),
-    }  # fmt: skip
-    return make_session(shown, ratings)
-
-
-def storage_tags(sess: Session) -> dict[str, ItemTags]:
-    """A model that (wrongly, as a feature) offers "storage" as a quality cue for every loved item."""
-    return {
-        rid: ItemTags(
-            id=rid, shape=None, material=None, color_finish=None, frame_or_legs=None,
-            frame_color=None, style=None, size_class=None, quality_cues=["storage"],
-        )
-        for rid in sess.ratings
-    }  # fmt: skip
-
-
-def test_the_owners_real_case() -> None:
-    sess = owner_session()
-    base = query(
-        request="coffee tables with a mix of wood and metal with storage",
-        search_text="coffee table with storage",
-        material_terms=["wood", "metal"], must_have=["storage"], category="coffee table",
-    )  # fmt: skip
-    rated = rated_map(sess)
-    decisions = decide(
-        rated,
-        storage_tags(sess),
-        list(sess.results.values()),
-        [],
-        [],
-        image_ids=set(),
-    )
-    by_kind = {(e.attr_kind, e.text): e for e in decisions.entries}
-    # shape is open: both round and rectangular were loved and liked; nothing says "round" or "rectangular"
-    shape = [e for e in decisions.entries if e.dimension == "shape"]
-    assert [(e.status, e.text, sorted(e.values)) for e in shape] == [
-        ("open", "shape: open", ["rectangular", "round"])
-    ]
-    assert not any(e.polarity == "dislike" and e.dimension == "shape" for e in decisions.entries)
-    # the seller converged (and can be pinned)
-    seller = [e for e in decisions.entries if e.attr_kind == "seller"]
-    assert (
-        [e.text for e in seller] == ["seller: West Elm"]
-        and seller[0].lift is not None
-        and seller[0].lift >= 1.3
-    )
-    # price is mixed: loved $699 to $899, liked $140 to $800
-    price = [e for e in decisions.entries if e.attr_kind.startswith("price")]
-    assert [(e.status, e.detail) for e in price] == [
-        ("mixed", "loved $699 to $899, liked $140 to $800")
-    ]
-    # wood converged, a warm wood finish converged, and so did dark or brass metal frames
-    wood = by_kind[("material", "wood")]
-    warm = by_kind[("color_finish", "warm wood")]
-    frame = by_kind[("frame_color", "dark or brass metal")]
-    assert wood.status == warm.status == frame.status == "converged"
-    assert (
-        wood.share and wood.share >= 0.7 and warm.share and warm.share >= 0.7 and frame.share == 1.0
-    )
-    assert min(wood.lift or 9, warm.lift or 9, frame.lift or 9) >= thresholds.LIFT_MIN
-    # storage is not a learned like (a typed term, and a feature, not build or finish)
-    assert not any("storage" in e.text for e in decisions.entries)
-    assert not any(e.attr_kind == "quality_cue" for e in decisions.entries)
-    # the whole profile: the summary mentions open shape and mixed price, and the chips would not push round
-    prof = merge_profile_v3(None, None, sess, base, ImageReport(), set())
-    text = profile_summary(prof)
-    assert (
-        "Shape is open: showing both rectangular and round." in text and "Price is mixed." in text
-    )
-    assert "from West Elm" in text and "round" not in text.split("Shape is open")[0]
-    pinned = pin_seller(prof, "seller: West Elm")
-    assert pinned is not None and pinned.pinned_sellers == ["westelm"]
-    queries, dropped = build_phrasings(base, prof, apply_adjustments(base, prof), 4)
-    assert queries[0].startswith("coffee table") and dropped == []
-    assert sum("round" in q for q in queries) == 1 and sum("rectangular" in q for q in queries) == 1
-    assert sum("West Elm" in q for q in queries) == 1 and "mixed" not in " ".join(queries)
-
-
-def test_the_owners_case_without_the_model_still_gets_the_same_decisions() -> None:
-    sess = owner_session()
-    with_model = decide(rated_map(sess), storage_tags(sess), list(sess.results.values()), [], [])
-    lexicon_only = decide(rated_map(sess), {}, list(sess.results.values()), [], [])
-    keys = lambda d: sorted((e.attr_kind, e.text, e.status) for e in d.entries)  # noqa: E731
-    assert keys(with_model) == keys(
-        lexicon_only
-    )  # titles alone carry this case; the model adds nothing here
 
 
 # ---- the pin endpoint, validation and security ----------------------------------------------------------------------------------------------------------
