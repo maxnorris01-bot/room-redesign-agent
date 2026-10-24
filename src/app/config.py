@@ -115,6 +115,13 @@ class Config:
     # Shop Mode (ADR 0012): product lookups (about one SerpApi search each) allowed per session,
     # spent only when the visitor opens or loves a result. A guess; past it the Google link is used.
     shop_lookups_per_session: int = 12
+    # Shop Again (ADR 0012, stage 2): per session. A guess.
+    shop_agains_per_session: int = 10
+    # Serper bills credits, not calls: a shopping call took 2 credits in the live test. USD per
+    # credit is the owner's figure from the live test (about $0.001), not a documented price.
+    # Shop Mode costs Serper from these two; the room pipeline still uses serper_usd_per_query.
+    serper_credits_per_call: int = 2
+    serper_usd_per_credit: float = 0.001
     # Fit (coarse, code-only): fail if an item's longer side is over this fraction of the room's
     # shorter side, or its footprint is over `fit_max_footprint_fraction` of the floor area.
     # UNTUNED GUESSES. Rugs and other large flat items will trip them; see ADR 0006.
@@ -156,6 +163,17 @@ class Config:
             raise ValueError("APP_MAX_REVISIONS must be >= 0")
         if self.shop_lookups_per_session < 0:
             raise ValueError("APP_SHOP_LOOKUPS_PER_SESSION must be >= 0")
+        if self.shop_agains_per_session < 0:
+            raise ValueError("APP_SHOP_AGAINS_PER_SESSION must be >= 0")
+        if self.serper_credits_per_call < 0 or self.serper_usd_per_credit < 0:
+            raise ValueError(
+                "APP_SERPER_CREDITS_PER_CALL and APP_SERPER_USD_PER_CREDIT must be >= 0"
+            )
+
+    @property
+    def serper_usd_per_call(self) -> float:
+        """Estimated dollars for one Serper call, from its credits and the price of a credit."""
+        return self.serper_credits_per_call * self.serper_usd_per_credit
 
     def items_for(self, freeplay: bool) -> int:
         """Slots to shop for: the explicit count, else the mode's default."""
@@ -227,6 +245,15 @@ class Config:
             max_items=int(os.environ.get("APP_MAX_ITEMS", cls.max_items)),
             shop_lookups_per_session=int(
                 os.environ.get("APP_SHOP_LOOKUPS_PER_SESSION", cls.shop_lookups_per_session)
+            ),
+            shop_agains_per_session=int(
+                os.environ.get("APP_SHOP_AGAINS_PER_SESSION", cls.shop_agains_per_session)
+            ),
+            serper_credits_per_call=int(
+                os.environ.get("APP_SERPER_CREDITS_PER_CALL", cls.serper_credits_per_call)
+            ),
+            serper_usd_per_credit=float(
+                os.environ.get("APP_SERPER_USD_PER_CREDIT", cls.serper_usd_per_credit)
             ),
             lookups_per_slot=(
                 int(os.environ["APP_LOOKUPS_PER_SLOT"])

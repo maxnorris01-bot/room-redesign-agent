@@ -203,8 +203,10 @@ def _shop_mock_order(request_text: str, ids: list[str]) -> list[str]:
         text = found.group(1) if found and found.group(1) != "none" else ""
         return set(re.findall(r"[a-z]+", text.lower()))
 
-    want = words("Style") | words("Materials") | words("Must have")
-    avoid = words("Avoid")
+    want = words("Style") | words("Materials") | words("Must have") | words("Profile likes")
+    avoid = words("Avoid") | words("Profile dislikes")
+    if "dark" in avoid:  # "too dark" in a profile: the mock reads it as these colours
+        avoid |= {"black", "navy", "charcoal"}
     titles = dict(re.findall(r"^- id: (\S+) \| (.*?) \| seller:", request_text, flags=re.MULTILINE))
 
     def score(i: str) -> int:
@@ -435,6 +437,92 @@ def mock_shop_parse_payload(request_text: str) -> dict[str, Any]:
     return MOCK_SHOP_PARSES.get(_norm_request(request)) or _heuristic_shop_parse(request)
 
 
+# ---- Shop Mode: the preference profile ---------------------------------------------------------
+
+# Attribute words the mock "model" recognises in titles and comments (it is not a language model).
+MOCK_PREF_WORDS = (
+    "boucle", "velvet", "linen", "leather", "chenille", "walnut", "oak", "rattan", "marble",
+    "glass", "metal", "wood", "low profile", "tufted", "curved", "round", "storage", "mid-century",
+    "minimalist", "industrial", "farmhouse",
+)  # fmt: skip
+_PREF_ROW = re.compile(r"^- (love|like|dislike) \| (.*?) \| (.*?) \| (.*?) \| comment: (.*)$")
+
+
+def mock_prefs_payload(request_text: str) -> dict[str, Any]:
+    """A profile from the rated rows: attributes of loved results (and of liked ones when two
+    share them), "too X" comments as dislikes, an attribute shared by two dislikes and no like as a
+    dislike, "too expensive" as a 15% lower cap. The existing profile is carried over."""
+    rows = [m.groups() for m in map(_PREF_ROW.match, request_text.splitlines()) if m]
+    weight: dict[str, int] = {}
+    disliked: dict[str, int] = {}
+    dislikes: list[str] = []
+    cheaper = False
+    for rating, title, _price, _seller, comment in rows:
+        text = f"{title} {comment}".lower()
+        found = [w for w in MOCK_PREF_WORDS if w in text]
+        for w in found:
+            if rating == "dislike":
+                disliked[w] = disliked.get(w, 0) + 1
+            else:
+                weight[w] = weight.get(w, 0) + (2 if rating == "love" else 1)
+        for m in re.finditer(r"too (\w+)", comment.lower()):
+            if m.group(1) in ("expensive", "pricey", "costly"):
+                cheaper = True
+            else:
+                dislikes.append(f"too {m.group(1)}")
+        if "flimsy" in comment.lower():
+            dislikes.append("flimsy legs")
+    likes = [w for w, n in weight.items() if n >= 2]
+    dislikes += [w for w, n in disliked.items() if n >= 2 and w not in weight]
+
+    def carried(label: str) -> list[str]:
+        found = re.search(rf"^  {label}: (.*)$", request_text, flags=re.MULTILINE)
+        text = found.group(1) if found else "none"
+        return [] if text == "none" else [x.strip() for x in text.split(";") if x.strip()]
+
+    likes = [*carried("likes"), *[x for x in likes if x not in carried("likes")]]
+    dislikes = [*carried("dislikes"), *[x for x in dislikes if x not in carried("dislikes")]]
+    base = re.search(r"^Parsed query: search_text=(.*?);", request_text, flags=re.MULTILINE)
+    search_text = base.group(1).strip() if base else ""
+    extra = [x for x in likes if x not in search_text]
+    cap = re.search(r"price=up to \$([\d,]+)", request_text)
+    price_max = float(cap.group(1).replace(",", "")) * 0.85 if cheaper and cap else None
+    return {
+        "likes": likes,
+        "dislikes": dislikes,
+        "query_adjustments": {
+            "search_text": f"{search_text} {extra[0]}".strip() if extra and search_text else "",
+            "style_terms": [
+                x for x in likes if x in ("mid-century", "minimalist", "industrial", "farmhouse")
+            ],
+            "material_terms": [
+                x
+                for x in likes
+                if x
+                in (
+                    "boucle",
+                    "velvet",
+                    "linen",
+                    "leather",
+                    "walnut",
+                    "oak",
+                    "rattan",
+                    "marble",
+                    "glass",
+                    "metal",
+                    "wood",
+                )
+            ],
+            "must_have": [x for x in likes if x in ("storage", "low profile")],
+            "avoid": ["dark"] if "too dark" in dislikes else [],
+            "price_max": price_max,
+            "price_note": "Lowered the price limit about 15% because of a comment."
+            if price_max
+            else "",
+        },
+    }
+
+
 def _request_text(kwargs: dict[str, Any]) -> str:
     content = kwargs["messages"][0]["content"]
     if isinstance(content, str):
@@ -503,6 +591,12 @@ class MockAnthropicClient:
                 ],
                 input_tokens=300 + 150 * images,
                 output_tokens=60,
+            )
+        if title == "PreferenceProfile":
+            return response(
+                [text_block(mock_prefs_payload(_request_text(kwargs)))],
+                input_tokens=900,
+                output_tokens=150,
             )
         if title == "ShopParse":
             return response(

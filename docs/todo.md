@@ -10,13 +10,14 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- The most important items, in the order you'd actually tackle them. -->
 
-- [ ] **Max: live smoke test of Shop Mode stage 1** (`make shop-live`; the script prints the expected cost per search first). Try the three example requests, rate a few results, open one, reload. Check: does Serper accept `page: 2` on the shopping endpoint, how many results a page really holds, how long a search takes, what a search and a session really cost, and whether the ranker and the category filter behave on real titles. Record the numbers in a session doc.
-- [ ] **Shop Mode stage 2: Shop Again.** A button that uses the ratings and comments: exclude seen results (`store.seen_ids`), push down disliked sellers (`disliked_sellers`), and feed loved and liked results with their comments into the next search and rank (`rated_results`). The data is already stored; the button is in the page, disabled ("Coming next").
-- [ ] **Shop Mode stage 3: eval.** About 12 prompts scoring price compliance, category correctness, style match and feedback responsiveness (does Shop Again actually move results toward what was loved and away from what was disliked). Own commit for cases and thresholds, per CLAUDE.md.
+- [ ] **Max: live test of Shop Mode stage 2** (`make shop-live`): search, rate a few results with comments ("too dark", "love the legs"), press Shop Again. Check: does Serper accept page 3, how many credits a Shop Again really uses (expect 2 to 6), what the profile chips say about real comments, whether the new set is really unseen and moves toward what was loved, and what a session costs. Record the numbers in a session doc.
+- [ ] **Shop Mode stage 3: eval (next).** About 12 prompts scoring price compliance, category correctness, style match, and whether Shop Again moves results toward loved items and away from disliked ones. Own commit for cases and thresholds, per CLAUDE.md.
 - [ ] **Shop Mode deployment as a portfolio site tab.** Needs the terms review below, a spend gate (searches and lookups per visitor), and a decision on where sessions live (the local JSON files are single-machine).
 - [ ] **Terms review for Shop Mode** (ADR 0012): showing Google Shopping results and Google-hosted thumbnails publicly, provider terms, retailer image rights. Decide before any public deployment: local or recorded demo only, links without thumbnails, or a source with display rights.
 - [ ] **Redesign Mode after Shop Mode works:** room photo, stripping furniture, photo-real render (ADR 0011). The 2D plan is dropped from the product (ADR 0012).
 - [ ] Tune the Shop Mode guesses from live use: 24 results, 4 per seller, 12 lookups per session, 50 searches per session, the accessory word list, the 60-result rank pool.
+- [ ] Shop Mode: tune from live use: 10 Shop Agains per session, 3 pages, the 20% price-cut limit, 12 profile phrases, 8 examples shown to the ranker.
+- [ ] Shop Mode: sessions are local files; a Start over leaves the old file on disk (add a cleanup or a list of past sessions if that matters).
 - [ ] Shop Mode: show the ranker's one-line reason on a card (it is stored as `rank_reason`) if it helps in live use; a "no results" state could offer to loosen the price.
 - [ ] Shop Mode: make the rank prompt and the parse prompt measurable (a fixed request set and a score), as part of stage 3.
 
@@ -115,6 +116,7 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- Move items here when done, newest first, with a one-line note on what happened. -->
 
+- [x] 2026-10-24 Shop Mode stage 2 (ADR 0012 amended): preference profile (`shop_prefs.md` v1), Shop Again with exclusions, seller deprioritization and up to 3 pages (`shop_rank.md` v2), preference chips with delete, Saved panel, Start over, Serper credits in the cost, loading state and retry, 100-item fixtures. Mock-verified only; see `docs/sessions/2026-10-24-shop-mode-stage-2.md`.
 - [x] 2026-10-24 Shop Mode stage 1 (ADR 0012, proposed): request parsing, Serper search with hard filters, dedupe, seller cap and an id-only ranker, lazy link resolve with a per-session cap and cache, JSON sessions with ratings and comments, a local page, `make shop`, `make shop-live`, `make shop-check`. Mock-verified only; see `docs/sessions/2026-10-24-shop-mode-stage-1.md`.
 - [x] 2026-10-22 Pick quality (ADR 0009 and 0010, proposed): size hints from titles and slugs with confidence and plausibility ranges, partial-size fit and a replacement size note, matching-set warnings and `--replace-matching`, category families and item-count messaging, seller cap and rank v5, image-based style check v2 with a guarded thumbnail prefetch. Mock-verified only; see `docs/sessions/2026-10-22-pick-quality.md`.
 - [x] 2026-10-22 Freeplay mode (ADR 0008, proposed): optional `--budget`, `--price-tier`, `--items` 2 to 10, accent lists to 10, price tiers from search stats, rank v4 and proposal v3, lookup economy with unverified alternates, shipping status fix. Mock-verified only; see `docs/sessions/2026-10-22-freeplay-mode.md`.

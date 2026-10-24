@@ -38,6 +38,10 @@ from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.shopping_retrieval import _record_provider_call, cap_per_seller, seller_key
 from app.sizes import IN_M, resolve_size
 
+MAX_PAGES_AGAIN = 3  # Serper pages a Shop Again may fetch
+MAX_EXAMPLES = 8  # loved/liked and disliked titles shown to the ranker, each
+RANK_VERSION = "1"  # typed searches
+RANK_VERSION_AGAIN = "2"  # Shop Again: also sees the profile and the examples
 RESULT_COUNT = 24  # results returned, and the fewest that avoid a second Serper page
 SELLER_CAP = 4  # most results one seller may have in the returned list. UNTUNED GUESS.
 MAX_POOL = 60  # candidates shown to the ranker (keeps the prompt small)
@@ -46,6 +50,20 @@ MAX_TITLE_CHARS = 100
 # Titles with these words are parts or covers, not the product (applied only for a known category).
 # UNTUNED GUESS: short on purpose, a longer list would drop real products.
 ACCESSORY_PHRASES = ("slipcover", "slip cover", "replacement", "furniture leg", "cover for")
+
+
+@dataclass
+class AgainContext:
+    """What a Shop Again adds to the search pipeline (see `app.shop.again`)."""
+
+    exclude_ids: set[str] = field(default_factory=set)  # result ids shown earlier in the session
+    exclude_title_keys: set[str] = field(default_factory=set)  # same listing under another id
+    deprioritize_sellers: set[str] = field(default_factory=set)  # seller keys, ranked last
+    likes: list[str] = field(default_factory=list)  # profile phrases
+    dislikes: list[str] = field(default_factory=list)
+    more_like: list[tuple[ShopResult, str]] = field(default_factory=list)  # (result, love|like)
+    less_like: list[ShopResult] = field(default_factory=list)
+    max_pages: int = MAX_PAGES_AGAIN
 
 
 @dataclass
@@ -59,6 +77,9 @@ class SearchOutcome:
     provider_usd: float
     ranked: bool
     warnings: list[str] = field(default_factory=list)
+    kind: str = "search"  # "search" or "shop_again"
+    serper_credits: int = 0
+    note: str = ""
 
     @property
     def total_usd(self) -> float:
@@ -148,7 +169,13 @@ def size_hint_for(title: str, query: ShopQuery) -> str | None:
     return format_size_hint(size.dims) if size.dims is not None else None
 
 
-def rank_user_text(query: ShopQuery, pool: list[SearchCandidate], n: int) -> str:
+def _price(value: float | None) -> str:
+    return "no price" if value is None else f"${value:,.0f}"
+
+
+def rank_user_text(
+    query: ShopQuery, pool: list[SearchCandidate], n: int, again: AgainContext | None = None
+) -> str:
     def line(label: str, values: list[str]) -> str:
         return f"{label}: {', '.join(values) if values else 'none'}"
 
@@ -166,10 +193,23 @@ def rank_user_text(query: ShopQuery, pool: list[SearchCandidate], n: int) -> str
         line("Materials", query.material_terms),
         line("Must have", query.must_have),
         line("Avoid", query.avoid),
-        f"Pick at most {n} finalists, best first.",
-        "",
-        "Candidates:",
     ]
+    if again is not None:
+        lines += [
+            line("Profile likes", again.likes),
+            line("Profile dislikes", again.dislikes),
+            "More like these (the shopper loved or liked them):",
+            *[
+                f"  * {r.title[:MAX_TITLE_CHARS]} | {_price(r.price)} | {r.seller or '?'} | {how}"
+                for r, how in again.more_like[:MAX_EXAMPLES]
+            ],
+            "Less like these (the shopper disliked them):",
+            *[
+                f"  * {r.title[:MAX_TITLE_CHARS]} | {_price(r.price)} | {r.seller or '?'}"
+                for r in again.less_like[:MAX_EXAMPLES]
+            ],
+        ]
+    lines += [f"Pick at most {n} finalists, best first.", "", "Candidates:"]
     for c in pool:
         rating = f"rating {c.rating:g} ({c.rating_count})" if c.rating is not None else "no rating"
         price_text = f"{c.currency} {c.price:.2f}" if c.price is not None else "no price"
@@ -181,7 +221,10 @@ def rank_user_text(query: ShopQuery, pool: list[SearchCandidate], n: int) -> str
 
 
 def order_pool(
-    query: ShopQuery, pool: list[SearchCandidate], budget: Budget
+    query: ShopQuery,
+    pool: list[SearchCandidate],
+    budget: Budget,
+    again: AgainContext | None = None,
 ) -> tuple[list[tuple[SearchCandidate, str]], str]:
     """The pool in the ranker's order, each with its reason; unranked results follow in pool order.
 
@@ -193,9 +236,9 @@ def order_pool(
     try:
         completion = complete(
             span_name="llm.shop_rank",
-            prompt=load_prompt("shop_rank"),
+            prompt=load_prompt("shop_rank", RANK_VERSION if again is None else RANK_VERSION_AGAIN),
             model=config.rank_model,
-            user_text=rank_user_text(query, pool, RESULT_COUNT),
+            user_text=rank_user_text(query, pool, RESULT_COUNT, again),
             budget=budget,
             max_tokens=RANK_MAX_TOKENS,
             schema=to_output_schema(RankedFinalists),
@@ -264,7 +307,7 @@ def _search_page(
     search: SearchProvider, query: ShopQuery, page: int, budget: Budget
 ) -> list[SearchCandidate]:
     config: Config = budget.config
-    usd = config.serper_usd_per_query if search.name == "serper" else config.serpapi_usd_per_search
+    usd = config.serper_usd_per_call if search.name == "serper" else config.serpapi_usd_per_search
     started = time.perf_counter()
     try:
         found = search.search(query.search_text, page=page)
@@ -281,6 +324,117 @@ def _search_page(
     return found
 
 
+def _exclusions(
+    pool: list[SearchCandidate], again: AgainContext | None
+) -> tuple[list[SearchCandidate], int]:
+    """Drop what the session already showed (by result id, or by the same title and seller)."""
+    if again is None:
+        return pool, 0
+    kept = [
+        c
+        for c in pool
+        if result_id(c.product_id) not in again.exclude_ids
+        and normalized_title_key(c.title, c.seller) not in again.exclude_title_keys
+    ]
+    return kept, len(pool) - len(kept)
+
+
+def _ordinal(page: int) -> str:
+    return {2: "Second", 3: "Third"}.get(page, f"Page {page}")
+
+
+def run_query(
+    query: ShopQuery,
+    search: SearchProvider,
+    config: Config,
+    budget: Budget,
+    warnings: list[str],
+    started: float,
+    again: AgainContext | None = None,
+) -> SearchOutcome:
+    """Search, filter, (exclude), rank and cap for an already parsed `query`.
+
+    Typed searches fetch page 2 only when fewer than `RESULT_COUNT` results could be shown; a Shop
+    Again keeps going to `again.max_pages` pages while fewer than that many unseen results survive
+    (it also stops at a page that returns nothing). Page 1 failing raises `ProviderError`; a later
+    page failing, or ranking failing, degrades with a warning.
+    """
+    t_start = time.perf_counter()
+    max_pages = again.max_pages if again is not None else 2
+
+    def filtered(raw: list[SearchCandidate]) -> tuple[list[SearchCandidate], FilterCounts]:
+        pool, counts = apply_filters(raw, query)
+        pool, counts.seen_excluded = _exclusions(pool, again)
+        counts.kept = len(pool)
+        return pool, counts
+
+    calls = 1
+    raw = _search_page(search, query, 1, budget)
+    pool, counts = filtered(raw)
+    page = 1
+    # Only Serper pages (see SerpApiSearch.search); count what could be shown after the seller cap.
+    while (
+        search.name == "serper"
+        and page < max_pages
+        and len(cap_per_seller(pool, SELLER_CAP)[0]) < RESULT_COUNT
+    ):
+        page += 1
+        calls += 1
+        try:
+            more = _search_page(search, query, page, budget)
+        except ProviderError as exc:
+            warnings.append(f"{_ordinal(page)} page unavailable ({exc}); showing what was found.")
+            break
+        raw = raw + more
+        pool, counts = filtered(raw)
+        if not more:
+            break
+    t_search = time.perf_counter()
+
+    pool = pool[:MAX_POOL]
+    pool_index = {c.product_id: i + 1 for i, c in enumerate(pool)}
+    ranked = False
+    ordered: list[tuple[SearchCandidate, str]] = []
+    if pool:
+        ordered, rank_warning = order_pool(query, pool, budget, again)
+        ranked = not rank_warning
+        if rank_warning:
+            warnings.append(rank_warning)
+    if again is not None and again.deprioritize_sellers:  # not excluded: ranked after the rest
+        keep = [x for x in ordered if seller_key(x[0].seller) not in again.deprioritize_sellers]
+        later = [x for x in ordered if seller_key(x[0].seller) in again.deprioritize_sellers]
+        ordered = keep + later
+    results, capped = build_results(ordered, query, pool_index)
+    counts.seller_capped = capped
+    t_end = time.perf_counter()
+    if again is not None and len(results) < RESULT_COUNT:
+        warnings.append(
+            f"Only {len(results)} new results found. Try changing the request."
+            if results
+            else "No new results found. Try changing the request."
+        )
+    elif not results:
+        warnings.append("No results matched the filters. Try loosening the price or the wording.")
+    return SearchOutcome(
+        query=query,
+        results=results,
+        counts=counts,
+        serper_calls=calls,
+        seconds={
+            "parse": round(t_start - started, 3),
+            "search": round(t_search - t_start, 3),
+            "rank": round(t_end - t_search, 3),
+            "total": round(t_end - started, 3),
+        },
+        anthropic_usd=round(budget.cost_usd, 6),
+        provider_usd=round(budget.provider_cost_usd, 6),
+        ranked=ranked,
+        warnings=warnings,
+        kind="shop_again" if again is not None else "search",
+        serper_credits=calls * config.serper_credits_per_call if search.name == "serper" else 0,
+    )
+
+
 def run_search(request: str, search: SearchProvider, config: Config) -> SearchOutcome:
     """Parse `request`, search, filter, rank and cap. Raises `ProviderError` when page 1 fails
     (nothing to show) and `BudgetExceededError` past a cap; page 2 and ranking degrade."""
@@ -290,49 +444,4 @@ def run_search(request: str, search: SearchProvider, config: Config) -> SearchOu
     query, _, parse_warning = parse_request(clean_request(request), budget)
     if parse_warning:
         warnings.append(parse_warning)
-    t_parse = time.perf_counter()
-
-    calls = 1
-    raw = _search_page(search, query, 1, budget)
-    pool, counts = apply_filters(raw, query)
-    # Only Serper pages (see SerpApiSearch.search); count what could be shown after the seller cap.
-    if search.name == "serper" and len(cap_per_seller(pool, SELLER_CAP)[0]) < RESULT_COUNT:
-        calls += 1
-        try:
-            raw = raw + _search_page(search, query, 2, budget)
-        except ProviderError as exc:
-            warnings.append(f"Second page unavailable ({exc}); showing page 1 only.")
-        else:
-            pool, counts = apply_filters(raw, query)
-    t_search = time.perf_counter()
-
-    pool = pool[:MAX_POOL]
-    pool_index = {c.product_id: i + 1 for i, c in enumerate(pool)}
-    ranked = False
-    ordered: list[tuple[SearchCandidate, str]] = []
-    if pool:
-        ordered, rank_warning = order_pool(query, pool, budget)
-        ranked = not rank_warning
-        if rank_warning:
-            warnings.append(rank_warning)
-    results, capped = build_results(ordered, query, pool_index)
-    counts.seller_capped = capped
-    t_end = time.perf_counter()
-    if not results:
-        warnings.append("No results matched the filters. Try loosening the price or the wording.")
-    return SearchOutcome(
-        query=query,
-        results=results,
-        counts=counts,
-        serper_calls=calls,
-        seconds={
-            "parse": round(t_parse - t0, 3),
-            "search": round(t_search - t_parse, 3),
-            "rank": round(t_end - t_search, 3),
-            "total": round(t_end - t0, 3),
-        },
-        anthropic_usd=round(budget.cost_usd, 6),
-        provider_usd=round(budget.provider_cost_usd, 6),
-        ranked=ranked,
-        warnings=warnings,
-    )
+    return run_query(query, search, config, budget, warnings, t0)

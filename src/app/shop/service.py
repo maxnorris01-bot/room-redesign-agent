@@ -1,4 +1,4 @@
-"""Shop Mode behaviour without HTTP: search, rate, resolve and the session view.
+"""Shop Mode behaviour without HTTP: search, rate, resolve, Shop Again, preferences and views.
 
 `ApiError` carries the HTTP status and a short, safe message for the caller. Messages never include
 a URL or a key (provider errors name the provider and the status only).
@@ -10,13 +10,16 @@ from typing import Any
 
 from app.config import BudgetExceededError, Config
 from app.shop import store as store_mod
+from app.shop.again import run_shop_again
 from app.shop.models import (
     MAX_COMMENT_CHARS,
     MAX_REQUEST_CHARS,
     RATINGS,
+    StoredProfile,
     clean_comment,
     clean_request,
 )
+from app.shop.prefs import normalize_phrase, profile_summary, remove_entry
 from app.shop.resolve import UnknownResult, resolve
 from app.shop.search import SearchOutcome, run_search
 from app.shop.store import (
@@ -27,6 +30,8 @@ from app.shop.store import (
     SessionError,
     SessionStore,
     now_iso,
+    now_iso_ms,
+    saved_ids,
 )
 from app.shopping import ProductLookup, ProviderError, SearchProvider
 
@@ -65,15 +70,29 @@ class ShopService:
             "resolved": {},
             "lookups_used": 0,
             "search_count": 0,
+            "profile": None,
+            "profile_summary": "",
+            "can_shop_again": False,
+            "shop_agains_used": 0,
+            "shop_agains_cap": self.config.shop_agains_per_session,
+            "saved": [],
+            "session_usd": 0.0,
         }
         if session is None:
             return base
         base.update(
             session_id=session.session_id,
             ratings={
-                rid: {"rating": rec.rating, "comment": rec.comment}
+                rid: {"rating": rec.rating, "comment": rec.comment, "rated_at": rec.rated_at}
                 for rid, rec in session.ratings.items()
             },
+            can_shop_again=any(rec.rating is not None for rec in session.ratings.values())
+            and any(r.kind == "search" for r in session.searches),
+            profile=session.profile.model_dump(mode="json") if session.profile else None,
+            profile_summary=profile_summary(session.profile),
+            shop_agains_used=session.shop_agains_used,
+            saved=[session.results[rid].model_dump(mode="json") for rid in saved_ids(session)],
+            session_usd=round(sum(r.total_usd for r in session.searches) + session.lookup_usd, 6),
             resolved={rid: r.model_dump(mode="json") for rid, r in session.resolved.items()},
             lookups_used=session.lookups_used,
             search_count=len(session.searches),
@@ -94,7 +113,14 @@ class ShopService:
                 "created_at": last.created_at,
                 "results": results,
                 "seconds": last.seconds,
+                "kind": last.kind,
+                "note": last.note,
                 "serper_calls": last.serper_calls,
+                "serper_credits": (
+                    last.serper_credits
+                    if last.serper_credits is not None
+                    else last.serper_calls * self.config.serper_credits_per_call
+                ),
                 "anthropic_usd": last.anthropic_usd,
                 "provider_usd": last.provider_usd,
                 "total_usd": last.total_usd,
@@ -158,7 +184,7 @@ class ShopService:
             return self._view(session)
 
     @staticmethod
-    def _record(session: Session, request: str, outcome: SearchOutcome) -> None:
+    def _record(session: Session, request: str, outcome: SearchOutcome, note: str = "") -> None:
         index = len(session.searches) + 1
         for result in outcome.results:
             session.results[result.id] = result
@@ -178,6 +204,9 @@ class ShopService:
                 counts=outcome.counts,
                 ranked=outcome.ranked,
                 warnings=outcome.warnings,
+                kind=outcome.kind,
+                serper_credits=outcome.serper_credits,
+                note=note,
             )
         )
 
@@ -205,7 +234,7 @@ class ShopService:
             if result_id not in session.results:
                 raise ApiError(404, "unknown result")
             record = session.ratings.get(result_id, RatingRecord())
-            now = now_iso()
+            now = now_iso_ms()
             if rating is not UNSET and rating != record.rating:
                 record.rating = rating
                 record.rated_at = now if rating is not None else None
@@ -241,3 +270,64 @@ class ShopService:
             raise ApiError(502, str(exc)) from None
         except BudgetExceededError as exc:
             raise ApiError(429, str(exc)) from None
+
+    # ---- shop again and preferences -------------------------------------------------------
+
+    def shop_again(self, session_id: Any) -> dict[str, Any]:
+        """A fresh set of results shaped by the ratings (see `app.shop.again`)."""
+        session = self._load(session_id)
+        assert isinstance(session_id, str)
+        if not any(rec.rating is not None for rec in session.ratings.values()):
+            raise ApiError(400, "Rate a few results first")
+        if not any(r.kind == "search" for r in session.searches):
+            raise ApiError(400, "Search first")
+        if session.shop_agains_used >= self.config.shop_agains_per_session:
+            raise ApiError(
+                429,
+                f"Shop Again limit reached ({self.config.shop_agains_per_session} per session)",
+            )
+        try:
+            outcome, profile, query = run_shop_again(session, self.search_provider, self.config)
+        except ProviderError as exc:
+            raise ApiError(502, str(exc)) from None
+        except BudgetExceededError as exc:
+            raise ApiError(429, str(exc)) from None
+        with self.store.transaction(session_id) as live:
+            if live.shop_agains_used >= self.config.shop_agains_per_session:
+                raise ApiError(429, "Shop Again limit for this session reached")
+            # ratings made while the search ran are kept; the profile replaces the old one except
+            # that entries deleted meanwhile stay deleted
+            if live.profile is not None:
+                profile = profile.model_copy(
+                    update={
+                        "removed": live.profile.removed,
+                        "likes": [x for x in profile.likes if x not in live.profile.removed],
+                        "dislikes": [x for x in profile.dislikes if x not in live.profile.removed],
+                    }
+                )
+            live.profile = profile
+            live.shop_agains_used += 1
+            self._record(live, live.searches[-1].request if live.searches else "", outcome,
+                         note=profile_summary(profile))  # fmt: skip
+            return self._view(live)
+
+    def remove_preference(self, session_id: Any, kind: Any, phrase: Any) -> dict[str, Any]:
+        """Delete one preference chip; its phrase is never added back by a later merge."""
+        if kind not in ("like", "dislike"):
+            raise ApiError(400, "kind must be like or dislike")
+        if not isinstance(phrase, str) or not phrase.strip() or len(phrase) > 80:
+            raise ApiError(400, "phrase must be short text")
+        self._load(session_id)
+        assert isinstance(session_id, str)
+        with self.store.transaction(session_id) as session:
+            updated: StoredProfile | None = (
+                remove_entry(session.profile, kind, phrase) if session.profile else None
+            )
+            if updated is None:
+                raise ApiError(404, "no such preference")
+            session.profile = updated
+            return {
+                "profile": updated.model_dump(mode="json"),
+                "profile_summary": profile_summary(updated),
+                "removed": normalize_phrase(phrase),
+            }

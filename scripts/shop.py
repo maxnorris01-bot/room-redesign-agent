@@ -33,11 +33,21 @@ def required_keys(config: Config) -> list[str]:
 
 
 def cost_lines(config: Config) -> list[str]:
+    credits = config.serper_credits_per_call
+    per_credit = config.serper_usd_per_credit
+    call_usd = config.serper_usd_per_call
     return [
-        "Expected cost per search (estimates, from the APP_*_USD settings):",
-        "  Anthropic: about $0.01 or less (two small-model calls: parse, then rank)",
-        f"  Serper: 1 call, 2 if fewer than 24 results survive the filters "
-        f"(about ${config.serper_usd_per_query:.4f} each)",
+        "Expected cost (estimates, from the APP_*_USD and APP_SERPER_* settings):",
+        f"  Serper bills {credits} credits per call at ${per_credit:.4f} a credit "
+        f"(${call_usd:.4f} a call).",
+        "  Search: 1 call ("
+        f"{credits} credits, ${call_usd:.4f}), or 2 if fewer than 24 results survive "
+        f"({2 * credits} credits, ${2 * call_usd:.4f}); Anthropic about $0.01 or less "
+        "(parse the request, rank the pool).",
+        "  Shop Again: up to 3 Serper pages "
+        f"({3 * credits} credits, ${3 * call_usd:.4f}); Anthropic about $0.01 or less "
+        "(update the preference profile, rank); at most "
+        f"{config.shop_agains_per_session} per session.",
         f"  Link lookups: none during a search. Each Open or Love runs one SerpApi lookup "
         f"(about ${config.serpapi_usd_per_search:.3f}), at most {config.shop_lookups_per_session} "
         "per session, never twice for the same result.",

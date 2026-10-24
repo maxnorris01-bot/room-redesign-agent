@@ -10,16 +10,23 @@ The product has two modes. **Shop Mode** comes first; **Redesign Mode** follows.
 |---|---|---|
 | Input | A text request ("modern couches under $1000") | A room photo, preferences |
 | Output | A browsable grid of real products; the visitor rates each love, like or dislike with an optional comment | A furniture list and a photo-real render of the picks in the room |
-| Status | Stage 1 shipped (below) | Not started as a mode; the pipeline in "Product" below exists and is kept |
+| Status | Stages 1 and 2 shipped (below) | Not started as a mode; the pipeline in "Product" below exists and is kept |
 
-**Shipped in Shop Mode stage 1:** request parsing (one small-model call into a typed query: search text,
+**Shipped in Shop Mode stage 1 (ADR 0012):** request parsing (one small-model call into a typed query: search text,
 category, price range, style, material, must-have and avoid terms); Serper shopping search (page 2 only
 when fewer than 24 results survive); hard filters for price and category, dedupe, at most 4 results per
 seller; an id-only ranking against the soft preferences; the top 24 with size hints; lazy retailer-link
 lookups (only on Open or Love, at most 12 per session, never twice); JSON sessions under `shop-data/`
 holding every search, every result shown, every rating and comment, and every resolved link; a local web
-page (127.0.0.1 only). **Later:** Shop Again (uses the ratings and comments), an eval of about 12 prompts,
-deployment as a portfolio-site tab, then Redesign Mode. The **2D room plan is dropped from the product**
+page (127.0.0.1 only).
+
+**Shipped in stage 2:** Shop Again (one small-model call builds a preference profile from the ratings and
+comments, shown as chips the visitor can delete; a fresh set of up to 24 results that excludes everything
+already seen, ranked with the profile, from up to 3 Serper pages, 10 per session); a Saved panel (loved and
+liked results from every search, re-ratable, remembered open or closed); Start over; Serper cost counted
+in credits; a loading state and a retry on errors.
+
+**Later:** an eval of about 12 prompts (stage 3), deployment as a portfolio-site tab, then Redesign Mode. The **2D room plan is dropped from the product**
 (ADR 0012); step 2 of "Product" below is superseded, and the plan code survives only in the developer run
 report.
 
@@ -94,8 +101,10 @@ a developer tool, not the product UI.
 
 `make shop` starts the page in mock mode (fixture results, no network, no key) on
 `http://127.0.0.1:8765/`; stop it with Ctrl-C. `make shop-live` does the same with real Anthropic,
-Serper and SerpApi calls and prints the expected cost per search first (Anthropic about $0.01 or less,
-Serper 1 or 2 calls; a SerpApi lookup only on Open or Love, at most 12 per session). Sessions are saved
+Serper and SerpApi calls and prints the expected cost first: a search is 1 or 2 Serper calls (2 credits
+each, about $0.001 a credit) plus about $0.01 or less of Anthropic; a Shop Again is up to 3 Serper calls
+(6 credits) plus a preference and a rank call; a SerpApi lookup runs only on Open or Love, at most 12 per
+session. Sessions are saved
 in `shop-data/` (gitignored). `make shop-check` drives the page in a headless browser in mock mode and
 writes screenshots to `spike-output/shop-screenshots/`. The server listens on 127.0.0.1 only and
 sends a strict Content Security Policy.

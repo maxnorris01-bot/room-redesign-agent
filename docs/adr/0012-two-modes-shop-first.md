@@ -22,12 +22,9 @@ pipeline stays in the repo, unchanged and unused by Shop Mode.
 
 ## Decision (proposed)
 
-**1. The 2D plan is dropped from the product.** The owner decided this; the reasoning below is the
-reasoning I could find in the repo, for the owner to confirm. The plan is drawn from perception's rough
-positions and sizes, and perception varies between runs on the same photo (`docs/todo.md`: "Perception
-variance across runs"), so the plan is a confident-looking drawing of uncertain data. The photo-real
-render (ADR 0011) answers the same question, "how would this look in my room", directly, so a plan beside
-it is a second and weaker answer. Shop Mode has no room at all. ADR 0011's "2D plan as the instant first
+**1. The 2D plan is dropped from the product.** The owner judged the 2D plan useless to visitors: the
+photo is the output. Shop Mode has no room at all, and the photo-real render (ADR 0011) is what a visitor
+wants to see in Redesign Mode. ADR 0011's "2D plan as the instant first
 view" no longer applies. The plan code (`plan_shapes` in `src/app/report.py`) stays as a developer
 tool in the run report; nothing in the product depends on it.
 
@@ -105,3 +102,31 @@ affiliate API). This is not legal advice.
   were not verified here (no live call).
 - Search results change between runs, so "seen" ids only approximate "do not show this again".
 - A per-session lookup cap of 12 and a per-session search cap of 50 are guesses.
+
+## Amendment, stage 2 (2026-10-24): Shop Again, Saved, cost accounting
+
+- **Preference profile.** After ratings exist, one small-model call (`shop_prefs.md` v1) reads the typed
+  request, every rated result with its comment, and the existing profile with its deleted entries, and
+  returns the complete updated profile: short likes and dislikes, and query adjustments. Comments are
+  read by the model, not matched to fixed tags. Code sanitizes the answer and holds the rules the model
+  is not trusted with: entries the visitor deleted are never added back (in likes, dislikes or
+  adjustment terms, by phrase or close variant); category and price floor never change; `price_max` may
+  only fall, by at most 20% of the typed cap, and only when the model gives a reason; lists are bounded.
+  A failed call keeps the earlier profile and still searches.
+- **Shop Again.** Adjusts the last typed query (never an earlier Shop Again's, so adjustments do not
+  stack), runs the stage 1 pipeline with exclusions (every result id shown in the session, and the
+  same listing under another id), fetches up to 3 Serper pages while fewer than 24 unseen results
+  survive (and stops at an empty page), ranks with `shop_rank.md` v2 (v1 kept for typed searches) which
+  also sees the profile and the loved, liked and disliked titles, and says "Only N new results found. Try
+  changing the request." when short. A seller with at least 2 dislikes and no love or like is ranked
+  last, not excluded. Cap: `APP_SHOP_AGAINS_PER_SESSION` (10, a guess).
+- **Saved** is derived from the ratings (loved and liked, all searches and Shop Agains) and the stored
+  results; nothing extra is stored. A re-rate to dislike, or a cleared rating, removes the result.
+- **Serper cost** is `calls x APP_SERPER_CREDITS_PER_CALL (2) x APP_SERPER_USD_PER_CREDIT (0.001)`: a
+  Shop Mode search of 2 calls is 4 credits, about $0.004. The stage 1 footer used a per-query figure
+  ($0.0006) that showed $0.0012 for 2 calls while the live search used 4 credits. The USD per credit is the owner's figure, not a
+  documented price. The room pipeline still uses `APP_SERPER_USD_PER_QUERY`.
+- **Per Shop Again (design):** up to 3 Serper calls (6 credits, about $0.006), one preference call and
+  one rank call (Anthropic about $0.01 or less; the mock bills fractions of a cent), no lookups.
+- **Not verified live:** that Serper accepts `page` 3, what the model does with real comments, and
+  whether "unseen" holds up when result sets are small or repeat the same listings.

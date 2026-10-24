@@ -80,6 +80,7 @@ class FilterCounts(BaseModel):
     duplicates: int = 0
     kept: int = 0  # pool size after the filters and dedupe
     seller_capped: int = 0  # removed from the ranked list by the per-seller cap
+    seen_excluded: int = 0  # Shop Again: already shown earlier in the session
 
 
 def result_id(product_id: str) -> str:
@@ -104,6 +105,47 @@ def clean_request(text: str) -> str:
     brackets dropped (they delimit the request in the prompt), bounded in length."""
     printable = "".join(c if c.isprintable() else " " for c in text).replace("<", " ")
     return " ".join(printable.replace(">", " ").split())[:MAX_REQUEST_CHARS]
+
+
+# ---- preference profile (Shop Again) ----------------------------------------------------------
+
+
+class QueryAdjustments(_Strict):
+    """How the profile would change the next search. Price and category are never changed here
+    except `price_max`, and only downward by a limited amount when a comment asks for it."""
+
+    search_text: str = Field(description="A revised short search phrase, or an empty string")
+    style_terms: list[str] = Field(description="Extra style words to prefer")
+    material_terms: list[str] = Field(description="Extra materials to prefer")
+    must_have: list[str] = Field(description="Extra features the shopper wants")
+    avoid: list[str] = Field(description="Extra things to avoid")
+    price_max: float | None = Field(description="A lower USD cap only if a comment asks, or null")
+    price_note: str = Field(description="Why the cap changed, or an empty string")
+
+
+class PreferenceProfile(_Strict):
+    """What the model returns: attribute phrases the shopper likes and dislikes, and how to adjust
+    the query. It is the complete updated profile, not a delta."""
+
+    likes: list[str] = Field(description="Short attribute phrases, e.g. 'boucle fabric'")
+    dislikes: list[str] = Field(description="Short attribute phrases, e.g. 'flimsy legs'")
+    query_adjustments: QueryAdjustments
+
+
+class StoredProfile(BaseModel):
+    """The profile as kept in the session: sanitized, with the entries the visitor deleted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    likes: list[str] = []
+    dislikes: list[str] = []
+    adjustments: QueryAdjustments = QueryAdjustments(
+        search_text="", style_terms=[], material_terms=[], must_have=[], avoid=[],
+        price_max=None, price_note="",
+    )  # fmt: skip
+    removed: list[str] = []  # normalized phrases the visitor deleted; never added back
+    updated_at: str = ""
+    rated_count: int = 0  # ratings the profile was built from
 
 
 def jsonable(model: BaseModel) -> dict[str, Any]:
