@@ -1,5 +1,5 @@
 .PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-standard-live \
-	eval-nightly eval-nightly-live spike spike-live report reports render render-live
+	eval-nightly eval-nightly-live spike spike-live report reports render render-live shop shop-live shop-check
  
 install:
 	uv sync
@@ -72,3 +72,18 @@ render:
 # product images in render-inputs/. The plan and its estimated cost print first; --max-usd is a hard stop.
 render-live:
 	APP_LLM_MODE=live uv run python scripts/render_spike.py --live $(ARGS)
+
+# Shop Mode (ADR 0012): a local product search page. Mock: fixture results, no network, no key.
+# Prints the URL; stop with Ctrl-C. Pass a port with ARGS='--port 9000'.
+shop:
+	APP_LLM_MODE=mock uv run python scripts/shop.py $(ARGS)
+
+# Costs real money (Anthropic, Serper, SerpApi); the script prints the expected cost per search first.
+shop-live:
+	APP_LLM_MODE=live uv run python scripts/shop.py $(ARGS)
+
+# Headless browser check in mock mode: starts and stops its own server, writes screenshots to
+# spike-output/shop-screenshots/. Playwright is supplied for this run only (not a project dependency);
+# it needs a Chromium headless shell already installed.
+shop-check:
+	APP_LLM_MODE=mock uv run --with playwright python scripts/shop_browser_check.py

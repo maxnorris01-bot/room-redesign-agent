@@ -106,9 +106,12 @@ class SearchProvider(Protocol):
     name: str
 
     def search(
-        self, query: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL
+        self, query: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL, page: int = 1
     ) -> list[SearchCandidate]:
-        """Return normalized results, best first. Raises `ProviderError`."""
+        """Return normalized results, best first. Raises `ProviderError`.
+
+        `page` is 1-based; a provider that cannot page returns an empty list for page 2 and up.
+        """
         ...
 
 
@@ -471,9 +474,11 @@ class SerperSearch(_HttpProvider):
     URL = "https://google.serper.dev/shopping"
 
     def search(
-        self, query: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL
+        self, query: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL, page: int = 1
     ) -> list[SearchCandidate]:
-        body = {"q": query, "gl": gl, "hl": hl}
+        body: dict[str, Any] = {"q": query, "gl": gl, "hl": hl}
+        if page > 1:  # page 1 is the default; the field is sent only when asked for
+            body["page"] = page
         headers = {"X-API-KEY": self._api_key, "Content-Type": "application/json"}
         data = self._request(lambda: self._client.post(self.URL, json=body, headers=headers))
         return parse_serper_search(data)
@@ -486,8 +491,10 @@ class SerpApiSearch(_HttpProvider):
     URL = "https://serpapi.com/search.json"
 
     def search(
-        self, query: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL
+        self, query: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL, page: int = 1
     ) -> list[SearchCandidate]:
+        if page > 1:  # paging this engine is not wired up (it uses `start`, unverified here)
+            return []
         params = {
             "engine": "google_shopping",
             "q": query,
@@ -560,8 +567,10 @@ class FixtureSearch:
         self._parser = parser
 
     def search(
-        self, query: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL
+        self, query: str, gl: str = DEFAULT_GL, hl: str = DEFAULT_HL, page: int = 1
     ) -> list[SearchCandidate]:
+        if page > 1:
+            return []
         self.queries.append(query)
         for prefix, (scaled_fixture, scale) in self._by_prefix.items():
             if query.lower().startswith(prefix):

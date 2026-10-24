@@ -1,0 +1,421 @@
+{
+ "searchParameters": {
+  "q": "synthetic coffee tables",
+  "type": "shopping",
+  "gl": "us"
+ },
+ "shopping": [
+  {
+   "title": "Modern Coffee Table with Storage Drawer 47\"W",
+   "source": "Wayfair",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000000013,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000000013.jpg",
+   "productId": "5100000000000000013",
+   "position": 1,
+   "price": "$615.45",
+   "rating": 3.9,
+   "ratingCount": 1022
+  },
+  {
+   "title": "Wood and Metal Coffee Table 2-Tier 43\"L",
+   "source": "West Elm",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000007932,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000007932.jpg",
+   "productId": "5100000000000007932",
+   "position": 2,
+   "price": "$352.51",
+   "rating": 4.8,
+   "ratingCount": 2041
+  },
+  {
+   "title": "Round Coffee Table Walnut Metal Legs 36\"",
+   "source": "Etsy",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000015851,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000015851.jpg",
+   "productId": "5100000000000015851",
+   "position": 3,
+   "price": "$127.21"
+  },
+  {
+   "title": "Lift Top Coffee Table with Hidden Storage 47.2\"",
+   "source": "Walmart",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000023770,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000023770.jpg",
+   "productId": "5100000000000023770",
+   "position": 4,
+   "price": "$388.92",
+   "rating": 4.4,
+   "ratingCount": 568
+  },
+  {
+   "title": "Glass Top Coffee Table Gold Frame 42\"",
+   "source": "Crate & Barrel",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000031689,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000031689.jpg",
+   "productId": "5100000000000031689",
+   "position": 5,
+   "price": "$651.69",
+   "rating": 4.8,
+   "ratingCount": 1148
+  },
+  {
+   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D",
+   "source": "IKEA",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000039608,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000039608.jpg",
+   "productId": "5100000000000039608",
+   "position": 6,
+   "price": "$571.54"
+  },
+  {
+   "title": "Nesting Coffee Table Set of 2 Marble Effect",
+   "source": "Home Depot",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000047527,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000047527.jpg",
+   "productId": "5100000000000047527",
+   "position": 7,
+   "rating": 4.9,
+   "ratingCount": 1566
+  },
+  {
+   "title": "Mid-Century Coffee Table Oak 44\" L",
+   "source": "Article",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000055446,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000055446.jpg",
+   "productId": "5100000000000055446",
+   "position": 8,
+   "price": "$749.99",
+   "rating": 4.0,
+   "ratingCount": 729
+  },
+  {
+   "title": "Farmhouse Coffee Table with Shelf 46\"",
+   "source": "Overstock",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000063365,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000063365.jpg",
+   "productId": "5100000000000063365",
+   "position": 9,
+   "price": "$177.42"
+  },
+  {
+   "title": "Rattan Coffee Table Boho Round 32\"",
+   "source": "Wayfair",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000071284,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000071284.jpg",
+   "productId": "5100000000000071284",
+   "position": 10,
+   "price": "$537.55",
+   "rating": 3.8,
+   "ratingCount": 754
+  },
+  {
+   "title": "Side Table Small End Table Metal 18\"",
+   "source": "West Elm",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000079203,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000079203.jpg",
+   "productId": "5100000000000079203",
+   "position": 11,
+   "price": "$256.55",
+   "rating": 3.8,
+   "ratingCount": 1724
+  },
+  {
+   "title": "Coffee Table Set 3-Piece with Ottomans",
+   "source": "Etsy",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000087122,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000087122.jpg",
+   "productId": "5100000000000087122",
+   "position": 12,
+   "price": "$449.56"
+  },
+  {
+   "title": "Modern Coffee Table with Storage Drawer 47\"W - Natural",
+   "source": "Walmart",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000095041,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000095041.jpg",
+   "productId": "5100000000000095041",
+   "position": 13,
+   "price": "$502.97",
+   "rating": 4.2,
+   "ratingCount": 522
+  },
+  {
+   "title": "Wood and Metal Coffee Table 2-Tier 43\"L - Natural",
+   "source": "Crate & Barrel",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000102960,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000102960.jpg",
+   "productId": "5100000000000102960",
+   "position": 14,
+   "price": "$560.25",
+   "rating": 4.4,
+   "ratingCount": 229
+  },
+  {
+   "title": "Round Coffee Table Walnut Metal Legs 36\" - Natural",
+   "source": "IKEA",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000110879,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000110879.jpg",
+   "productId": "5100000000000110879",
+   "position": 15,
+   "price": "$394.22"
+  },
+  {
+   "title": "Lift Top Coffee Table with Hidden Storage 47.2\" - Natural",
+   "source": "Home Depot",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000118798,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000118798.jpg",
+   "productId": "5100000000000118798",
+   "position": 16,
+   "price": "$688.40",
+   "rating": 4.8,
+   "ratingCount": 2298
+  },
+  {
+   "title": "Glass Top Coffee Table Gold Frame 42\" - Natural",
+   "source": "Article",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000126717,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000126717.jpg",
+   "productId": "5100000000000126717",
+   "position": 17,
+   "price": "$348.59",
+   "rating": 4.2,
+   "ratingCount": 432
+  },
+  {
+   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D - Natural",
+   "source": "Overstock",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000134636,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000134636.jpg",
+   "productId": "5100000000000134636",
+   "position": 18
+  },
+  {
+   "title": "Nesting Coffee Table Set of 2 Marble Effect - Natural",
+   "source": "Wayfair",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000142555,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000142555.jpg",
+   "productId": "5100000000000142555",
+   "position": 19,
+   "price": "$411.88",
+   "rating": 4.2,
+   "ratingCount": 788
+  },
+  {
+   "title": "Mid-Century Coffee Table Oak 44\" L - Natural",
+   "source": "West Elm",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000150474,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000150474.jpg",
+   "productId": "5100000000000150474",
+   "position": 20,
+   "price": "$117.82",
+   "rating": 4.0,
+   "ratingCount": 672
+  },
+  {
+   "title": "Farmhouse Coffee Table with Shelf 46\" - Natural",
+   "source": "Etsy",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000158393,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000158393.jpg",
+   "productId": "5100000000000158393",
+   "position": 21,
+   "price": "$148.05"
+  },
+  {
+   "title": "Rattan Coffee Table Boho Round 32\" - Natural",
+   "source": "Walmart",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000166312,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000166312.jpg",
+   "productId": "5100000000000166312",
+   "position": 22,
+   "price": "$496.52",
+   "rating": 3.9,
+   "ratingCount": 2329
+  },
+  {
+   "title": "Side Table Small End Table Metal 18\" - Natural",
+   "source": "Crate & Barrel",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000174231,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000174231.jpg",
+   "productId": "5100000000000174231",
+   "position": 23,
+   "price": "$177.40",
+   "rating": 3.9,
+   "ratingCount": 1497
+  },
+  {
+   "title": "Coffee Table Set 3-Piece with Ottomans - Natural",
+   "source": "IKEA",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000182150,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000182150.jpg",
+   "productId": "5100000000000182150",
+   "position": 24,
+   "price": "$505.75"
+  },
+  {
+   "title": "Modern Coffee Table with Storage Drawer 47\"W - Gray",
+   "source": "Home Depot",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000190069,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000190069.jpg",
+   "productId": "5100000000000190069",
+   "position": 25,
+   "price": "$119.92",
+   "rating": 4.0,
+   "ratingCount": 1549
+  },
+  {
+   "title": "Wood and Metal Coffee Table 2-Tier 43\"L - Gray",
+   "source": "Article",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000197988,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000197988.jpg",
+   "productId": "5100000000000197988",
+   "position": 26,
+   "price": "$175.47",
+   "rating": 4.1,
+   "ratingCount": 1430
+  },
+  {
+   "title": "Round Coffee Table Walnut Metal Legs 36\" - Gray",
+   "source": "Overstock",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000205907,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000205907.jpg",
+   "productId": "5100000000000205907",
+   "position": 27,
+   "price": "$497.62"
+  },
+  {
+   "title": "Lift Top Coffee Table with Hidden Storage 47.2\" - Gray",
+   "source": "Wayfair",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000213826,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000213826.jpg",
+   "productId": "5100000000000213826",
+   "position": 28,
+   "price": "$406.65",
+   "rating": 3.9,
+   "ratingCount": 2007
+  },
+  {
+   "title": "Glass Top Coffee Table Gold Frame 42\" - Gray",
+   "source": "West Elm",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000221745,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000221745.jpg",
+   "productId": "5100000000000221745",
+   "position": 29,
+   "price": "$775.10",
+   "rating": 4.3,
+   "ratingCount": 1989
+  },
+  {
+   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D - Gray",
+   "source": "Etsy",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000229664,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000229664.jpg",
+   "productId": "5100000000000229664",
+   "position": 30
+  },
+  {
+   "title": "Nesting Coffee Table Set of 2 Marble Effect - Gray",
+   "source": "Walmart",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000237583,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000237583.jpg",
+   "productId": "5100000000000237583",
+   "position": 31,
+   "price": "$291.42",
+   "rating": 4.0,
+   "ratingCount": 1411
+  },
+  {
+   "title": "Mid-Century Coffee Table Oak 44\" L - Gray",
+   "source": "Crate & Barrel",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000245502,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000245502.jpg",
+   "productId": "5100000000000245502",
+   "position": 32,
+   "price": "$595.65",
+   "rating": 4.3,
+   "ratingCount": 669
+  },
+  {
+   "title": "Farmhouse Coffee Table with Shelf 46\" - Gray",
+   "source": "IKEA",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000253421,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000253421.jpg",
+   "productId": "5100000000000253421",
+   "position": 33,
+   "price": "$436.60"
+  },
+  {
+   "title": "Rattan Coffee Table Boho Round 32\" - Gray",
+   "source": "Home Depot",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000261340,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000261340.jpg",
+   "productId": "5100000000000261340",
+   "position": 34,
+   "price": "$215.70",
+   "rating": 4.8,
+   "ratingCount": 1489
+  },
+  {
+   "title": "Side Table Small End Table Metal 18\" - Gray",
+   "source": "Article",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000269259,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000269259.jpg",
+   "productId": "5100000000000269259",
+   "position": 35,
+   "price": "$174.09",
+   "rating": 4.4,
+   "ratingCount": 118
+  },
+  {
+   "title": "Coffee Table Set 3-Piece with Ottomans - Gray",
+   "source": "Overstock",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000277178,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000277178.jpg",
+   "productId": "5100000000000277178",
+   "position": 36,
+   "price": "$608.28"
+  },
+  {
+   "title": "Modern Coffee Table with Storage Drawer 47\"W - Black",
+   "source": "Wayfair",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000285097,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000285097.jpg",
+   "productId": "5100000000000285097",
+   "position": 37,
+   "price": "$281.64",
+   "rating": 4.5,
+   "ratingCount": 380
+  },
+  {
+   "title": "Wood and Metal Coffee Table 2-Tier 43\"L - Black",
+   "source": "West Elm",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000293016,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000293016.jpg",
+   "productId": "5100000000000293016",
+   "position": 38,
+   "price": "$564.30",
+   "rating": 4.1,
+   "ratingCount": 1510
+  },
+  {
+   "title": "Round Coffee Table Walnut Metal Legs 36\" - Black",
+   "source": "Etsy",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000300935,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000300935.jpg",
+   "productId": "5100000000000300935",
+   "position": 39,
+   "price": "$714.86"
+  },
+  {
+   "title": "Lift Top Coffee Table with Hidden Storage 47.2\" - Black",
+   "source": "Walmart",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000308854,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000000308854.jpg",
+   "productId": "5100000000000308854",
+   "position": 40,
+   "price": "$322.54",
+   "rating": 4.0,
+   "ratingCount": 2226
+  }
+ ],
+ "credits": 2
+}

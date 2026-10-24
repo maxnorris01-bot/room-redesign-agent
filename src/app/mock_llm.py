@@ -194,6 +194,26 @@ def mock_retrieval_payload(slot: str) -> dict[str, Any]:
 MOCK_INVENTED_ID = "mock-invented-id"
 
 
+def _shop_mock_order(request_text: str, ids: list[str]) -> list[str]:
+    """Shop Mode mock ranking: results whose titles share words with the style, material and
+    must-have lines first (more shared words first), ties in list order; "Avoid" words sink."""
+
+    def words(label: str) -> set[str]:
+        found = re.search(rf"^{label}: (.*)$", request_text, flags=re.MULTILINE)
+        text = found.group(1) if found and found.group(1) != "none" else ""
+        return set(re.findall(r"[a-z]+", text.lower()))
+
+    want = words("Style") | words("Materials") | words("Must have")
+    avoid = words("Avoid")
+    titles = dict(re.findall(r"^- id: (\S+) \| (.*?) \| seller:", request_text, flags=re.MULTILINE))
+
+    def score(i: str) -> int:
+        title = set(re.findall(r"[a-z]+", titles.get(i, "").lower()))
+        return len(want & title) - 5 * len(avoid & title)
+
+    return sorted(ids, key=lambda i: -score(i))  # sorted is stable
+
+
 def mock_rank_payload(request_text: str) -> dict[str, Any]:
     """Finalists for a rank request: the first N real ids from its list, plus one invented id.
 
@@ -202,6 +222,8 @@ def mock_rank_payload(request_text: str) -> dict[str, Any]:
     ids = re.findall(r"^- id: (\S+) \|", request_text, flags=re.MULTILINE)
     match = re.search(r"Pick at most (\d+) finalists", request_text)
     n = int(match.group(1)) if match else 2
+    if request_text.startswith("Shopper request:"):  # Shop Mode: order by the soft preferences
+        ids = _shop_mock_order(request_text, ids)
     finalists = [{"id": i, "reason": "MOCK pick: first on the list"} for i in ids[:n]]
     finalists.append({"id": MOCK_INVENTED_ID, "reason": "MOCK: id not in the candidate list"})
     return {"finalists": finalists}
@@ -327,6 +349,92 @@ def mock_style_payload(request_text: str, *, v2: bool = True) -> dict[str, Any]:
     return {"items": items}
 
 
+# ---- Shop Mode: request parsing --------------------------------------------------------------
+
+
+def _sample(
+    search_text: str, category: str, price_min: float | None = None, price_max: float | None = None,
+    style: tuple[str, ...] = (), material: tuple[str, ...] = (), must: tuple[str, ...] = (),
+    avoid: tuple[str, ...] = (),
+) -> dict[str, Any]:  # fmt: skip
+    return {
+        "search_text": search_text, "category": category,
+        "price_min": price_min, "price_max": price_max,
+        "style_terms": list(style), "material_terms": list(material),
+        "must_have": list(must), "avoid": list(avoid),
+    }  # fmt: skip
+
+
+# What the mock "model" answers for known requests (lowercase, punctuation-free keys). Anything
+# else gets `_heuristic_shop_parse`. Mock output is not a measure of parse quality.
+MOCK_SHOP_PARSES: dict[str, dict[str, Any]] = {
+    "modern couches under 1000": _sample(
+        "modern couch", "couch", price_max=1000.0, style=("modern",)
+    ),
+    "coffee tables with a mix of wood and metal with storage": _sample(
+        "wood and metal coffee table with storage",
+        "coffee table",
+        material=("wood", "metal"),
+        must=("storage",),
+    ),
+    "boho curtains": _sample("boho curtains", "curtains", style=("boho",)),
+    "mid century walnut sideboard between 400 and 900": _sample(
+        "mid century walnut sideboard",
+        "sideboard",
+        400.0,
+        900.0,
+        style=("mid-century",),
+        material=("walnut",),
+    ),
+    "cozy velvet armchair no leather under 350": _sample(
+        "velvet armchair",
+        "armchair",
+        price_max=350.0,
+        style=("cozy",),
+        material=("velvet",),
+        avoid=("leather",),
+    ),
+    "brass floor lamp for a small bedroom": _sample(
+        "brass floor lamp", "floor lamp", material=("brass",), must=("small footprint",)
+    ),
+    "scandinavian dining table that seats 6 over 500": _sample(
+        "scandinavian dining table seats 6",
+        "dining table",
+        price_min=500.0,
+        style=("scandinavian",),
+        must=("seats 6",),
+    ),
+    "washable area rug for a kids room": _sample(
+        "washable area rug", "rug", must=("washable",), style=("playful",)
+    ),
+}
+
+
+def _norm_request(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9 ]+", " ", text.lower().replace("-", " ")).split())
+
+
+def _heuristic_shop_parse(request: str) -> dict[str, Any]:
+    """A crude parse for requests outside `MOCK_SHOP_PARSES`: the words as typed, plus a price."""
+    low = request.lower().replace(",", "")
+    under = re.search(r"(?:under|below|less than|max)\s*\$?(\d+)", low)
+    over = re.search(r"(?:over|above|at least|min)\s*\$?(\d+)", low)
+    words = re.sub(r"(?:under|below|less than|max|over|above|at least|min)\s*\$?\d+", " ", low)
+    text = " ".join(words.split()) or "furniture"
+    return _sample(
+        text,
+        text.split()[-1] if text.split() else "",
+        float(over.group(1)) if over else None,
+        float(under.group(1)) if under else None,
+    )
+
+
+def mock_shop_parse_payload(request_text: str) -> dict[str, Any]:
+    found = re.search(r"<request>(.*?)</request>", request_text, flags=re.DOTALL)
+    request = found.group(1) if found else request_text
+    return MOCK_SHOP_PARSES.get(_norm_request(request)) or _heuristic_shop_parse(request)
+
+
 def _request_text(kwargs: dict[str, Any]) -> str:
     content = kwargs["messages"][0]["content"]
     if isinstance(content, str):
@@ -395,6 +503,12 @@ class MockAnthropicClient:
                 ],
                 input_tokens=300 + 150 * images,
                 output_tokens=60,
+            )
+        if title == "ShopParse":
+            return response(
+                [text_block(mock_shop_parse_payload(_request_text(kwargs)))],
+                input_tokens=350,
+                output_tokens=90,
             )
         if title == "RenderLocateOutput":
             slots = [
