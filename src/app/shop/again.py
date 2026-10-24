@@ -4,7 +4,9 @@ One preference call updates the profile (`app.shop.prefs`), the typed query is a
 the stage 1 pipeline runs again with exclusions: everything already shown in the session (any
 search, so every disliked item too), and the same listing under another id. Sellers with at least
 two dislikes and no love or like are ranked last, not excluded. Hard filters are the typed query's.
-The rank call (prompt shop_rank v2) also sees the profile and the loved, liked and disliked titles.
+The rank call (prompt shop_rank v4) also sees the profile (converged and open dimensions, price)
+and the loved, liked and disliked titles; the final list is then held to the diversity and seller
+limits in `search.build_results`.
 """
 
 from __future__ import annotations
@@ -13,12 +15,13 @@ import time
 
 from app.config import Config
 from app.llm import Budget
+from app.shop.decide import DIMENSIONS
 from app.shop.models import ShopQuery, StoredProfile
 from app.shop.prefs import (
     alignment_counts,
     apply_adjustments,
+    build_phrasings,
     build_profile,
-    build_queries,
     seller_name,
 )
 from app.shop.search import (
@@ -55,32 +58,61 @@ def pages_fetched(session: Session) -> dict[str, int]:
 
 
 def again_context(
-    session: Session, profile: StoredProfile, config: Config, queries: list[str]
+    session: Session,
+    profile: StoredProfile,
+    config: Config,
+    queries: list[str],
+    dropped: list[str] | None = None,
 ) -> AgainContext:
-    """Exclusions, seller rules, the profile (stated, inferred, guesses) and the extra phrasings."""
+    """Exclusions, seller rules, the profile (stated, converged, open, guesses), the phrasings.
+
+    Only converged entries press on search and ranking. Open dimensions and a mixed price are passed
+    to the ranker as "keep mixed" and "no signal", and the dimensions the final list must not let
+    one value dominate are the open ones plus shape and material when they have not converged.
+    """
     seen = session.results
     rows = rated_results(session)
-    seller = next((e for e in profile.inferred if e.attr_kind == "seller"), None)
-    band = next((e for e in profile.inferred if e.attr_kind == "price_band"), None)
+    inferred = profile.inferred
+    seller = next((e for e in inferred if e.attr_kind == "seller"), None)
+    price = next((e for e in inferred if e.attr_kind in ("price_band", "price_mixed")), None)
+    converged = {
+        e.dimension: e.values[0]
+        for e in inferred
+        if e.polarity == "like"
+        and e.status == "converged"
+        and e.dimension in DIMENSIONS
+        and e.values
+    }
+    open_dims = {e.dimension: list(e.values) for e in inferred if e.status == "open"}
+    guard = list(
+        dict.fromkeys([*open_dims, *[d for d in ("shape", "material") if d not in converged]])
+    )
+    price_line = ""
+    if price is not None:
+        price_line = f"mixed ({price.detail})" if price.status == "mixed" else price.text
     return AgainContext(
         exclude_ids=set(seen),
         exclude_title_keys={normalized_title_key(r.title, r.seller) for r in seen.values()},
         deprioritize_sellers=sellers_to_deprioritize(session),
         affinity_sellers={seller_key(seller_name(seller))} if seller is not None else set(),
+        pinned_sellers=set(profile.pinned_sellers),
+        guard_dims=guard,
+        converged=converged,
+        open_dims=open_dims,
+        price_line=price_line,
         likes=list(profile.likes),
         dislikes=list(profile.dislikes),
         inferred_likes=[
-            e.text
-            for e in profile.inferred
-            if e.polarity == "like" and e.attr_kind != "price_band" and e.attr_kind != "seller"
+            e.text for e in inferred if e.polarity == "like" and e.status == "converged"
         ],
-        inferred_dislikes=[e.text for e in profile.inferred if e.polarity == "dislike"],
+        inferred_dislikes=[e.text for e in inferred if e.polarity == "dislike"],
         guesses=list(profile.guesses),
         seller_affinity=seller_name(seller) if seller is not None else "",
-        price_band=band.text if band is not None else "",
+        price_band=price.text if price is not None else "",
         more_like=[(r["result"], r["rating"]) for r in rows if r["rating"] in ("love", "like")],
         less_like=[r["result"] for r in rows if r["rating"] == "dislike"],
         extra_queries=queries[1:],
+        dropped_phrasings=list(dropped or []),
         max_calls=config.shop_again_max_serper_calls,
         skip_pages=pages_fetched(session),
     )
@@ -109,10 +141,11 @@ def run_shop_again(
     if warning:
         warnings.append(warning)
     query = apply_adjustments(base, profile)
-    queries = build_queries(base, profile, query)[: config.shop_again_max_serper_calls]
+    queries, dropped = build_phrasings(base, profile, query, config.shop_again_max_serper_calls)
     outcome = run_query(
         query, search, config, budget, warnings, started,
-        again_context(session, profile, config, queries),
+        again_context(session, profile, config, queries, dropped),
     )  # fmt: skip
+    outcome.display_query = base  # the request chips keep showing only what the parser read
     outcome.alignment = alignment_counts(outcome.results, profile)
     return outcome, profile, query

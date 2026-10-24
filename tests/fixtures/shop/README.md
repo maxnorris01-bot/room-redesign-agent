@@ -15,3 +15,12 @@ results, so a typed search can show them, and twelve sit at the end (past the 80
 search phrased with the seller's name or its materials brings up (the mock search engine in
 `app.shop.providers` boosts them for such queries). A mock session that loves two of the early ones
 therefore shows a seller affinity, an upper price band and more matching results in a Shop Again.
+
+Stage 2c: the coffee-table fixture is written to show both of the owner's cases. Its four early premium
+(Hartwell & Co) items are a round walnut drum, a round brushed brass drum, a rectangular wood and black
+metal lift-top and a rectangular walnut with drawers ($699 to $899); the other 100 base items cycle
+round, rectangular, oval, square and unspecified shapes, walnut, oak, black steel, brushed brass, marble
+and glass, 12 sellers and prices from about $140 to $900. Hartwell & Co has 40 items in all (36 past the
+80th), none above $900. The mock search engine puts the seller's items first for a query that names it or
+its materials, and items with a named shape first for a query that names a shape.
+

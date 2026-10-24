@@ -206,13 +206,14 @@ def _shop_mock_order(request_text: str, ids: list[str]) -> list[str]:
         text = found.group(1) if found and found.group(1) != "none" else ""
         return set(re.findall(r"[a-z]+", text.lower()))
 
-    want = (
-        words("Style")
-        | words("Materials")
-        | words("Must have")
-        | words(r"Profile likes[^:\n]*")
-        | words(r"Inferred likes[^:\n]*")
-    )
+    want = words("Style") | words("Materials") | words("Must have") | words(r"Profile likes[^:\n]*")
+    converged = words(r"Converged preferences[^:\n]*") - {
+        "shape",
+        "material",
+        "finish",
+        "color",
+        "frame",
+    }
     avoid = words("Avoid") | words(r"Profile dislikes[^:\n]*") | words(r"Inferred dislikes")
     if "dark" in avoid:  # "too dark" in a profile: the mock reads it as these colours
         avoid |= {"black", "navy", "charcoal"}
@@ -236,7 +237,7 @@ def _shop_mock_order(request_text: str, ids: list[str]) -> list[str]:
     def score(i: str) -> int:
         _, title, who, price = rows.get(i, (i, "", "", ""))
         got = set(re.findall(r"[a-z]+", title.lower()))
-        points = len(want & got) - 5 * len(avoid & got)
+        points = len(want & got) + 4 * len(converged & got) - 5 * len(avoid & got)
         if favoured and who.strip().lower() == favoured:
             points += 3
         if low is not None and high is not None and price.replace(".", "").isdigit():
@@ -659,6 +660,59 @@ def mock_prefs_v2_payload(request_text: str) -> dict[str, Any]:
     }  # fmt: skip
 
 
+def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
+    """A v3 answer: per-item tags read from title keywords (the shopper's own words from comments,
+    parser-guess contradictions and price asks come from the v2 mock). It describes only; it never
+    says what the shopper prefers. A visual cue ("visible grain") is added only for an item that
+    came with an image, so a run with no images differs from one with them."""
+    from app.shop.decide import lexicon_match
+
+    base = mock_prefs_v2_payload(request_text)
+    items: list[dict[str, Any]] = []
+    for line in request_text.splitlines():
+        m = _PREF_ROW_V2.match(line)
+        if not m:
+            continue
+        _rating, rid, title, _price, _seller, _comment, image = m.groups()
+        low = title.lower()
+
+        def raw(dim: str, text: str = title) -> str | None:
+            found = lexicon_match(dim, text)
+            return found[1] if found else None
+
+        cues: list[str] = []
+        if "solid" in low:
+            cues.append("solid wood")
+        if "brushed brass" in low:
+            cues.append("brushed finish")
+        if "marble" in low:
+            cues.append("stone top")
+        if image != "image none" and ("walnut" in low or "oak" in low or "wood" in low):
+            cues.append("visible grain")
+        shape = raw("shape")
+        canon = lexicon_match("shape", title)
+        items.append(
+            {
+                "id": rid,
+                "shape": canon[0] if canon and shape else None,
+                "material": raw("material"),
+                "color_finish": raw("color_finish"),
+                "frame_or_legs": raw("frame_or_legs"),
+                "frame_color": raw("frame_color"),
+                "style": raw("style"),
+                "size_class": None,
+                "quality_cues": cues,
+            }
+        )
+    return {
+        "items": items,
+        "likes": base["likes"],
+        "dislikes": base["dislikes"],
+        "contradicted_guesses": base["contradicted_guesses"],
+        "query_adjustments": base["query_adjustments"],
+    }
+
+
 def _request_text(kwargs: dict[str, Any]) -> str:
     content = kwargs["messages"][0]["content"]
     if isinstance(content, str):
@@ -727,6 +781,18 @@ class MockAnthropicClient:
                 ],
                 input_tokens=300 + 150 * images,
                 output_tokens=60,
+            )
+        if title == "PreferenceTags":
+            content = kwargs["messages"][0]["content"]
+            n_images = (
+                0
+                if isinstance(content, str)
+                else sum(1 for b in content if isinstance(b, dict) and b.get("type") == "image")
+            )
+            return response(
+                [text_block(mock_prefs_v3_payload(_request_text(kwargs)))],
+                input_tokens=1200 + 90 * n_images,
+                output_tokens=500,
             )
         if title == "PreferenceProfileV2":
             images = (

@@ -45,14 +45,16 @@ def _shop_fixture(name: str) -> list[SearchCandidate]:
 
 PREMIUM_SELLER = "Hartwell & Co"  # the invented seller in the fixtures (see their README)
 BOOST_WORDS = ("hartwell", "brass", "brushed", "walnut", "solid")
+SHAPE_WORDS = ("round", "oval", "rectangular", "square")
 
 
 class ShopFixtureSearch:
     """Fake Serper for Shop Mode: pages of 20 synthetic results per topic.
 
     A query that names the invented premium seller or one of its materials (`BOOST_WORDS`) gets that
-    seller's results first, the way a more specific real query surfaces more specific products;
-    any other query sees the fixture in its own order. Results are never fetched or real.
+    seller's results first, and a query that names a shape gets the products with that shape first,
+    the way a more specific real query surfaces more specific products; any other query sees the
+    fixture in its own order. Results are never fetched or real.
     """
 
     name = "serper"
@@ -69,8 +71,18 @@ class ShopFixtureSearch:
             f for words, f in FIXTURE_BY_KEYWORD if not words or any(w in lowered for w in words)
         )
         everything = _shop_fixture(fixture)
-        if any(w in lowered for w in BOOST_WORDS):
-            everything = sorted(everything, key=lambda c: c.seller != PREMIUM_SELLER)  # stable
+        boosted = any(w in lowered for w in BOOST_WORDS)
+        shapes = [w for w in SHAPE_WORDS if w in lowered]
+        if boosted or shapes:  # a more specific query surfaces more specific products (stable sort)
+            everything = sorted(
+                everything,
+                key=lambda c: (
+                    -(
+                        (2 if boosted and c.seller == PREMIUM_SELLER else 0)
+                        + (1 if any(w in c.title.lower() for w in shapes) else 0)
+                    )
+                ),
+            )
         window = everything[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
         return [replace(c, title=FIXTURE_TITLE_PREFIX + c.title) for c in window]
 

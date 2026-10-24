@@ -28,20 +28,32 @@ import math
 import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from typing import Any
 
 from app.images import PreparedImage
 from app.llm import Budget, LLMOutputError, complete
 from app.prompts import load_prompt
 from app.schemas import SchemaError, parse_model, to_output_schema
+from app.shop.decide import (
+    DIMENSION_LABELS,
+    PHRASE_DIMS,
+    decide,
+    lexicon_value,
+    phrase_word,
+    typed_terms_of,
+)
+from app.shop.decide import (
+    seller_key as decide_seller_key,
+)
 from app.shop.models import (
     MAX_SEARCH_TEXT_CHARS,
-    MAX_TERM_CHARS,
     MAX_TERMS,
     ImageReport,
     InferredAttribute,
+    ItemTags,
     PreferenceProfile,
     PreferenceProfileV2,
+    PreferenceTags,
     ProfileEntry,
     QueryAdjustments,
     ShopQuery,
@@ -50,6 +62,14 @@ from app.shop.models import (
 )
 from app.shop.parse import strip_price_words
 from app.shop.store import Session, now_iso, rated_results
+from app.shop.textutil import (
+    Rated,
+    mentions,
+    normalize_phrase,
+    phrases_match,
+    sig_words,
+    text_matches,
+)
 from app.shopping_retrieval import seller_key
 from app.thumbnails import Thumbnailer, fetch_traced
 
@@ -69,21 +89,6 @@ UPPER_PERCENTILE, LOWER_PERCENTILE = (
 )  # price band edges within the shown prices. A guess.
 MIN_SHOWN_PRICES = 8  # fewest shown prices before a price band is worked out
 MAX_QUERIES = 3
-STOP_WORDS = frozenset({"with", "and", "the", "for", "from", "that", "this", "piece", "pieces"})
-MIN_CONTAIN_CHARS = 4  # a shorter phrase only matches a removed entry exactly
-
-
-def normalize_phrase(text: str) -> str:
-    cleaned = "".join(c if c.isalnum() or c in " -'" else " " for c in text.lower())
-    return " ".join(cleaned.split())[:MAX_TERM_CHARS].strip(" -'")
-
-
-def phrases_match(a: str, b: str) -> bool:
-    """Same phrase, or one contains the other (both at least `MIN_CONTAIN_CHARS` long)."""
-    if a == b:
-        return True
-    shorter, longer = sorted((a, b), key=len)
-    return len(shorter) >= MIN_CONTAIN_CHARS and shorter in longer
 
 
 def is_removed(phrase: str, removed: list[str]) -> bool:
@@ -154,42 +159,6 @@ def merge_profile(
         updated_at=now_iso(),
         rated_count=rated_count,
     )
-
-
-def sig_words(text: str) -> list[str]:
-    """The words of a phrase that carry meaning: three letters or more, not filler."""
-    return [
-        w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) >= 3 and w not in STOP_WORDS
-    ]
-
-
-def text_matches(phrase: str, text: str) -> bool:
-    """Whether `text` (a title) shows `phrase`: all its significant words, or both when it has more
-    than two. "brushed brass" needs both words; "walnut" needs the one."""
-    words = sig_words(phrase)
-    if not words:
-        return False
-    lowered = text.lower()
-    return sum(1 for w in words if w in lowered) >= min(2, len(words))
-
-
-def mentions(phrase: str, comment: str) -> bool:
-    """Whether a comment names (any significant word of) the phrase."""
-    lowered = comment.lower()
-    return any(w in lowered for w in sig_words(phrase))
-
-
-@dataclass(frozen=True)
-class Rated:
-    """A rated result as the inference rules see it."""
-
-    id: str
-    rating: str  # love | like | dislike
-    comment: str
-    title: str
-    price: float | None
-    seller: str
-    thumbnail_url: str
 
 
 def rated_map(session: Session) -> dict[str, Rated]:
@@ -471,6 +440,127 @@ def merge_profile_v2(
     )
 
 
+def _guess_state(
+    previous: StoredProfile,
+    base: ShopQuery,
+    contradicted_by_model: list[Any],
+    rated: dict[str, Rated],
+    removed: list[str],
+) -> tuple[list[str], list[str]]:
+    """(guesses still shown, guesses dropped so far): a parser style term the typed request does not
+    contain is a guess; it is dropped when the model reports a loved or liked item that contradicts
+    it and no loved or liked title shows it."""
+    positive_titles = [r.title for r in rated.values() if r.rating in ("love", "like")]
+    contradicted: list[str] = []
+    for c in contradicted_by_model:
+        key = _short(c.text)
+        ids = [i for i in c.evidence if i in rated and rated[i].rating in ("love", "like")]
+        if key and ids and not any(text_matches(key, t) for t in positive_titles):
+            contradicted.append(key)
+    guesses: list[str] = []
+    dropped: list[str] = list(previous.dropped_guesses)
+    for g in guess_style_terms(base):
+        key = _short(g)
+        if is_removed(key, removed):
+            continue
+        if any(phrases_match(key, c) for c in contradicted):
+            if key not in dropped:
+                dropped.append(key)
+            continue
+        if key in dropped:
+            continue
+        guesses.append(key)
+    return guesses, dropped
+
+
+def merge_profile_v3(
+    existing: StoredProfile | None,
+    proposed: PreferenceTags | None,
+    session: Session,
+    base: ShopQuery,
+    images: ImageReport,
+    image_ids: set[str],
+) -> StoredProfile:
+    """The stored profile after one v3 preference call: the model's per-item tags go to
+    `app.shop.decide`, which decides every inferred entry from ALL the session's ratings. The
+    shopper's own words (stated likes and dislikes, a price ask from a comment) come from the model
+    as before and keep full weight. If the call failed (`proposed=None`) the entries are still
+    decided, from the title lexicon alone, and the stated part is kept as it was."""
+    previous = existing or StoredProfile()
+    rated_count = sum(1 for rec in session.ratings.values() if rec.rating is not None)
+    rated = rated_map(session)
+    if proposed is None:
+        stated = previous
+        tags: dict[str, ItemTags] = {}
+        model_guesses: list[Any] = []
+    else:
+        stated = merge_profile(
+            previous,
+            PreferenceProfile(
+                likes=proposed.likes,
+                dislikes=proposed.dislikes,
+                query_adjustments=proposed.query_adjustments,
+            ),
+            base,
+            rated_count,
+        )
+        tags = {t.id: t for t in proposed.items if t.id in rated}
+        model_guesses = list(proposed.contradicted_guesses)
+    removed = stated.removed
+    decisions = decide(
+        rated, tags, list(session.results.values()), removed, typed_terms_of(base), image_ids
+    )
+    pinned = list(previous.pinned_sellers)
+    entries = [
+        e.model_copy(update={"pinned": decide_seller_key(seller_name(e)) in pinned})
+        if e.attr_kind == "seller"
+        else e
+        for e in decisions.entries
+        if not (e.polarity == "like" and e.text in stated.likes and e.status == "converged")
+        and not (e.polarity == "dislike" and e.text in stated.dislikes)
+    ]  # a phrase the shopper said is shown once, as theirs
+    guesses, dropped = _guess_state(previous, base, model_guesses, rated, removed)
+    return stated.model_copy(
+        update={
+            "inferred": entries,
+            "guesses": guesses,
+            "dropped_guesses": dropped,
+            "images": images,
+            "pinned_sellers": pinned,
+            "rated_count": rated_count,
+        }
+    )
+
+
+def with_pins(profile: StoredProfile, pinned: list[str]) -> StoredProfile:
+    """The profile with `pinned` (seller keys) as its pins and the seller chip flagged to match."""
+    entries = [
+        e.model_copy(update={"pinned": decide_seller_key(seller_name(e)) in pinned})
+        if e.attr_kind == "seller"
+        else e
+        for e in profile.inferred
+    ]
+    return profile.model_copy(update={"pinned_sellers": list(pinned), "inferred": entries})
+
+
+def pin_seller(profile: StoredProfile, phrase: str) -> StoredProfile | None:
+    """Toggle the pin on the seller chip named by `phrase` (None: no such chip). A pinned seller
+    may take up to `SELLER_PINNED_SHARE` of a batch instead of `SELLER_MAX_SHARE`."""
+    key = _short(phrase)
+    chip = next(
+        (e for e in profile.inferred if e.attr_kind == "seller" and _short(e.text) == key), None
+    )
+    if chip is None:
+        return None
+    seller = decide_seller_key(seller_name(chip))
+    pinned = (
+        [k for k in profile.pinned_sellers if k != seller]
+        if seller in profile.pinned_sellers
+        else [*profile.pinned_sellers, seller]
+    )
+    return with_pins(profile, pinned)
+
+
 # ---- editing the profile ----
 
 
@@ -589,39 +679,108 @@ def _product_noun(base: ShopQuery) -> str:
     return noun.strip()
 
 
-def build_queries(base: ShopQuery, profile: StoredProfile, adjusted: ShopQuery) -> list[str]:
-    """Up to three search phrasings for a Shop Again, in order:
+def converged_entries(profile: StoredProfile) -> list[ProfileEntry]:
+    return [e for e in profile.inferred if e.polarity == "like" and e.status == "converged"]
 
-      1. the typed query as adjusted by the profile;
-      2. the product plus the strongest inferred material, finish and shape likes;
-      3. when a seller affinity exists, the seller's name plus the product and its first must-have.
 
-    Duplicates (after normalizing) are dropped, so a profile with nothing inferred gives one phrase.
-    """
-    product = _product_noun(base)
-    out: list[str] = [adjusted.search_text]
-    likes = [
+def open_dimension(profile: StoredProfile) -> ProfileEntry | None:
+    """The one open dimension that search varies: among the open ones that have search words, the
+    one with the most like mass (a tie goes to the earlier dimension: shape first)."""
+    opens = [
         e
         for e in profile.inferred
-        if e.polarity == "like" and e.attr_kind in ("material", "color_finish", "shape")
+        if e.status == "open" and e.dimension in PHRASE_DIMS and len(e.values) >= 2
     ]
-    likes.sort(key=lambda e: -e.weight)
-    if likes and product:
-        words = " ".join(e.text for e in likes[:3])
-        out.append(f"{product} {words}")
+    opens.sort(key=lambda e: (-e.weight, PHRASE_DIMS.index(e.dimension)))
+    return opens[0] if opens else None
+
+
+def build_phrasings(
+    base: ShopQuery, profile: StoredProfile, adjusted: ShopQuery, max_calls: int = MAX_QUERIES
+) -> tuple[list[str], list[str]]:
+    """The search phrasings for a Shop Again and the ones dropped to fit `max_calls` (one Serper
+    call each, at least). Pressure comes only from what converged; an open dimension exerts none:
+
+      * the typed query as adjusted by the shopper's comments (never carries a learned value or the
+        seller's name, so look-alikes from anywhere appear);
+      * one phrasing per value of the open dimension (shape: round, rectangular), each with the
+        converged material, finish and legs, never the same open value in every phrasing;
+      * the seller's name plus the product, when a seller affinity converged;
+      * the product plus the strongest converged material, finish and shape words.
+
+    Priority when the cap bites: typed, seller, the open values (kept or dropped together, so one
+    value is never favoured over another; each carries the converged words), and last the converged
+    words alone (only run when there are no open values, or when the open values were dropped).
+    Output order is: typed, converged words, seller, open values. Duplicates after normalizing are
+    dropped.
+    """
+    product = _product_noun(base)
+    converged = [
+        e
+        for e in converged_entries(profile)
+        if e.dimension in PHRASE_DIMS and e.status == "converged"
+    ]
+    converged.sort(key=lambda e: (-e.weight, e.text))
+    open_entry = open_dimension(profile)
     seller = next((e for e in profile.inferred if e.attr_kind == "seller"), None)
-    if seller is not None and product:
-        extra = adjusted.must_have[0] if adjusted.must_have else ""
-        out.append(f"{seller_name(seller)} {product} {extra}")
+
+    def clean(text: str) -> str:
+        return " ".join(strip_price_words(text).split())[:MAX_SEARCH_TEXT_CHARS]
+
+    typed = clean(adjusted.search_text)
+    attrs = [e for e in converged if open_entry is None or e.dimension != open_entry.dimension]
+    attr_words = " ".join(phrase_word(e.dimension, e.values[0]) for e in attrs[:3])
+    attr_phrase = clean(f"{product} {attr_words}") if attrs and product else ""
+    seller_phrase = (
+        clean(
+            f"{seller_name(seller)} {product} {adjusted.must_have[0] if adjusted.must_have else ''}"
+        )
+        if seller is not None and product
+        else ""
+    )
+    open_phrases: list[str] = []
+    if open_entry is not None and product:
+        # each open value carries the converged words, so the pressure rides along
+        extras = " ".join(phrase_word(e.dimension, e.values[0]) for e in attrs[:3])
+        for value in open_entry.values[:3]:
+            open_phrases.append(
+                clean(f"{product} {phrase_word(open_entry.dimension, value)} {extras}")
+            )
+
+    # (priority, display position, texts); a lower priority number survives longer. The open values
+    # carry the converged words, so the standalone converged phrasing only runs when they do not.
+    slots: list[tuple[int, int, list[str]]] = [
+        (0, 0, [typed]),
+        (1, 2, [seller_phrase] if seller_phrase else []),
+        (2, 3, open_phrases),
+        (3, 1, [attr_phrase] if attr_phrase and not open_phrases else []),
+    ]
+    chosen: list[tuple[int, list[str]]] = []
+    dropped: list[str] = []
+    used = 0
+    open_dropped = False
     seen: set[str] = set()
-    queries: list[str] = []
-    for q in out:
-        text = " ".join(strip_price_words(q).split())[:MAX_SEARCH_TEXT_CHARS]
-        key = normalize_phrase(text)
-        if text and key not in seen:
-            seen.add(key)
-            queries.append(text)
-    return queries[:MAX_QUERIES]
+    for _, position, texts in sorted(slots):
+        fresh = [t for t in texts if t and normalize_phrase(t) not in seen]
+        if not fresh:
+            continue
+        if used + len(fresh) > max(1, max_calls):  # a group is kept whole or dropped whole
+            dropped.extend(fresh)
+            if texts is open_phrases:
+                open_dropped = True
+            continue
+        used += len(fresh)
+        seen.update(normalize_phrase(t) for t in fresh)
+        chosen.append((position, fresh))
+    if open_dropped and attr_phrase and used + 1 <= max(1, max_calls):
+        chosen.append((1, [attr_phrase]))  # the open values did not fit: the converged words alone
+    queries = [t for _, texts in sorted(chosen) for t in texts]
+    return queries, dropped
+
+
+def build_queries(base: ShopQuery, profile: StoredProfile, adjusted: ShopQuery) -> list[str]:
+    """`build_phrasings` without the cap on Serper calls."""
+    return build_phrasings(base, profile, adjusted, max_calls=10)[0]
 
 
 # ---- the summary line and the alignment measure ----
@@ -637,15 +796,20 @@ def profile_summary(profile: StoredProfile | None) -> str:
     """A plain sentence for the page, from the profile alone (no model call):
 
     "Looking for more brushed brass and wood and metal pieces from West Elm in the upper price
-    range, fewer too dark." Stated and inferred likes are joined; a seller affinity and a price
-    band add "from <seller>" and "in the <upper|lower> price range". Empty when there is nothing.
+    range, fewer too dark. Shape is open: showing both round and rectangular. Price is mixed."
+
+    Stated and converged inferred likes are joined; a seller affinity and a price band add "from
+    <seller>" and "in the <upper|lower> price range". An open dimension says it is open and which
+    values are shown; mixed price says so. Empty when there is nothing.
     """
     if profile is None:
         return ""
     inferred_likes = [
         e
         for e in profile.inferred
-        if e.polarity == "like" and e.attr_kind not in ("seller", "price_band")
+        if e.polarity == "like"
+        and e.status == "converged"
+        and e.attr_kind not in ("seller", "price_band", "price_mixed")
     ]
     likes = list(dict.fromkeys([*profile.likes, *[e.text for e in inferred_likes]]))[:4]
     dislikes = list(
@@ -668,25 +832,44 @@ def profile_summary(profile: StoredProfile | None) -> str:
     if dislikes:
         parts.append(f"fewer {_join(dislikes)}")
     text = f"Looking for {', '.join(parts)}." if parts else ""
+    for e in profile.inferred:
+        if e.status == "open" and e.values:
+            label = DIMENSION_LABELS.get(e.dimension, e.dimension.capitalize())
+            text += f" {label} is open: showing both {_join(e.values)}."
+    if any(e.status == "mixed" for e in profile.inferred):
+        text += " Price is mixed."
     if profile.adjustments.price_note:
-        text = f"{text} {profile.adjustments.price_note}".strip()
-    return text
+        text += f" {profile.adjustments.price_note}"
+    return text.strip()
 
 
 def alignment_counts(results: list[ShopResult], profile: StoredProfile | None) -> tuple[int, int]:
-    """(results that match, results): a match is at least one inferred like and no dislike.
+    """(results that match, results): a match is a converged inferred like and no dislike.
 
-    A result matches an inferred like when its title shows the phrase (`text_matches`), it comes
-    from the affinity seller, or its price is inside the price band. A result matches a dislike
-    when its title shows an inferred or stated dislike. Guess chips and stated likes do not count.
-    A profile with no inferred like matches nothing.
+    A result matches a converged like when its title shows the value (a lexicon value for a
+    dimension such as shape or material; the words of the phrase otherwise), it comes from the
+    affinity seller, or its price is inside the price band. It matches a dislike when its title
+    shows an inferred or stated dislike. Guess, open and mixed chips and stated likes do not
+    count. A profile with no converged like matches nothing.
     """
     if not results or profile is None:
         return 0, len(results)
-    likes = [e for e in profile.inferred if e.polarity == "like"]
+    likes = [e for e in profile.inferred if e.polarity == "like" and e.status == "converged"]
     if not likes:
         return 0, len(results)
-    dislikes = [*[e.text for e in profile.inferred if e.polarity == "dislike"], *profile.dislikes]
+    dislike_entries = [e for e in profile.inferred if e.polarity == "dislike"]
+
+    def shows(e: ProfileEntry, r: ShopResult) -> bool:
+        if e.dimension and e.values and e.attr_kind not in ("seller", "price_band"):
+            got = lexicon_value(e.dimension, r.title)
+            if got is not None or e.dimension in (
+                "shape",
+                "material",
+                "color_finish",
+                "frame_color",
+            ):
+                return got == e.values[0]
+        return text_matches(e.text, r.title)
 
     def matches_like(r: ShopResult) -> bool:
         for e in likes:
@@ -697,15 +880,16 @@ def alignment_counts(results: list[ShopResult], profile: StoredProfile | None) -
                 if r.price is not None and e.low is not None and e.high is not None:
                     if e.low <= r.price <= e.high:
                         return True
-            elif text_matches(e.text, r.title):
+            elif shows(e, r):
                 return True
         return False
 
-    hits = sum(
-        1
-        for r in results
-        if matches_like(r) and not any(text_matches(d, r.title) for d in dislikes)
-    )
+    def matches_dislike(r: ShopResult) -> bool:
+        return any(shows(e, r) for e in dislike_entries) or any(
+            text_matches(d, r.title) for d in profile.dislikes
+        )
+
+    hits = sum(1 for r in results if matches_like(r) and not matches_dislike(r))
     return hits, len(results)
 
 
@@ -827,11 +1011,12 @@ def build_profile(
     thumbnailer: Thumbnailer | None = None,
     fetcher: Callable[..., tuple[dict[str, PreparedImage], ImageReport]] = fetch_images,
 ) -> tuple[StoredProfile, str]:
-    """Update the session's profile from its ratings (prompt v2). Returns (profile, warning).
+    """Update the session's profile from its ratings (prompt v3). Returns (profile, warning).
 
-    Offered thumbnails are attached when they can be fetched; the rest go by title and the report
-    says so. An unusable model answer keeps the existing profile and says so. A budget error
-    propagates.
+    The model tags each rated item (with its thumbnail when it can be fetched) and reads the
+    comments; `merge_profile_v3` decides the preferences in code. An unusable model answer still
+    gives a profile: entries are decided from the title lexicon alone, the stated part is kept.
+    A budget error propagates.
     """
     config = budget.config
     rows = select_image_rows(session)
@@ -846,12 +1031,12 @@ def build_profile(
             user_text=prefs_user_text(session, base, numbers),
             budget=budget,
             max_tokens=PREFS_MAX_TOKENS,
-            schema=to_output_schema(PreferenceProfileV2),
+            schema=to_output_schema(PreferenceTags),
             images=[images[rid] for rid in ordered] or None,
             effort=config.effort_retrieval,
         )
-        proposed = parse_model(PreferenceProfileV2, completion.text, what="shop_prefs")
+        proposed = parse_model(PreferenceTags, completion.text, what="shop_prefs")
     except (LLMOutputError, SchemaError) as exc:
-        kept = merge_profile_v2(session.profile, None, session, base, report, set(images))
-        return kept, f"Could not update your preferences ({exc}); used the earlier ones."
-    return merge_profile_v2(session.profile, proposed, session, base, report, set(images)), ""
+        kept = merge_profile_v3(session.profile, None, session, base, report, set(images))
+        return kept, f"Could not read the items' details ({exc}); decided from titles alone."
+    return merge_profile_v3(session.profile, proposed, session, base, report, set(images)), ""

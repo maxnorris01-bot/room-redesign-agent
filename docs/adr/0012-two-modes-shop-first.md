@@ -184,3 +184,101 @@ to work with. Two loved West Elm tables shared a seller and a premium finish, no
 - **Not verified live:** Serper pages 3 and 4, how well the model reads real photos and titles, whether
   "premium" cues and seller affinity hold on real results, and the share of fresh results the extra
   phrasings really add.
+
+## Amendment, stage 2c (2026-10-24): the model describes, code decides
+
+**The failure.** After two or more Shop Agains on the owner's real ratings, the results leaned round. The
+owner's four loved items were all West Elm, $699 to $899, all with storage: a round walnut drum, a round
+brushed brass drum, a rectangular wood and black metal lift-top, and a rectangular walnut with drawers.
+The liked items (eight or more) spanned $140 to $800 across several sellers and both shapes. What they
+share is the seller, warm wood with dark or brass metal, clean modern lines and a premium finish, not a
+shape. The tool produced the like chip "round drum" and the dislike chip "rectangular with drawers", which
+contradicts a loved item and a liked item, and it wrote learned values ("warm walnut", "drum") into the
+request chips, which kept pushing round tables. Two causes: (1) the model decided what counted as a
+preference and over-read mixed likes, picking one value of a dimension; (2) an exposure feedback loop: a
+batch that is mostly round, rated, makes the next profile conclude "likes round" because round is what
+was shown.
+
+**The change.** The model now only describes each rated item along fixed dimensions (`shop_prefs.md` v3;
+v1 and v2 kept): shape, material, color or finish, frame or legs, frame color, style, size class, and
+quality cues, with the item's thumbnail when it can be fetched. It does not judge preferences. Its other
+output is unchanged: the shopper's own words from comments (stated likes and dislikes, a price ask) and
+parser guesses a loved item contradicts. `app.shop.decide` decides every inferred entry, from the tags of
+ALL the session's ratings on every Shop Again (no incremental drift; the same ratings in any order give the
+same profile; deleted chips stay deleted; a model failure still gives a profile, decided from titles alone):
+
+- **Exposure baseline.** How common each value is among everything shown in the session, by a small
+  title-keyword lexicon in code (no model call). A title with no keyword for a dimension is unknown and left
+  out. Style has a short lexicon; size class has none, so it has no baseline.
+- **Per dimension**, from the weighted like mass (loved 3, liked 1): *converged* when one value holds at
+  least 70% of the mass, at least 2 items support it (a loved item whose comment names it can be the
+  second) and its like share is at least 1.3 times its exposure share; *open* when two or more values each
+  hold at least 30% (a neutral chip; no pressure on search or ranking); else *none*.
+- **Dislikes** only when at least 2 disliked items share a value, no loved or liked item has it and the
+  lift test passes. One dislike only excludes that item. A seller is deprioritized only after 2 dislikes and
+  no love or like from it. Any inferred dislike chip is dropped when a loved or liked item has the value.
+- **Seller affinity**: stage 2b's rule (2 loved or liked, no dislike) plus the lift test against the
+  seller's share of what was shown.
+- **Price as a spread.** Mixed when the loved prices cluster in the upper third of the shown prices while
+  the liked prices span at least two thirds of the shown range: a neutral chip, no price pressure, loved
+  prices only a quality hint. If loved and liked prices together cluster, stage 2b's band rule applies.
+  The typed cap never changes.
+- **Quality cues** (phrases such as "solid wood") need at least 2 items and half the loved and liked items,
+  visible in a title or a sent photo, and are never features (storage, drawers, lift-top). Terms already in
+  the typed request are never written back as learned chips.
+- **Request chips.** The chips under the search box always show what the parser read from the owner's typed
+  words. Learned values live only in the preference chips; the adjusted query that was searched is stored
+  separately (`used_query`).
+- **Search.** Phrasings come only from what converged: the typed query (never carrying a learned value or
+  the seller's name, so look-alikes from anywhere appear); the seller's name plus the product; and, when a
+  dimension is open with 2 or 3 values, one phrasing per value, each carrying the converged words and
+  never the same open value in every phrasing (one open dimension is varied: the one with the most like
+  mass, shape first on a tie). When the call cap (4) bites, the lowest priority goes first (open values as a
+  group, then the standalone converged words) and the response records what was left out.
+- **Ranking and guards.** `shop_rank.md` v4 (v1 to v3 kept) is told what converged, what is open and must
+  be kept mixed, and that a mixed price is no signal. In code, after ranking: no known value of an open
+  dimension (and of shape and material when they have not converged) may exceed 60% of a batch, the next
+  best items of other values take the place; an affinity seller may take up to 50% of a batch and a seller
+  the visitor pinned up to 80% (any other seller 4); if a guard cannot be met the pool's remainder is
+  returned and the response says so. The largest single-value share per dimension and the largest seller
+  share are logged in the response and the footer. The pin is a click on the seller chip, stored in the
+  session.
+
+**The thresholds, in one place** (`src/app/shop/thresholds.py`; all untuned starting points for the stage 3
+eval to tune):
+
+| Name | Value | Meaning |
+|---|---|---|
+| LOVE_WEIGHT | 3 | weight of a loved item in the like mass |
+| LIKE_WEIGHT | 1 | weight of a liked item |
+| CONVERGE_SHARE | 0.70 | one value's share of the like mass to converge |
+| OPEN_SHARE | 0.30 | share each of two or more values needs for open |
+| MIN_SUPPORT_ITEMS | 2 | items behind a converged value (a loved item with a naming comment may be the second) |
+| LIFT_MIN | 1.3 | like share over exposure share needed to call a value preferred |
+| DISLIKE_MIN_ITEMS | 2 | disliked items sharing a value before a dislike chip |
+| SELLER_DISLIKES_TO_DEPRIORITIZE | 2 | dislikes (and no love or like) before a seller is ranked last |
+| MIN_AFFINITY_ITEMS | 2 | loved or liked items (and no dislike) for a seller affinity |
+| QUALITY_CUE_MIN_SHARE | 0.50 | share of loved and liked items showing a quality cue |
+| QUALITY_CUE_MIN_ITEMS | 2 | items showing a quality cue |
+| PRICE_UPPER_PERCENTILE | 0.67 | loved prices at or above this position: an upper cluster |
+| PRICE_LOWER_PERCENTILE | 0.33 | the matching lower edge |
+| PRICE_MIXED_LIKED_SPAN | 0.6667 | share of the shown price range the liked prices must span for mixed |
+| MIN_SHOWN_PRICES | 8 | fewest shown prices before any price signal |
+| RESULT_COUNT | 24 | results in a batch (the base of the share caps) |
+| DIVERSITY_MAX_SHARE | 0.60 | most of a batch one known value of a guarded dimension may take |
+| SELLER_MAX_SHARE | 0.50 | most of a batch an affinity seller may take |
+| SELLER_PINNED_SHARE | 0.80 | most of a batch a pinned seller may take |
+| SELLER_DEFAULT_CAP | 4 | results from any other seller |
+
+Other constants that shape a Shop Again (2b, unchanged): 4 Serper calls, a pool target of 60 and a ranker
+pool of 80, 16 thumbnails (6 loved, 6 liked, 4 disliked), 10 Shop Agains per session.
+
+**Limits.** The lexicon is small and plain: a title it cannot read is unknown, and a free-text value the
+model gives that the lexicon does not know has no exposure baseline (it passes the lift test untested).
+Size class has no baseline. "Converged on a frame colour" groups dark and brass metal into one value
+because the owner's loved items had one of each; that is a judgement call in the lexicon, not a finding.
+The guards limit titles the lexicon can read; an item it cannot read passes. Cost per Shop Again is
+unchanged: up to 4 Serper calls (8 credits), one preference call (about 1,000 more output tokens for the
+per-item tags) and one rank call, an Anthropic estimate of about $0.002 to $0.003 (assumed token counts,
+not measured). Not verified live: how well the model tags real photos, whether the lexicon's baseline is
+close enough on real result pages, and whether the thresholds feel right on the owner's ratings.

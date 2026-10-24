@@ -270,7 +270,7 @@ def test_build_profile_degrades_when_the_model_answer_is_unusable(
     session.profile = StoredProfile(likes=["wood"])
     use_client(monkeypatch, RouterClient(prefs="not json"))
     profile, warning = build_profile(session, session.searches[0].query, Budget(config()))
-    assert profile.likes == ["wood"] and "Could not update your preferences" in warning
+    assert profile.likes == ["wood"] and "Could not read the items" in warning
 
 
 # ---- Shop Again: exclusions, sellers, pages ----
@@ -454,7 +454,7 @@ def test_the_default_cap_comes_from_the_environment(monkeypatch: pytest.MonkeyPa
 # ---- Shop Again: the profile reaches the ranker and the query ----
 
 
-def test_rank_v3_is_used_for_shop_again_and_v1_for_a_typed_search(
+def test_rank_v4_is_used_for_shop_again_and_v1_for_a_typed_search(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = RouterClient()
@@ -469,7 +469,7 @@ def test_rank_v3_is_used_for_shop_again_and_v1_for_a_typed_search(
     search.sequence = [items("n", 6), []]
     svc.shop_again(sid)
     titles = [c["output_config"]["format"]["schema"]["title"] for c in client.calls]
-    assert titles[-2:] == ["PreferenceProfileV2", "RankedFinalists"]
+    assert titles[-2:] == ["PreferenceTags", "RankedFinalists"]
     rank = client.calls[-1]
     assert "repeat search" in rank["system"]
     text = rank["messages"][0]["content"]
@@ -492,8 +492,9 @@ def test_a_comment_can_lower_the_price_cap_and_the_page_says_so(
     svc.rate(sid, ids_of(first)[-1], "dislike", "way too expensive")
     search.sequence = [[cand(f"n{i}", 90.0 * (i + 1), title=f"Sofa N{i}") for i in range(11)], []]
     again = svc.shop_again(sid)
-    used = again["search"]["query"]
+    used = again["search"]["used_query"]
     assert used["price_max"] == 850.0 and used["price_min"] is None
+    assert again["search"]["query"]["price_max"] == 1000.0  # the request chips keep the typed cap
     assert all(r["price"] <= 850 for r in again["search"]["results"])
     assert again["profile"]["adjustments"]["price_note"]
     assert "price limit" in again["profile_summary"]
@@ -515,7 +516,9 @@ def test_shop_again_adjusts_the_typed_query_each_time_not_the_previous_again(
             [],
         ]
         again = svc.shop_again(sid)
-        assert again["search"]["query"]["price_max"] == 850.0  # 15% off the TYPED 1000, not stacked
+        assert (
+            again["search"]["used_query"]["price_max"] == 850.0
+        )  # 15% off the TYPED 1000, not stacked
     assert [r.kind for r in svc.store.load(sid).searches] == ["search", "shop_again", "shop_again"]
 
 
@@ -550,7 +553,7 @@ def test_an_unusable_preference_answer_still_searches_with_a_warning(
     search.sequence = [items("n", 6), []]
     again = svc.shop_again(sid)
     assert len(again["search"]["results"]) == 6
-    assert any("Could not update your preferences" in w for w in again["search"]["warnings"])
+    assert any("Could not read the items" in w for w in again["search"]["warnings"])
 
 
 # ---- Saved ----

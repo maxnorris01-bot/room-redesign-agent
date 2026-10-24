@@ -175,6 +175,18 @@ button.outline:hover { border-color: var(--accent); }
 }
 .chip.pref.inferred { background: transparent; border: 1px dashed var(--accent); }
 .chip.pref.inferred .tag { color: var(--accent); border-color: var(--accent); }
+.chip.pref.neutral { background: var(--chip); border: 1px solid var(--muted); }
+.chip.pref.neutral .k { color: var(--muted); font-size: 15px; }
+.chip.pref.neutral .tag { color: var(--muted); border-color: var(--muted); }
+.chip.pref .detail { color: var(--muted); font-size: 12px; }
+.chip.pref .pinbtn {
+  border: 0; background: transparent; color: inherit; font: inherit; padding: 0; cursor: pointer;
+  text-decoration: underline dotted; text-underline-offset: 3px;
+}
+.chip.pref .pinbtn[aria-pressed="true"] { text-decoration: underline solid; font-weight: 600; }
+.chip.pref .pinned-tag, .chip.pref.inferred .pinned-tag {
+  color: var(--accent-ink); background: var(--accent); border-color: var(--accent);
+}
 .chip.pref.guess {
   background: transparent; border: 1px dotted var(--muted); color: var(--muted); font-style: italic;
 }
@@ -205,8 +217,8 @@ button.outline:hover { border-color: var(--accent); }
   border-radius: 999px; font-size: 13px;
 }
 .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
-.saved-row { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 6px; }
-.saved-row .card { flex: 0 0 230px; }
+.saved-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
+.saved-row .saved-empty { grid-column: 1 / -1; }
 .saved-empty { color: var(--muted); margin: 6px 0; }
 @media (max-width: 520px) {
   .actions { width: 100%; }

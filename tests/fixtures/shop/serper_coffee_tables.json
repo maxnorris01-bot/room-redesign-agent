@@ -6,1205 +6,1535 @@
  },
  "shopping": [
   {
-   "title": "Modern Coffee Table with Storage Drawer 47\"W",
+   "title": "Round Walnut Coffee Table with Storage 30\"",
    "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000000013,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000000013.jpg",
    "productId": "5100000000000000013",
    "position": 1,
-   "price": "$538.59",
-   "rating": 4.3,
-   "ratingCount": 997
+   "price": "$145.61",
+   "rating": 4.6,
+   "ratingCount": 130
   },
   {
-   "title": "Wood and Metal Coffee Table 2-Tier 43\"L",
+   "title": "Rectangular Brushed Brass Coffee Table Nesting Set of 2 37\"",
    "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000007932,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000007932.jpg",
    "productId": "5100000000000007932",
    "position": 2,
-   "price": "$302.14",
-   "rating": 4.5,
-   "ratingCount": 821
+   "price": "$184.56",
+   "rating": 4.7,
+   "ratingCount": 1032
   },
   {
-   "title": "Round Coffee Table Walnut Metal Legs 36\"",
+   "title": "Round White Oak Coffee Table 2-Tier 44\"",
    "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000015851,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000015851.jpg",
    "productId": "5100000000000015851",
    "position": 3,
-   "price": "$520.26"
+   "price": "$219.84",
+   "rating": 4.8,
+   "ratingCount": 475
   },
   {
-   "title": "Walnut and Brushed Brass Lift-Top Storage Coffee Table 44\"",
+   "title": "Round Walnut Drum Storage Coffee Table 36\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000900007,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000900007.jpg",
    "productId": "5100000000000900007",
    "position": 4,
-   "price": "$1,236.14",
-   "rating": 4.9,
-   "ratingCount": 889
+   "price": "$749.00",
+   "rating": 4.1,
+   "ratingCount": 1108
   },
   {
-   "title": "Lift Top Coffee Table with Hidden Storage 47.2\"",
-   "source": "IKEA",
+   "title": "Rectangular Glass Top Black Metal Coffee Table Lift-Top with Storage 51\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000023770,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000023770.jpg",
    "productId": "5100000000000023770",
    "position": 5,
-   "price": "$640.64",
-   "rating": 4.6,
-   "ratingCount": 828
+   "price": "$254.35",
+   "rating": 4.8,
+   "ratingCount": 1571
   },
   {
-   "title": "Glass Top Coffee Table Gold Frame 42\"",
-   "source": "Amazon.com",
+   "title": "Oval Oak Coffee Table with Hidden Storage 35\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000031689,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000031689.jpg",
    "productId": "5100000000000031689",
    "position": 6,
-   "price": "$694.99",
-   "rating": 4.2,
-   "ratingCount": 2396
+   "price": "$292.89",
+   "rating": 4.5,
+   "ratingCount": 65
   },
   {
-   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D",
-   "source": "Burrow",
+   "title": "Square Wood and Black Metal Coffee Table with Shelf 42\"",
+   "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000039608,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000039608.jpg",
    "productId": "5100000000000039608",
    "position": 7,
-   "price": "$723.77"
+   "price": "$331.58",
+   "rating": 4.3,
+   "ratingCount": 757
   },
   {
-   "title": "Nesting Coffee Table Set of 2 Marble Effect",
-   "source": "Walmart",
+   "title": "Walnut and Brass Coffee Table with Drawers 49\"",
+   "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000047527,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000047527.jpg",
    "productId": "5100000000000047527",
    "position": 8,
-   "rating": 4.0,
-   "ratingCount": 559
+   "rating": 4.8,
+   "ratingCount": 1607
   },
   {
-   "title": "Mid-Century Coffee Table Oak 44\" L",
-   "source": "Crate & Barrel",
+   "title": "Round Walnut Coffee Table with Storage 33\"",
+   "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000055446,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000055446.jpg",
    "productId": "5100000000000055446",
    "position": 9,
-   "price": "$422.49",
+   "price": "$400.44",
    "rating": 4.7,
-   "ratingCount": 174
+   "ratingCount": 580
   },
   {
-   "title": "Farmhouse Coffee Table with Shelf 46\"",
-   "source": "Wayfair",
+   "title": "Rectangular Brushed Brass Coffee Table Nesting Set of 2 40\"",
+   "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000063365,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000063365.jpg",
    "productId": "5100000000000063365",
    "position": 10,
-   "price": "$574.96"
+   "price": "$441.56",
+   "rating": 4.3,
+   "ratingCount": 553
   },
   {
-   "title": "Rattan Coffee Table Boho Round 32\"",
-   "source": "Overstock",
+   "title": "Round White Oak Coffee Table 2-Tier 47\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000071284,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000071284.jpg",
    "productId": "5100000000000071284",
    "position": 11,
-   "price": "$744.50",
-   "rating": 4.1,
-   "ratingCount": 700
+   "price": "$473.02",
+   "rating": 4.8,
+   "ratingCount": 869
   },
   {
-   "title": "Brushed Brass Drum Storage Coffee Table 36\"",
+   "title": "Round Brushed Brass Drum Storage Coffee Table 34\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001004736,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001004736.jpg",
    "productId": "5100000000001004736",
    "position": 12,
-   "price": "$521.02",
+   "price": "$829.00",
    "rating": 4.7,
-   "ratingCount": 473
+   "ratingCount": 1182
   },
   {
-   "title": "Side Table Small End Table Metal 18\"",
-   "source": "Joss & Main",
+   "title": "Rectangular Glass Top Black Metal Coffee Table Lift-Top with Storage 31\"",
+   "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000079203,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000079203.jpg",
    "productId": "5100000000000079203",
    "position": 13,
-   "price": "$150.11",
-   "rating": 4.3,
-   "ratingCount": 884
+   "price": "$516.96",
+   "rating": 4.9,
+   "ratingCount": 691
   },
   {
-   "title": "Coffee Table Set 3-Piece with Ottomans",
-   "source": "IKEA",
+   "title": "Oval Oak Coffee Table with Storage 38\"",
+   "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000087122,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000087122.jpg",
    "productId": "5100000000000087122",
    "position": 14,
-   "price": "$659.94"
+   "price": "$554.85",
+   "rating": 4.2,
+   "ratingCount": 826
   },
   {
-   "title": "Low Profile Boucle Coffee Table Round 34\"",
-   "source": "Home Depot",
+   "title": "Square Wood and Black Metal Coffee Table Nesting Set of 2 45\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000095041,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000095041.jpg",
    "productId": "5100000000000095041",
    "position": 15,
-   "price": "$341.61",
-   "rating": 4.4,
-   "ratingCount": 1299
+   "price": "$588.85",
+   "rating": 4.6,
+   "ratingCount": 850
   },
   {
-   "title": "Boucle Ottoman Coffee Table with Storage 36\"",
-   "source": "Castlery",
+   "title": "Walnut and Brass Coffee Table 2-Tier 52\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000102960,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000102960.jpg",
    "productId": "5100000000000102960",
    "position": 16,
-   "price": "$578.56",
-   "rating": 4.7,
-   "ratingCount": 1861
+   "price": "$622.64",
+   "rating": 4.9,
+   "ratingCount": 818
   },
   {
-   "title": "Low Profile Wood Coffee Table with Metal Frame 48\"",
-   "source": "Walmart",
+   "title": "Round Walnut Coffee Table Lift-Top with Storage 36\"",
+   "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000110879,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000110879.jpg",
    "productId": "5100000000000110879",
    "position": 17,
-   "price": "$297.45"
+   "price": "$666.70",
+   "rating": 4.8,
+   "ratingCount": 1235
   },
   {
-   "title": "Modern Coffee Table with Storage Drawer 47\"W - Natural",
-   "source": "Etsy",
+   "title": "Rectangular Brushed Brass Coffee Table with Hidden Storage 43\"",
+   "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000118798,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000118798.jpg",
    "productId": "5100000000000118798",
    "position": 18,
-   "price": "$658.40",
-   "rating": 4.1,
-   "ratingCount": 177
+   "price": "$695.19",
+   "rating": 4.3,
+   "ratingCount": 608
   },
   {
-   "title": "Wood and Metal Coffee Table 2-Tier 43\"L - Natural",
+   "title": "Round White Oak Coffee Table with Shelf 50\"",
    "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000126717,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000126717.jpg",
    "productId": "5100000000000126717",
    "position": 19,
-   "price": "$551.56",
-   "rating": 4.1,
-   "ratingCount": 1458
+   "price": "$734.37",
+   "rating": 4.2,
+   "ratingCount": 25
   },
   {
-   "title": "Solid Wood Coffee Table with Metal Frame and Storage 48\"",
+   "title": "Rectangular Wood and Black Metal Lift-Top Storage Coffee Table 46\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001109465,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001109465.jpg",
    "productId": "5100000000001109465",
    "position": 20,
-   "price": "$772.31",
-   "rating": 4.5,
-   "ratingCount": 783
+   "price": "$699.00",
+   "rating": 4.2,
+   "ratingCount": 1956
   },
   {
-   "title": "Round Coffee Table Walnut Metal Legs 36\" - Natural",
+   "title": "Rectangular Glass Top Black Metal Coffee Table with Drawers 34\"",
    "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000134636,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000134636.jpg",
    "productId": "5100000000000134636",
-   "position": 21
+   "position": 21,
+   "rating": 4.5,
+   "ratingCount": 1396
   },
   {
-   "title": "Lift Top Coffee Table with Hidden Storage 47.2\" - Natural",
-   "source": "Burrow",
+   "title": "Oval Oak Coffee Table with Storage 41\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000142555,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000142555.jpg",
    "productId": "5100000000000142555",
    "position": 22,
-   "price": "$289.41",
-   "rating": 4.7,
-   "ratingCount": 86
+   "price": "$806.59",
+   "rating": 4.3,
+   "ratingCount": 1265
   },
   {
-   "title": "Glass Top Coffee Table Gold Frame 42\" - Natural",
-   "source": "Target",
+   "title": "Square Wood and Black Metal Coffee Table Nesting Set of 2 48\"",
+   "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000150474,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000150474.jpg",
    "productId": "5100000000000150474",
    "position": 23,
-   "price": "$525.10",
+   "price": "$847.33",
    "rating": 4.2,
-   "ratingCount": 785
+   "ratingCount": 1983
   },
   {
-   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D - Natural",
-   "source": "Home Depot",
+   "title": "Walnut and Brass Coffee Table 2-Tier 32\"",
+   "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000158393,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000158393.jpg",
    "productId": "5100000000000158393",
    "position": 24,
-   "price": "$87.56"
+   "price": "$884.25",
+   "rating": 4.1,
+   "ratingCount": 1061
   },
   {
-   "title": "Nesting Coffee Table Set of 2 Marble Effect - Natural",
-   "source": "Wayfair",
+   "title": "Round Walnut Coffee Table Lift-Top with Storage 39\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000166312,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000166312.jpg",
    "productId": "5100000000000166312",
    "position": 25,
-   "price": "$659.06",
-   "rating": 4.1,
-   "ratingCount": 585
+   "price": "$165.78",
+   "rating": 3.9,
+   "ratingCount": 1476
   },
   {
-   "title": "Mid-Century Coffee Table Oak 44\" L - Natural",
-   "source": "West Elm",
+   "title": "Rectangular Brushed Brass Coffee Table with Storage 46\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000174231,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000174231.jpg",
    "productId": "5100000000000174231",
    "position": 26,
-   "price": "$635.76",
-   "rating": 4.9,
-   "ratingCount": 480
+   "price": "$201.60",
+   "rating": 3.9,
+   "ratingCount": 1727
   },
   {
-   "title": "Farmhouse Coffee Table with Shelf 46\" - Natural",
-   "source": "Etsy",
+   "title": "Round White Oak Coffee Table Nesting Set of 2 30\"",
+   "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000182150,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000182150.jpg",
    "productId": "5100000000000182150",
    "position": 27,
-   "price": "$387.00"
+   "price": "$234.30",
+   "rating": 4.5,
+   "ratingCount": 49
   },
   {
-   "title": "Solid Walnut Storage Coffee Table with Brushed Brass Legs 46\"",
+   "title": "Rectangular Walnut Storage Coffee Table with Drawers 48\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001214194,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001214194.jpg",
    "productId": "5100000000001214194",
    "position": 28,
-   "price": "$613.20",
-   "rating": 4.6,
-   "ratingCount": 266
+   "price": "$899.00",
+   "rating": 4.4,
+   "ratingCount": 496
   },
   {
-   "title": "Rattan Coffee Table Boho Round 32\" - Natural",
-   "source": "IKEA",
+   "title": "Rectangular Glass Top Black Metal Coffee Table 2-Tier 37\"",
+   "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000190069,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000190069.jpg",
    "productId": "5100000000000190069",
    "position": 29,
-   "price": "$517.27",
-   "rating": 4.5,
-   "ratingCount": 1518
+   "price": "$272.08",
+   "rating": 4.6,
+   "ratingCount": 816
   },
   {
-   "title": "Side Table Small End Table Metal 18\" - Natural",
-   "source": "Amazon.com",
+   "title": "Oval Oak Coffee Table Lift-Top with Storage 44\"",
+   "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000197988,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000197988.jpg",
    "productId": "5100000000000197988",
    "position": 30,
-   "price": "$750.51",
-   "rating": 4.6,
-   "ratingCount": 824
+   "price": "$306.07",
+   "rating": 4.1,
+   "ratingCount": 1905
   },
   {
-   "title": "Coffee Table Set 3-Piece with Ottomans - Natural",
-   "source": "Burrow",
+   "title": "Square Wood and Black Metal Coffee Table with Hidden Storage 51\"",
+   "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000205907,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000205907.jpg",
    "productId": "5100000000000205907",
    "position": 31,
-   "price": "$654.92"
+   "price": "$345.10",
+   "rating": 4.3,
+   "ratingCount": 1039
   },
   {
-   "title": "Low Profile Boucle Coffee Table Round 34\" - Natural",
-   "source": "Walmart",
+   "title": "Walnut and Brass Coffee Table with Shelf 35\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000213826,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000213826.jpg",
    "productId": "5100000000000213826",
    "position": 32,
-   "price": "$251.79",
-   "rating": 4.6,
-   "ratingCount": 1942
+   "price": "$385.98",
+   "rating": 4.0,
+   "ratingCount": 1516
   },
   {
-   "title": "Boucle Ottoman Coffee Table with Storage 36\" - Natural",
-   "source": "Crate & Barrel",
+   "title": "Round Walnut Coffee Table with Drawers 42\"",
+   "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000221745,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000221745.jpg",
    "productId": "5100000000000221745",
    "position": 33,
-   "rating": 4.4,
-   "ratingCount": 156
+   "rating": 4.8,
+   "ratingCount": 162
   },
   {
-   "title": "Low Profile Wood Coffee Table with Metal Frame 48\" - Natural",
-   "source": "Wayfair",
+   "title": "Rectangular Brushed Brass Coffee Table with Storage 49\"",
+   "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000229664,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000229664.jpg",
    "productId": "5100000000000229664",
    "position": 34,
-   "price": "$197.16"
+   "price": "$456.90",
+   "rating": 4.9,
+   "ratingCount": 865
   },
   {
-   "title": "Modern Coffee Table with Storage Drawer 47\"W - Gray",
-   "source": "Overstock",
+   "title": "Round White Oak Coffee Table Nesting Set of 2 33\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000237583,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000237583.jpg",
    "productId": "5100000000000237583",
    "position": 35,
-   "price": "$263.37",
-   "rating": 4.2,
-   "ratingCount": 2139
+   "price": "$493.07",
+   "rating": 4.5,
+   "ratingCount": 619
   },
   {
-   "title": "Wood and Metal Coffee Table 2-Tier 43\"L - Gray",
-   "source": "Joss & Main",
+   "title": "Rectangular Glass Top Black Metal Coffee Table 2-Tier 40\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000245502,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000245502.jpg",
    "productId": "5100000000000245502",
    "position": 36,
-   "price": "$425.30",
-   "rating": 4.9,
-   "ratingCount": 660
+   "price": "$530.06",
+   "rating": 4.8,
+   "ratingCount": 389
   },
   {
-   "title": "Round Coffee Table Walnut Metal Legs 36\" - Gray",
+   "title": "Oval Oak Coffee Table Lift-Top with Storage 47\"",
    "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000253421,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000253421.jpg",
    "productId": "5100000000000253421",
    "position": 37,
-   "price": "$349.40"
+   "price": "$566.81",
+   "rating": 4.2,
+   "ratingCount": 738
   },
   {
-   "title": "Lift Top Coffee Table with Hidden Storage 47.2\" - Gray",
+   "title": "Square Wood and Black Metal Coffee Table with Storage 31\"",
    "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000261340,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000261340.jpg",
    "productId": "5100000000000261340",
    "position": 38,
-   "price": "$632.27",
-   "rating": 4.8,
-   "ratingCount": 365
+   "price": "$608.19",
+   "rating": 4.5,
+   "ratingCount": 1278
   },
   {
-   "title": "Glass Top Coffee Table Gold Frame 42\" - Gray",
-   "source": "Castlery",
+   "title": "Walnut and Brass Coffee Table Nesting Set of 2 38\"",
+   "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000269259,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000269259.jpg",
    "productId": "5100000000000269259",
    "position": 39,
-   "price": "$361.44",
-   "rating": 4.8,
-   "ratingCount": 1597
+   "price": "$646.97",
+   "rating": 4.1,
+   "ratingCount": 210
   },
   {
-   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D - Gray",
-   "source": "Walmart",
+   "title": "Round Walnut Coffee Table 2-Tier 45\"",
+   "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000277178,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000277178.jpg",
    "productId": "5100000000000277178",
    "position": 40,
-   "price": "$162.24"
+   "price": "$675.73",
+   "rating": 4.5,
+   "ratingCount": 1674
   },
   {
-   "title": "Nesting Coffee Table Set of 2 Marble Effect - Gray",
-   "source": "Etsy",
+   "title": "Rectangular Brushed Brass Coffee Table Lift-Top with Storage 52\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000285097,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000285097.jpg",
    "productId": "5100000000000285097",
    "position": 41,
-   "price": "$392.01",
-   "rating": 4.5,
-   "ratingCount": 35
+   "price": "$712.29",
+   "rating": 4.6,
+   "ratingCount": 1420
   },
   {
-   "title": "Mid-Century Coffee Table Oak 44\" L - Gray",
-   "source": "Article",
+   "title": "Round White Oak Coffee Table with Hidden Storage 36\"",
+   "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000293016,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000293016.jpg",
    "productId": "5100000000000293016",
    "position": 42,
-   "price": "$337.53",
+   "price": "$756.44",
    "rating": 4.4,
-   "ratingCount": 2066
+   "ratingCount": 1739
   },
   {
-   "title": "Farmhouse Coffee Table with Shelf 46\" - Gray",
-   "source": "Overstock",
+   "title": "Rectangular Glass Top Black Metal Coffee Table with Shelf 43\"",
+   "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000300935,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000300935.jpg",
    "productId": "5100000000000300935",
    "position": 43,
-   "price": "$635.70"
+   "price": "$787.31",
+   "rating": 4.9,
+   "ratingCount": 146
   },
   {
-   "title": "Rattan Coffee Table Boho Round 32\" - Gray",
-   "source": "Burrow",
+   "title": "Oval Oak Coffee Table with Drawers 50\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000308854,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000308854.jpg",
    "productId": "5100000000000308854",
    "position": 44,
-   "rating": 4.8,
-   "ratingCount": 1907
+   "rating": 4.7,
+   "ratingCount": 1380
   },
   {
-   "title": "Side Table Small End Table Metal 18\" - Gray",
-   "source": "Target",
+   "title": "Square Wood and Black Metal Coffee Table with Storage 34\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000316773,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000316773.jpg",
    "productId": "5100000000000316773",
    "position": 45,
-   "price": "$301.79",
-   "rating": 4.9,
-   "ratingCount": 413
+   "price": "$867.55",
+   "rating": 4.0,
+   "ratingCount": 555
   },
   {
-   "title": "Coffee Table Set 3-Piece with Ottomans - Gray",
-   "source": "Home Depot",
+   "title": "Walnut and Brass Coffee Table Nesting Set of 2 41\"",
+   "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000324692,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000324692.jpg",
    "productId": "5100000000000324692",
    "position": 46,
-   "price": "$582.57"
+   "price": "$902.67",
+   "rating": 4.7,
+   "ratingCount": 448
   },
   {
-   "title": "Low Profile Boucle Coffee Table Round 34\" - Gray",
-   "source": "Wayfair",
+   "title": "Round Walnut Coffee Table 2-Tier 48\"",
+   "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000332611,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000332611.jpg",
    "productId": "5100000000000332611",
    "position": 47,
-   "price": "$651.03",
-   "rating": 4.5,
-   "ratingCount": 513
+   "price": "$175.52",
+   "rating": 4.3,
+   "ratingCount": 252
   },
   {
-   "title": "Boucle Ottoman Coffee Table with Storage 36\" - Gray",
-   "source": "West Elm",
+   "title": "Rectangular Brushed Brass Coffee Table Lift-Top with Storage 32\"",
+   "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000340530,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000340530.jpg",
    "productId": "5100000000000340530",
    "position": 48,
-   "price": "$221.44",
-   "rating": 4.8,
-   "ratingCount": 367
+   "price": "$218.60",
+   "rating": 4.2,
+   "ratingCount": 1868
   },
   {
-   "title": "Low Profile Wood Coffee Table with Metal Frame 48\" - Gray",
-   "source": "Etsy",
+   "title": "Round White Oak Coffee Table with Storage 39\"",
+   "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000348449,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000348449.jpg",
    "productId": "5100000000000348449",
    "position": 49,
-   "price": "$763.92"
+   "price": "$256.30",
+   "rating": 4.5,
+   "ratingCount": 705
   },
   {
-   "title": "Modern Coffee Table with Storage Drawer 47\"W - Black",
-   "source": "IKEA",
+   "title": "Rectangular Glass Top Black Metal Coffee Table Nesting Set of 2 46\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000356368,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000356368.jpg",
    "productId": "5100000000000356368",
    "position": 50,
-   "price": "$451.24",
-   "rating": 4.7,
-   "ratingCount": 1320
+   "price": "$293.78",
+   "rating": 4.4,
+   "ratingCount": 2011
   },
   {
-   "title": "Wood and Metal Coffee Table 2-Tier 43\"L - Black",
-   "source": "Amazon.com",
+   "title": "Oval Oak Coffee Table 2-Tier 30\"",
+   "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000364287,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000364287.jpg",
    "productId": "5100000000000364287",
    "position": 51,
-   "price": "$255.94",
-   "rating": 4.6,
-   "ratingCount": 72
+   "price": "$328.20",
+   "rating": 4.2,
+   "ratingCount": 1134
   },
   {
-   "title": "Round Coffee Table Walnut Metal Legs 36\" - Black",
-   "source": "Burrow",
+   "title": "Square Wood and Black Metal Coffee Table Lift-Top with Storage 37\"",
+   "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000372206,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000372206.jpg",
    "productId": "5100000000000372206",
    "position": 52,
-   "price": "$317.44"
+   "price": "$361.62",
+   "rating": 4.3,
+   "ratingCount": 612
   },
   {
-   "title": "Lift Top Coffee Table with Hidden Storage 47.2\" - Black",
+   "title": "Walnut and Brass Coffee Table with Hidden Storage 44\"",
    "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000380125,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000380125.jpg",
    "productId": "5100000000000380125",
    "position": 53,
-   "price": "$128.77",
-   "rating": 4.3,
-   "ratingCount": 2262
+   "price": "$397.01",
+   "rating": 4.7,
+   "ratingCount": 746
   },
   {
-   "title": "Glass Top Coffee Table Gold Frame 42\" - Black",
+   "title": "Round Walnut Coffee Table with Shelf 51\"",
    "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000388044,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000388044.jpg",
    "productId": "5100000000000388044",
    "position": 54,
-   "price": "$369.21",
-   "rating": 4.1,
-   "ratingCount": 124
+   "price": "$438.64",
+   "rating": 4.4,
+   "ratingCount": 1398
   },
   {
-   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D - Black",
-   "source": "Wayfair",
+   "title": "Rectangular Brushed Brass Coffee Table with Drawers 35\"",
+   "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000395963,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000395963.jpg",
    "productId": "5100000000000395963",
-   "position": 55
+   "position": 55,
+   "rating": 4.1,
+   "ratingCount": 2026
   },
   {
-   "title": "Nesting Coffee Table Set of 2 Marble Effect - Black",
-   "source": "Overstock",
+   "title": "Round White Oak Coffee Table with Storage 42\"",
+   "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000403882,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000403882.jpg",
    "productId": "5100000000000403882",
    "position": 56,
-   "price": "$224.99",
-   "rating": 4.8,
-   "ratingCount": 1764
+   "price": "$509.45",
+   "rating": 4.7,
+   "ratingCount": 2071
   },
   {
-   "title": "Mid-Century Coffee Table Oak 44\" L - Black",
-   "source": "Joss & Main",
+   "title": "Rectangular Glass Top Black Metal Coffee Table Nesting Set of 2 49\"",
+   "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000411801,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000411801.jpg",
    "productId": "5100000000000411801",
    "position": 57,
-   "price": "$637.90",
-   "rating": 4.0,
-   "ratingCount": 1380
+   "price": "$547.25",
+   "rating": 4.7,
+   "ratingCount": 1468
   },
   {
-   "title": "Farmhouse Coffee Table with Shelf 46\" - Black",
-   "source": "IKEA",
+   "title": "Oval Oak Coffee Table 2-Tier 33\"",
+   "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000419720,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000419720.jpg",
    "productId": "5100000000000419720",
    "position": 58,
-   "price": "$557.47"
+   "price": "$587.25",
+   "rating": 4.6,
+   "ratingCount": 1264
   },
   {
-   "title": "Rattan Coffee Table Boho Round 32\" - Black",
-   "source": "Home Depot",
+   "title": "Square Wood and Black Metal Coffee Table Lift-Top with Storage 40\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000427639,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000427639.jpg",
    "productId": "5100000000000427639",
    "position": 59,
-   "price": "$720.37",
-   "rating": 4.3,
-   "ratingCount": 2123
+   "price": "$621.27",
+   "rating": 4.6,
+   "ratingCount": 1162
   },
   {
-   "title": "Side Table Small End Table Metal 18\" - Black",
-   "source": "Castlery",
+   "title": "Walnut and Brass Coffee Table with Storage 47\"",
+   "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000435558,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000435558.jpg",
    "productId": "5100000000000435558",
    "position": 60,
-   "price": "$709.40",
-   "rating": 4.4,
-   "ratingCount": 1810
+   "price": "$662.52",
+   "rating": 4.2,
+   "ratingCount": 1215
   },
   {
-   "title": "Coffee Table Set 3-Piece with Ottomans - Black",
-   "source": "Walmart",
+   "title": "Round Walnut Coffee Table Nesting Set of 2 31\"",
+   "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000443477,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000443477.jpg",
    "productId": "5100000000000443477",
    "position": 61,
-   "price": "$741.48"
+   "price": "$700.61",
+   "rating": 4.2,
+   "ratingCount": 743
   },
   {
-   "title": "Low Profile Boucle Coffee Table Round 34\" - Black",
-   "source": "Etsy",
+   "title": "Rectangular Brushed Brass Coffee Table 2-Tier 38\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000451396,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000451396.jpg",
    "productId": "5100000000000451396",
    "position": 62,
-   "price": "$419.73",
-   "rating": 4.8,
-   "ratingCount": 360
+   "price": "$734.23",
+   "rating": 3.9,
+   "ratingCount": 1038
   },
   {
-   "title": "Boucle Ottoman Coffee Table with Storage 36\" - Black",
-   "source": "Article",
+   "title": "Round White Oak Coffee Table Lift-Top with Storage 45\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000459315,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000459315.jpg",
    "productId": "5100000000000459315",
    "position": 63,
-   "price": "$608.07",
-   "rating": 4.3,
-   "ratingCount": 2296
+   "price": "$768.93",
+   "rating": 4.2,
+   "ratingCount": 1195
   },
   {
-   "title": "Low Profile Wood Coffee Table with Metal Frame 48\" - Black",
-   "source": "Overstock",
+   "title": "Rectangular Glass Top Black Metal Coffee Table with Hidden Storage 52\"",
+   "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000467234,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000467234.jpg",
    "productId": "5100000000000467234",
    "position": 64,
-   "price": "$276.02"
+   "price": "$810.35",
+   "rating": 4.5,
+   "ratingCount": 1472
   },
   {
-   "title": "Modern Coffee Table with Storage Drawer 47\"W - Walnut",
-   "source": "Burrow",
+   "title": "Oval Oak Coffee Table with Shelf 36\"",
+   "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000475153,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000475153.jpg",
    "productId": "5100000000000475153",
    "position": 65,
-   "price": "$587.48",
+   "price": "$843.13",
    "rating": 4.5,
-   "ratingCount": 2149
+   "ratingCount": 1685
   },
   {
-   "title": "Wood and Metal Coffee Table 2-Tier 43\"L - Walnut",
-   "source": "Target",
+   "title": "Square Wood and Black Metal Coffee Table with Drawers 43\"",
+   "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000483072,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000483072.jpg",
    "productId": "5100000000000483072",
    "position": 66,
-   "rating": 4.4,
-   "ratingCount": 2301
+   "rating": 4.3,
+   "ratingCount": 718
   },
   {
-   "title": "Round Coffee Table Walnut Metal Legs 36\" - Walnut",
-   "source": "Home Depot",
+   "title": "Walnut and Brass Coffee Table with Storage 50\"",
+   "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000490991,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000490991.jpg",
    "productId": "5100000000000490991",
    "position": 67,
-   "price": "$252.12"
+   "price": "$161.83",
+   "rating": 4.6,
+   "ratingCount": 1504
   },
   {
-   "title": "Lift Top Coffee Table with Hidden Storage 47.2\" - Walnut",
+   "title": "Round Walnut Coffee Table Nesting Set of 2 34\"",
    "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000498910,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000498910.jpg",
    "productId": "5100000000000498910",
    "position": 68,
-   "price": "$546.62",
-   "rating": 4.9,
-   "ratingCount": 860
+   "price": "$199.61",
+   "rating": 4.4,
+   "ratingCount": 692
   },
   {
-   "title": "Glass Top Coffee Table Gold Frame 42\" - Walnut",
+   "title": "Rectangular Brushed Brass Coffee Table 2-Tier 41\"",
    "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000506829,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000506829.jpg",
    "productId": "5100000000000506829",
    "position": 69,
-   "price": "$286.16",
-   "rating": 4.0,
-   "ratingCount": 2239
+   "price": "$229.79",
+   "rating": 4.3,
+   "ratingCount": 1966
   },
   {
-   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D - Walnut",
+   "title": "Round White Oak Coffee Table Lift-Top with Storage 48\"",
    "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000514748,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000514748.jpg",
    "productId": "5100000000000514748",
    "position": 70,
-   "price": "$442.20"
+   "price": "$267.55",
+   "rating": 4.0,
+   "ratingCount": 1718
   },
   {
-   "title": "Nesting Coffee Table Set of 2 Marble Effect - Walnut",
-   "source": "IKEA",
+   "title": "Rectangular Glass Top Black Metal Coffee Table with Storage 32\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000522667,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000522667.jpg",
    "productId": "5100000000000522667",
    "position": 71,
-   "price": "$476.82",
-   "rating": 4.0,
-   "ratingCount": 2203
+   "price": "$303.55",
+   "rating": 4.7,
+   "ratingCount": 1735
   },
   {
-   "title": "Mid-Century Coffee Table Oak 44\" L - Walnut",
-   "source": "Amazon.com",
+   "title": "Oval Oak Coffee Table Nesting Set of 2 39\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000530586,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000530586.jpg",
    "productId": "5100000000000530586",
    "position": 72,
-   "price": "$151.14",
-   "rating": 3.8,
-   "ratingCount": 1552
+   "price": "$341.72",
+   "rating": 4.5,
+   "ratingCount": 1120
   },
   {
-   "title": "Farmhouse Coffee Table with Shelf 46\" - Walnut",
-   "source": "Burrow",
+   "title": "Square Wood and Black Metal Coffee Table 2-Tier 46\"",
+   "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000538505,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000538505.jpg",
    "productId": "5100000000000538505",
    "position": 73,
-   "price": "$89.71"
+   "price": "$382.48",
+   "rating": 3.9,
+   "ratingCount": 667
   },
   {
-   "title": "Rattan Coffee Table Boho Round 32\" - Walnut",
-   "source": "Walmart",
+   "title": "Walnut and Brass Coffee Table Lift-Top with Storage 30\"",
+   "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000546424,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000546424.jpg",
    "productId": "5100000000000546424",
    "position": 74,
-   "price": "$758.28",
-   "rating": 4.4,
-   "ratingCount": 1648
+   "price": "$418.28",
+   "rating": 4.5,
+   "ratingCount": 752
   },
   {
-   "title": "Side Table Small End Table Metal 18\" - Walnut",
-   "source": "Crate & Barrel",
+   "title": "Round Walnut Coffee Table with Hidden Storage 37\"",
+   "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000554343,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000554343.jpg",
    "productId": "5100000000000554343",
    "position": 75,
-   "price": "$456.24",
-   "rating": 4.9,
-   "ratingCount": 507
+   "price": "$451.97",
+   "rating": 4.6,
+   "ratingCount": 183
   },
   {
-   "title": "Coffee Table Set 3-Piece with Ottomans - Walnut",
-   "source": "Wayfair",
+   "title": "Rectangular Brushed Brass Coffee Table with Shelf 44\"",
+   "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000562262,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000562262.jpg",
    "productId": "5100000000000562262",
    "position": 76,
-   "price": "$418.64"
+   "price": "$495.88",
+   "rating": 4.9,
+   "ratingCount": 690
   },
   {
-   "title": "Low Profile Boucle Coffee Table Round 34\" - Walnut",
-   "source": "Overstock",
+   "title": "Round White Oak Coffee Table with Drawers 51\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000570181,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000570181.jpg",
    "productId": "5100000000000570181",
    "position": 77,
-   "rating": 4.6,
-   "ratingCount": 277
+   "rating": 4.0,
+   "ratingCount": 558
   },
   {
-   "title": "Boucle Ottoman Coffee Table with Storage 36\" - Walnut",
-   "source": "Joss & Main",
+   "title": "Rectangular Glass Top Black Metal Coffee Table with Storage 35\"",
+   "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000578100,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000578100.jpg",
    "productId": "5100000000000578100",
    "position": 78,
-   "price": "$730.89",
-   "rating": 4.3,
-   "ratingCount": 1663
+   "price": "$562.00",
+   "rating": 4.9,
+   "ratingCount": 1988
   },
   {
-   "title": "Low Profile Wood Coffee Table with Metal Frame 48\" - Walnut",
-   "source": "IKEA",
+   "title": "Oval Oak Coffee Table Nesting Set of 2 42\"",
+   "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000586019,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000586019.jpg",
    "productId": "5100000000000586019",
    "position": 79,
-   "price": "$261.14"
+   "price": "$599.74",
+   "rating": 3.9,
+   "ratingCount": 1917
   },
   {
-   "title": "Modern Coffee Table with Storage Drawer 47\"W - Ivory",
-   "source": "Home Depot",
+   "title": "Square Wood and Black Metal Coffee Table 2-Tier 49\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000593938,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000593938.jpg",
    "productId": "5100000000000593938",
    "position": 80,
-   "price": "$405.94",
-   "rating": 3.9,
-   "ratingCount": 1784
+   "price": "$638.16",
+   "rating": 4.6,
+   "ratingCount": 306
   },
   {
-   "title": "Wood and Metal Coffee Table 2-Tier 43\"L - Ivory",
-   "source": "Castlery",
+   "title": "Walnut and Brass Coffee Table Lift-Top with Storage 33\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000601857,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000601857.jpg",
    "productId": "5100000000000601857",
    "position": 81,
-   "price": "$709.64",
-   "rating": 4.8,
-   "ratingCount": 1959
+   "price": "$677.31",
+   "rating": 4.1,
+   "ratingCount": 1543
   },
   {
-   "title": "Round Coffee Table Walnut Metal Legs 36\" - Ivory",
-   "source": "Walmart",
+   "title": "Round Walnut Coffee Table with Storage 40\"",
+   "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000609776,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000609776.jpg",
    "productId": "5100000000000609776",
    "position": 82,
-   "price": "$442.74"
+   "price": "$709.01",
+   "rating": 4.3,
+   "ratingCount": 1152
   },
   {
-   "title": "Lift Top Coffee Table with Hidden Storage 47.2\" - Ivory",
-   "source": "Etsy",
+   "title": "Rectangular Brushed Brass Coffee Table Nesting Set of 2 47\"",
+   "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000617695,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000617695.jpg",
    "productId": "5100000000000617695",
    "position": 83,
-   "price": "$147.12",
-   "rating": 4.3,
-   "ratingCount": 128
+   "price": "$753.70",
+   "rating": 4.8,
+   "ratingCount": 1543
   },
   {
-   "title": "Glass Top Coffee Table Gold Frame 42\" - Ivory",
+   "title": "Round White Oak Coffee Table 2-Tier 31\"",
    "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000625614,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000625614.jpg",
    "productId": "5100000000000625614",
    "position": 84,
-   "price": "$726.94",
-   "rating": 3.9,
-   "ratingCount": 101
+   "price": "$791.68",
+   "rating": 4.4,
+   "ratingCount": 1246
   },
   {
-   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D - Ivory",
+   "title": "Rectangular Glass Top Black Metal Coffee Table Lift-Top with Storage 38\"",
    "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000633533,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000633533.jpg",
    "productId": "5100000000000633533",
    "position": 85,
-   "price": "$95.29"
+   "price": "$820.85",
+   "rating": 4.4,
+   "ratingCount": 1402
   },
   {
-   "title": "Nesting Coffee Table Set of 2 Marble Effect - Ivory",
-   "source": "Burrow",
+   "title": "Oval Oak Coffee Table with Hidden Storage 45\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000641452,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000641452.jpg",
    "productId": "5100000000000641452",
    "position": 86,
-   "price": "$180.43",
-   "rating": 3.8,
-   "ratingCount": 1171
+   "price": "$865.56",
+   "rating": 4.2,
+   "ratingCount": 1452
   },
   {
-   "title": "Mid-Century Coffee Table Oak 44\" L - Ivory",
-   "source": "Target",
+   "title": "Square Wood and Black Metal Coffee Table with Shelf 52\"",
+   "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000649371,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000649371.jpg",
    "productId": "5100000000000649371",
    "position": 87,
-   "price": "$298.68",
-   "rating": 4.2,
-   "ratingCount": 2051
+   "price": "$901.37",
+   "rating": 4.3,
+   "ratingCount": 1525
   },
   {
-   "title": "Farmhouse Coffee Table with Shelf 46\" - Ivory",
-   "source": "Home Depot",
+   "title": "Walnut and Brass Coffee Table with Drawers 36\"",
+   "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000657290,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000657290.jpg",
    "productId": "5100000000000657290",
-   "position": 88
+   "position": 88,
+   "rating": 4.4,
+   "ratingCount": 654
   },
   {
-   "title": "Rattan Coffee Table Boho Round 32\" - Ivory",
-   "source": "Wayfair",
+   "title": "Round Walnut Coffee Table with Storage 43\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000665209,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000665209.jpg",
    "productId": "5100000000000665209",
    "position": 89,
-   "price": "$144.47",
-   "rating": 4.6,
-   "ratingCount": 510
+   "price": "$213.36",
+   "rating": 4.5,
+   "ratingCount": 827
   },
   {
-   "title": "Side Table Small End Table Metal 18\" - Ivory",
-   "source": "West Elm",
+   "title": "Rectangular Brushed Brass Coffee Table Nesting Set of 2 50\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000673128,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000673128.jpg",
    "productId": "5100000000000673128",
    "position": 90,
-   "price": "$674.86",
+   "price": "$253.71",
    "rating": 4.5,
-   "ratingCount": 817
+   "ratingCount": 1450
   },
   {
-   "title": "Coffee Table Set 3-Piece with Ottomans - Ivory",
-   "source": "Etsy",
+   "title": "Round White Oak Coffee Table 2-Tier 34\"",
+   "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000681047,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000681047.jpg",
    "productId": "5100000000000681047",
    "position": 91,
-   "price": "$567.97"
+   "price": "$289.39",
+   "rating": 4.6,
+   "ratingCount": 1576
   },
   {
-   "title": "Low Profile Boucle Coffee Table Round 34\" - Ivory",
-   "source": "IKEA",
+   "title": "Rectangular Glass Top Black Metal Coffee Table Lift-Top with Storage 41\"",
+   "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000688966,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000688966.jpg",
    "productId": "5100000000000688966",
    "position": 92,
-   "price": "$693.90",
-   "rating": 3.8,
-   "ratingCount": 1701
+   "price": "$319.97",
+   "rating": 4.5,
+   "ratingCount": 588
   },
   {
-   "title": "Boucle Ottoman Coffee Table with Storage 36\" - Ivory",
-   "source": "Amazon.com",
+   "title": "Oval Oak Coffee Table with Storage 48\"",
+   "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000696885,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000696885.jpg",
    "productId": "5100000000000696885",
    "position": 93,
-   "price": "$655.88",
-   "rating": 4.5,
-   "ratingCount": 2212
+   "price": "$358.93",
+   "rating": 4.8,
+   "ratingCount": 1551
   },
   {
-   "title": "Low Profile Wood Coffee Table with Metal Frame 48\" - Ivory",
-   "source": "Burrow",
+   "title": "Square Wood and Black Metal Coffee Table Nesting Set of 2 32\"",
+   "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000704804,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000704804.jpg",
    "productId": "5100000000000704804",
    "position": 94,
-   "price": "$215.03"
+   "price": "$396.86",
+   "rating": 4.9,
+   "ratingCount": 2033
   },
   {
-   "title": "Modern Coffee Table with Storage Drawer 47\"W - Olive",
-   "source": "Walmart",
+   "title": "Walnut and Brass Coffee Table 2-Tier 39\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000712723,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000712723.jpg",
    "productId": "5100000000000712723",
    "position": 95,
-   "price": "$518.23",
-   "rating": 4.5,
-   "ratingCount": 2177
+   "price": "$432.62",
+   "rating": 4.9,
+   "ratingCount": 1567
   },
   {
-   "title": "Wood and Metal Coffee Table 2-Tier 43\"L - Olive",
-   "source": "Crate & Barrel",
+   "title": "Round Walnut Coffee Table Lift-Top with Storage 46\"",
+   "source": "West Elm",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000720642,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000720642.jpg",
    "productId": "5100000000000720642",
    "position": 96,
-   "price": "$223.48",
-   "rating": 4.4,
-   "ratingCount": 566
+   "price": "$470.46",
+   "rating": 4.8,
+   "ratingCount": 663
   },
   {
-   "title": "Round Coffee Table Walnut Metal Legs 36\" - Olive",
-   "source": "Wayfair",
+   "title": "Rectangular Brushed Brass Coffee Table with Hidden Storage 30\"",
+   "source": "Etsy",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000728561,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000728561.jpg",
    "productId": "5100000000000728561",
    "position": 97,
-   "price": "$235.19"
+   "price": "$509.36",
+   "rating": 4.2,
+   "ratingCount": 1244
   },
   {
-   "title": "Lift Top Coffee Table with Hidden Storage 47.2\" - Olive",
-   "source": "Overstock",
+   "title": "Round White Oak Coffee Table with Shelf 37\"",
+   "source": "Walmart",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000736480,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000736480.jpg",
    "productId": "5100000000000736480",
    "position": 98,
-   "price": "$595.95",
-   "rating": 4.7,
-   "ratingCount": 749
+   "price": "$545.47",
+   "rating": 4.3,
+   "ratingCount": 1319
   },
   {
-   "title": "Glass Top Coffee Table Gold Frame 42\" - Olive",
-   "source": "Joss & Main",
+   "title": "Rectangular Glass Top Black Metal Coffee Table with Drawers 44\"",
+   "source": "Crate & Barrel",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000744399,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000744399.jpg",
    "productId": "5100000000000744399",
    "position": 99,
-   "rating": 4.1,
-   "ratingCount": 1298
+   "rating": 4.8,
+   "ratingCount": 1271
   },
   {
-   "title": "Industrial Coffee Table Reclaimed Wood Black Metal 48\"W x 24\"D - Olive",
+   "title": "Oval Oak Coffee Table with Storage 51\"",
    "source": "IKEA",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000752318,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000752318.jpg",
    "productId": "5100000000000752318",
    "position": 100,
-   "price": "$702.36"
+   "price": "$619.43",
+   "rating": 4.2,
+   "ratingCount": 1965
   },
   {
-   "title": "Nesting Coffee Table Set of 2 Marble Effect - Olive",
+   "title": "Square Wood and Black Metal Coffee Table Nesting Set of 2 35\"",
    "source": "Home Depot",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000760237,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000760237.jpg",
    "productId": "5100000000000760237",
    "position": 101,
-   "price": "$208.23",
-   "rating": 4.7,
-   "ratingCount": 804
+   "price": "$652.21",
+   "rating": 4.6,
+   "ratingCount": 1828
   },
   {
-   "title": "Mid-Century Coffee Table Oak 44\" L - Olive",
-   "source": "Castlery",
+   "title": "Walnut and Brass Coffee Table 2-Tier 42\"",
+   "source": "Article",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000768156,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000768156.jpg",
    "productId": "5100000000000768156",
    "position": 102,
-   "price": "$700.15",
+   "price": "$691.21",
    "rating": 3.9,
-   "ratingCount": 988
+   "ratingCount": 570
   },
   {
-   "title": "Farmhouse Coffee Table with Shelf 46\" - Olive",
-   "source": "Walmart",
+   "title": "Round Walnut Coffee Table Lift-Top with Storage 49\"",
+   "source": "Overstock",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000776075,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000776075.jpg",
    "productId": "5100000000000776075",
    "position": 103,
-   "price": "$164.10"
+   "price": "$733.44",
+   "rating": 3.9,
+   "ratingCount": 1133
   },
   {
-   "title": "Rattan Coffee Table Boho Round 32\" - Olive",
-   "source": "Etsy",
+   "title": "Rectangular Brushed Brass Coffee Table with Storage 33\"",
+   "source": "Wayfair",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000783994,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000783994.jpg",
    "productId": "5100000000000783994",
    "position": 104,
-   "price": "$132.58",
-   "rating": 4.2,
-   "ratingCount": 1788
+   "price": "$765.19",
+   "rating": 4.4,
+   "ratingCount": 162
   },
   {
-   "title": "Brushed Brass Drum Coffee Table 34\"",
+   "title": "Oval Solid Wood with Brass Legs Coffee Table Lift-Top Storage 30\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000000950011,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000000950011.jpg",
    "productId": "5100000000000950011",
    "position": 105,
-   "price": "$977.14",
+   "price": "$555.89",
    "rating": 4.8,
-   "ratingCount": 148
+   "ratingCount": 90
   },
   {
-   "title": "Solid Walnut Lift-Top Coffee Table 42\"",
+   "title": "Square Brushed Brass Coffee Table with Shelf 33\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001054740,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001054740.jpg",
    "productId": "5100000000001054740",
    "position": 106,
-   "price": "$522.91",
-   "rating": 4.7,
-   "ratingCount": 471
+   "price": "$692.18",
+   "rating": 4.6,
+   "ratingCount": 442
   },
   {
-   "title": "Walnut and Brushed Brass Nesting Coffee Tables Set of 2",
+   "title": "Oval Solid Walnut Coffee Table Storage 36\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001159469,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001159469.jpg",
    "productId": "5100000000001159469",
    "position": 107,
-   "price": "$466.64",
-   "rating": 4.7,
-   "ratingCount": 481
+   "price": "$614.63",
+   "rating": 4.4,
+   "ratingCount": 457
   },
   {
-   "title": "Solid Wood Round Coffee Table with Brass Base 36\"",
+   "title": "Square Black Steel and Walnut Coffee Table Drum 39\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001264198,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001264198.jpg",
    "productId": "5100000000001264198",
    "position": 108,
-   "price": "$755.15",
-   "rating": 4.3,
-   "ratingCount": 841
+   "price": "$888.32",
+   "rating": 4.6,
+   "ratingCount": 510
   },
   {
-   "title": "Brushed Brass and Marble Drum Coffee Table 32\"",
+   "title": "Rectangular Solid Wood with Brass Legs Coffee Table with Shelf 42\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001368927,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001368927.jpg",
    "productId": "5100000000001368927",
    "position": 109,
-   "price": "$480.01",
-   "rating": 4.5,
-   "ratingCount": 216
+   "price": "$718.74",
+   "rating": 4.4,
+   "ratingCount": 365
   },
   {
-   "title": "Solid Walnut Coffee Table with Drawer 48\"",
+   "title": "Square Oak and Black Metal Coffee Table Storage 45\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001473656,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001473656.jpg",
    "productId": "5100000000001473656",
    "position": 110,
-   "price": "$977.84",
+   "price": "$728.45",
    "rating": 4.9,
-   "ratingCount": 411
+   "ratingCount": 652
   },
   {
-   "title": "Brushed Brass Oval Coffee Table with Storage Shelf 44\"",
+   "title": "Rectangular Brushed Brass Coffee Table Drum 48\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001578385,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001578385.jpg",
    "productId": "5100000000001578385",
    "position": 111,
-   "price": "$930.70",
-   "rating": 4.8,
-   "ratingCount": 625
+   "price": "$474.12",
+   "rating": 4.7,
+   "ratingCount": 621
   },
   {
-   "title": "Solid Wood Lift-Top Storage Coffee Table 45\"",
+   "title": "Square Solid Walnut Coffee Table with Drawers 51\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001683114,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001683114.jpg",
    "productId": "5100000000001683114",
    "position": 112,
-   "price": "$689.08",
-   "rating": 4.9,
-   "ratingCount": 626
+   "price": "$891.53",
+   "rating": 4.3,
+   "ratingCount": 892
   },
   {
-   "title": "Walnut Slat Coffee Table with Brushed Brass Frame 47\"",
+   "title": "Oval Black Steel and Walnut Coffee Table with Drawers 32\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001787843,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001787843.jpg",
    "productId": "5100000000001787843",
    "position": 113,
-   "price": "$522.88",
+   "price": "$729.43",
    "rating": 4.6,
-   "ratingCount": 775
+   "ratingCount": 609
   },
   {
-   "title": "Brushed Brass Cylinder Storage Coffee Table 30\"",
+   "title": "Square Solid Walnut Coffee Table Nesting Set 35\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001892572,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001892572.jpg",
    "productId": "5100000000001892572",
    "position": 114,
-   "price": "$860.62",
-   "rating": 4.8,
-   "ratingCount": 731
+   "price": "$646.43",
+   "rating": 4.5,
+   "ratingCount": 216
   },
   {
-   "title": "Solid Walnut Low Profile Coffee Table 50\"",
+   "title": "Rectangular Black Steel and Walnut Coffee Table Lift-Top Storage 38\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000001997301,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000001997301.jpg",
    "productId": "5100000000001997301",
    "position": 115,
-   "price": "$996.02",
-   "rating": 4.4,
-   "ratingCount": 222
+   "price": "$479.16",
+   "rating": 4.8,
+   "ratingCount": 350
   },
   {
-   "title": "Brushed Brass Hairpin Leg Coffee Table with Walnut Top 40\"",
+   "title": "Rectangular Walnut and Brushed Brass Coffee Table Nesting Set 41\"",
    "source": "Hartwell & Co",
    "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000002102030,pvo:2&udm=28",
    "imageUrl": "https://mock.example/thumb/5100000000002102030.jpg",
    "productId": "5100000000002102030",
    "position": 116,
-   "price": "$903.55",
+   "price": "$818.74",
+   "rating": 4.6,
+   "ratingCount": 135
+  },
+  {
+   "title": "Round Solid Wood with Brass Legs Coffee Table Drum 44\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000002206759,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000002206759.jpg",
+   "productId": "5100000000002206759",
+   "position": 117,
+   "price": "$890.84",
+   "rating": 4.6,
+   "ratingCount": 236
+  },
+  {
+   "title": "Square Walnut and Brushed Brass Coffee Table with Shelf 47\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000002311488,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000002311488.jpg",
+   "productId": "5100000000002311488",
+   "position": 118,
+   "price": "$455.86",
+   "rating": 4.8,
+   "ratingCount": 606
+  },
+  {
+   "title": "Round Solid Wood with Brass Legs Coffee Table Storage 50\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000002416217,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000002416217.jpg",
+   "productId": "5100000000002416217",
+   "position": 119,
+   "price": "$822.67",
+   "rating": 4.6,
+   "ratingCount": 496
+  },
+  {
+   "title": "Rectangular Brushed Brass Coffee Table with Shelf 31\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000002520946,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000002520946.jpg",
+   "productId": "5100000000002520946",
+   "position": 120,
+   "price": "$565.41",
+   "rating": 4.4,
+   "ratingCount": 602
+  },
+  {
+   "title": "Square Oak and Black Metal Coffee Table Drum 34\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000002625675,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000002625675.jpg",
+   "productId": "5100000000002625675",
+   "position": 121,
+   "price": "$853.69",
+   "rating": 4.3,
+   "ratingCount": 309
+  },
+  {
+   "title": "Round Black Steel and Walnut Coffee Table with Drawers 37\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000002730404,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000002730404.jpg",
+   "productId": "5100000000002730404",
+   "position": 122,
+   "price": "$606.44",
+   "rating": 4.3,
+   "ratingCount": 518
+  },
+  {
+   "title": "Round Solid Walnut Coffee Table Storage 40\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000002835133,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000002835133.jpg",
+   "productId": "5100000000002835133",
+   "position": 123,
+   "price": "$736.74",
+   "rating": 4.5,
+   "ratingCount": 93
+  },
+  {
+   "title": "Square Solid Wood with Brass Legs Coffee Table Lift-Top Storage 43\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000002939862,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000002939862.jpg",
+   "productId": "5100000000002939862",
+   "position": 124,
+   "price": "$677.10",
+   "rating": 4.6,
+   "ratingCount": 756
+  },
+  {
+   "title": "Rectangular Brushed Brass Coffee Table Lift-Top Storage 46\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003044591,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003044591.jpg",
+   "productId": "5100000000003044591",
+   "position": 125,
+   "price": "$463.00",
+   "rating": 4.4,
+   "ratingCount": 767
+  },
+  {
+   "title": "Rectangular Oak and Black Metal Coffee Table with Drawers 49\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003149320,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003149320.jpg",
+   "productId": "5100000000003149320",
+   "position": 126,
+   "price": "$554.28",
    "rating": 4.7,
-   "ratingCount": 572
+   "ratingCount": 838
+  },
+  {
+   "title": "Round Brushed Brass Coffee Table Nesting Set 30\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003254049,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003254049.jpg",
+   "productId": "5100000000003254049",
+   "position": 127,
+   "price": "$533.88",
+   "rating": 4.8,
+   "ratingCount": 897
+  },
+  {
+   "title": "Rectangular Walnut and Brushed Brass Coffee Table Lift-Top Storage 33\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003358778,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003358778.jpg",
+   "productId": "5100000000003358778",
+   "position": 128,
+   "price": "$893.06",
+   "rating": 4.6,
+   "ratingCount": 880
+  },
+  {
+   "title": "Oval Solid Walnut Coffee Table Drum 36\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003463507,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003463507.jpg",
+   "productId": "5100000000003463507",
+   "position": 129,
+   "price": "$659.27",
+   "rating": 4.4,
+   "ratingCount": 704
+  },
+  {
+   "title": "Rectangular Solid Walnut Coffee Table Nesting Set 39\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003568236,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003568236.jpg",
+   "productId": "5100000000003568236",
+   "position": 130,
+   "price": "$475.44",
+   "rating": 4.5,
+   "ratingCount": 165
+  },
+  {
+   "title": "Oval Walnut and Brushed Brass Coffee Table Storage 42\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003672965,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003672965.jpg",
+   "productId": "5100000000003672965",
+   "position": 131,
+   "price": "$813.89",
+   "rating": 4.3,
+   "ratingCount": 592
+  },
+  {
+   "title": "Rectangular Solid Wood with Brass Legs Coffee Table Drum 45\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003777694,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003777694.jpg",
+   "productId": "5100000000003777694",
+   "position": 132,
+   "price": "$500.85",
+   "rating": 4.9,
+   "ratingCount": 308
+  },
+  {
+   "title": "Rectangular Black Steel and Walnut Coffee Table with Shelf 48\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003882423,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003882423.jpg",
+   "productId": "5100000000003882423",
+   "position": 133,
+   "price": "$679.02",
+   "rating": 4.5,
+   "ratingCount": 596
+  },
+  {
+   "title": "Rectangular Brushed Brass Coffee Table with Drawers 51\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000003987152,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000003987152.jpg",
+   "productId": "5100000000003987152",
+   "position": 134,
+   "price": "$822.23",
+   "rating": 4.9,
+   "ratingCount": 466
+  },
+  {
+   "title": "Rectangular Black Steel and Walnut Coffee Table Drum 32\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000004091881,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000004091881.jpg",
+   "productId": "5100000000004091881",
+   "position": 135,
+   "price": "$794.70",
+   "rating": 4.3,
+   "ratingCount": 808
+  },
+  {
+   "title": "Round Brushed Brass Coffee Table Storage 35\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000004196610,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000004196610.jpg",
+   "productId": "5100000000004196610",
+   "position": 136,
+   "price": "$661.98",
+   "rating": 4.3,
+   "ratingCount": 807
+  },
+  {
+   "title": "Square Brushed Brass Coffee Table Nesting Set 38\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000004301339,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000004301339.jpg",
+   "productId": "5100000000004301339",
+   "position": 137,
+   "price": "$734.39",
+   "rating": 4.3,
+   "ratingCount": 788
+  },
+  {
+   "title": "Oval Oak and Black Metal Coffee Table Lift-Top Storage 41\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000004406068,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000004406068.jpg",
+   "productId": "5100000000004406068",
+   "position": 138,
+   "price": "$517.02",
+   "rating": 4.5,
+   "ratingCount": 160
+  },
+  {
+   "title": "Square Black Steel and Walnut Coffee Table Lift-Top Storage 44\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000004510797,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000004510797.jpg",
+   "productId": "5100000000004510797",
+   "position": 139,
+   "price": "$734.11",
+   "rating": 4.6,
+   "ratingCount": 289
+  },
+  {
+   "title": "Rectangular Solid Walnut Coffee Table Lift-Top Storage 47\"",
+   "source": "Hartwell & Co",
+   "link": "https://www.google.com/search?ibp=oshop&q=coffee+table&prds=catalogid:5100000000004615526,pvo:2&udm=28",
+   "imageUrl": "https://mock.example/thumb/5100000000004615526.jpg",
+   "productId": "5100000000004615526",
+   "position": 140,
+   "price": "$732.51",
+   "rating": 4.8,
+   "ratingCount": 493
   }
  ],
  "credits": 2

@@ -28,6 +28,8 @@ in credits; a loading state and a retry on errors.
 
 **Shipped in stage 2b:** Shop Again learns from the rated items themselves (titles, prices, sellers and, when they can be fetched, thumbnails), not only from comments: inferred preference chips with evidence tooltips, a seller affinity and a price band worked out in code, parser-guessed styles shown as guesses, up to three search phrasings in a wider pool (up to 4 Serper calls), a ranker that sees the profile, a summary line, an alignment diagnostic, and lookups only on Open.
 
+**Shipped in stage 2c:** the model describes, code decides. The per-item tags come from the model; whether a shape, material, finish, seller or price is a preference is decided in code from all the ratings, against what was shown (so liking round and rectangular makes shape *open*, not round, and a mostly-round batch does not teach "likes round"). Open and mixed-price chips exert no pressure; the request chips never change; search phrasings come only from converged values (one per value of an open dimension); the final 24 are held to a 60% single-value cap on guarded dimensions and a 50% seller cap (80% when pinned). Every threshold is in `src/app/shop/thresholds.py` and the table in ADR 0012.
+
 **Later:** an eval of about 12 prompts (stage 3), deployment as a portfolio-site tab, then Redesign Mode. The **2D room plan is dropped from the product**
 (ADR 0012); step 2 of "Product" below is superseded, and the plan code survives only in the developer run
 report.

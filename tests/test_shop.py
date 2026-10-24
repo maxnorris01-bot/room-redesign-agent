@@ -27,6 +27,7 @@ from app.mock_llm import (
     MOCK_SHOP_PARSES,
     mock_prefs_payload,
     mock_prefs_v2_payload,
+    mock_prefs_v3_payload,
     mock_shop_parse_payload,
     response,
     text_block,
@@ -187,6 +188,10 @@ class RouterClient:
             if isinstance(self.parse, str):
                 return response([text_block(self.parse)])
             return response([text_block(self.parse or mock_shop_parse_payload(text))])
+        if title == "PreferenceTags":
+            if isinstance(self.prefs, str):
+                return response([text_block(self.prefs)])
+            return response([text_block(self.prefs or mock_prefs_v3_payload(text))])
         if title == "PreferenceProfileV2":
             if isinstance(self.prefs, str):
                 return response([text_block(self.prefs)])

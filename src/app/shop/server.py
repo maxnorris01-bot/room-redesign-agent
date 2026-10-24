@@ -33,7 +33,7 @@ STATIC_FILES: dict[str, tuple[str, str]] = {
 }
 API_PATHS = {
     "/api/session", "/api/search", "/api/rate", "/api/resolve", "/api/shop-again",
-    "/api/preference/remove",
+    "/api/preference/remove", "/api/preference/pin",
 }  # fmt: skip
 POST_PATHS = API_PATHS - {"/api/session"}
 CSP = (
@@ -136,6 +136,8 @@ class ShopApp:
                 result = self.service.remove_preference(
                     data.get("session_id"), data.get("kind"), data.get("phrase")
                 )
+            elif path == "/api/preference/pin":
+                result = self.service.pin_preference(data.get("session_id"), data.get("phrase"))
             else:
                 result = self.service.resolve(data.get("session_id"), data.get("result_id"))
         except ApiError as exc:
