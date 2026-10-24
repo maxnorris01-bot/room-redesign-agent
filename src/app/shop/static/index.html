@@ -14,6 +14,13 @@
     <div class="top-row">
       <h1 class="brand">Shop</h1>
       <span id="mode-badge" class="badge" hidden></span>
+      <span class="spacer"></span>
+      <button id="start-over" type="button" class="quiet">Start over</button>
+      <span id="start-over-confirm" class="confirm" hidden>
+        Start a new session?
+        <button id="start-over-yes" type="button" class="quiet danger">Yes, start over</button>
+        <button id="start-over-cancel" type="button" class="quiet">Cancel</button>
+      </span>
     </div>
     <form id="search-form" class="search" autocomplete="off">
       <input id="request" type="text" maxlength="300" required
@@ -22,11 +29,34 @@
       <button id="search-btn" type="submit" class="primary">Search</button>
     </form>
     <div id="chips" class="chips" aria-label="How your request was understood"></div>
+    <div id="prefs" class="prefs" hidden>
+      <p id="prefs-summary" class="prefs-summary"></p>
+      <div id="pref-chips" class="chips" aria-label="What you liked and disliked"></div>
+    </div>
   </div>
 </header>
 
 <main class="wrap">
-  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <div class="toolbar">
+    <div class="status-area">
+      <span id="spinner" class="spinner" hidden></span>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <button id="retry" type="button" class="quiet" hidden>Retry</button>
+    </div>
+    <div class="actions">
+      <span id="again-wrap" class="again" title="Rate a few results first">
+        <button id="shop-again" type="button" class="primary" disabled aria-disabled="true">Shop Again</button>
+      </span>
+      <button id="saved-toggle" type="button" class="outline" aria-expanded="false" aria-controls="saved">Show saved (0)</button>
+    </div>
+  </div>
+  <section id="saved" class="saved" hidden aria-label="Saved results">
+    <div class="tabs" role="tablist">
+      <button id="tab-loved" type="button" role="tab" aria-selected="true">Loved (0)</button>
+      <button id="tab-liked" type="button" role="tab" aria-selected="false">Liked (0)</button>
+    </div>
+    <div id="saved-row" class="saved-row"></div>
+  </section>
   <section id="empty" class="empty">
     <h2>Find something to buy</h2>
     <p>Describe it in your own words. The price and the kind of product are applied as filters;
@@ -39,9 +69,6 @@
 <footer class="foot">
   <div class="wrap foot-inner">
     <span id="stats" class="stats"></span>
-    <span class="again" title="Coming next">
-      <button id="shop-again" type="button" disabled aria-disabled="true">Shop Again</button>
-    </span>
   </div>
 </footer>
 </body>

@@ -23,7 +23,13 @@ from app import llm
 from app.categories import category_hits, known_category
 from app.config import Config
 from app.llm import Budget
-from app.mock_llm import MOCK_SHOP_PARSES, mock_shop_parse_payload, response, text_block
+from app.mock_llm import (
+    MOCK_SHOP_PARSES,
+    mock_prefs_payload,
+    mock_shop_parse_payload,
+    response,
+    text_block,
+)
 from app.shop import search as shop_search
 from app.shop.models import ShopQuery, ShopResult, clean_request, result_id
 from app.shop.parse import build_query, fallback_query, parse_request, strip_price_words
@@ -154,9 +160,11 @@ class RouterClient:
         self,
         parse: dict[str, Any] | str | None = None,
         rank: Callable[[str], list[str] | str] | None = None,
+        prefs: dict[str, Any] | str | None = None,
     ) -> None:
         self.parse = parse
         self.rank = rank
+        self.prefs = prefs
         self.calls: list[dict[str, Any]] = []
         self.messages = SimpleNamespace(create=self._create)
 
@@ -168,6 +176,10 @@ class RouterClient:
             if isinstance(self.parse, str):
                 return response([text_block(self.parse)])
             return response([text_block(self.parse or mock_shop_parse_payload(text))])
+        if title == "PreferenceProfile":
+            if isinstance(self.prefs, str):
+                return response([text_block(self.prefs)])
+            return response([text_block(self.prefs or mock_prefs_payload(text))])
         assert title == "RankedFinalists"
         if self.rank is None:
             ids = re.findall(r"^- id: (\S+) \|", text, flags=re.MULTILINE)
@@ -417,7 +429,8 @@ def test_page_two_when_fewer_than_24_survive(monkeypatch: pytest.MonkeyPatch) ->
     out = run_search("sofa", search, config())
     assert out.serper_calls == 2 and [p for _, p in search.calls] == [1, 2]
     assert len(out.results) == 24 - 0 and out.counts.returned == 30
-    assert out.provider_usd == pytest.approx(2 * config().serper_usd_per_query)
+    assert out.serper_credits == 4  # 2 calls x 2 credits
+    assert out.provider_usd == pytest.approx(0.004)  # 4 credits x $0.001
 
 
 def test_filters_decide_whether_page_two_is_needed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -852,7 +865,8 @@ def test_ratings_and_the_last_search_are_restored(tmp_path: Path) -> None:
     view = fresh.session_view(sid)
     assert view["search"]["request"] == "modern couches under $1000"
     assert [r["id"] for r in view["search"]["results"]] == [r["id"] for r in results]
-    assert view["ratings"][results[0]["id"]] == {"rating": "love", "comment": "this one"}
+    loved = view["ratings"][results[0]["id"]]
+    assert (loved["rating"], loved["comment"]) == ("love", "this one") and loved["rated_at"]
     assert view["ratings"][results[1]["id"]]["rating"] == "dislike"
     empty = fresh.session_view("does-not-exist-123")
     assert empty["session_id"] is None and empty["search"] is None and empty["mode"] == "mock"
@@ -949,7 +963,7 @@ def test_page_has_no_inline_script_style_or_handlers_and_a_safe_script() -> None
     ):
         assert forbidden not in code
     assert "textContent" in code and "createTextNode" in code
-    assert "Coming next" in page and "disabled" in page
+    assert "Rate a few results first" in page and "disabled" in page
 
 
 def test_static_files_and_session_endpoint(app: ShopApp) -> None:
@@ -1116,5 +1130,7 @@ def test_live_mode_refuses_to_start_without_keys_and_names_them_only(
 def test_live_cost_lines_state_the_expected_cost_per_search() -> None:
     script = load_shop_script()
     text = "\n".join(script.cost_lines(config()))
-    assert "$0.01" in text and "Serper: 1 call, 2" in text and "at most 12" in text
-    assert "none during a search" in text.lower() or "Link lookups: none during a search" in text
+    assert "$0.01" in text and "at most 12" in text
+    assert "2 credits per call" in text and "4 credits, $0.0040" in text
+    assert "Shop Again: up to 3 Serper pages (6 credits, $0.0060)" in text
+    assert "Link lookups: none during a search" in text

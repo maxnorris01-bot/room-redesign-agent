@@ -32,7 +32,9 @@ from app.shop.models import (
     Rating,
     ShopQuery,
     ShopResult,
+    StoredProfile,
 )
+from app.shopping_retrieval import seller_key
 
 SESSION_SCHEMA_VERSION = 1
 DEFAULT_ROOT = Path("shop-data")
@@ -52,6 +54,11 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def now_iso_ms() -> str:
+    """For ratings, which are ordered by time: millisecond resolution, same format as the page's."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
 class SearchRecord(_Model):
     index: int  # 1-based, in order
     request: str
@@ -66,6 +73,9 @@ class SearchRecord(_Model):
     counts: FilterCounts
     ranked: bool
     warnings: list[str] = []
+    kind: str = "search"  # "search" (typed) or "shop_again"
+    serper_credits: int | None = None  # None in files from before credits were tracked
+    note: str = ""
 
 
 class RatingRecord(_Model):
@@ -103,6 +113,8 @@ class Session(_Model):
     resolved: dict[str, ResolvedLink] = Field(default_factory=dict)
     lookups_used: int = 0
     lookup_usd: float = 0.0
+    profile: StoredProfile | None = None  # Shop Again's preference profile
+    shop_agains_used: int = 0
 
 
 def valid_session_id(session_id: str) -> bool:
@@ -201,3 +213,30 @@ def disliked_sellers(session: Session) -> list[str]:
         if rec.rating == "dislike" and rid in session.results and session.results[rid].seller
     }
     return sorted(names)
+
+
+def sellers_to_deprioritize(session: Session, min_dislikes: int = 2) -> set[str]:
+    """Normalized names of sellers with at least `min_dislikes` disliked results and no loved or
+    liked one. Shop Again ranks their results last; it never excludes them."""
+    disliked: dict[str, int] = {}
+    positive: set[str] = set()
+    for rid, rec in session.ratings.items():
+        shown = session.results.get(rid)
+        if shown is None or rec.rating is None:
+            continue
+        key = seller_key(shown.seller)
+        if rec.rating == "dislike":
+            disliked[key] = disliked.get(key, 0) + 1
+        else:
+            positive.add(key)
+    return {k for k, n in disliked.items() if n >= min_dislikes and k not in positive}
+
+
+def saved_ids(session: Session) -> list[str]:
+    """Ids of loved and liked results from every search, newest rating first."""
+    rows = [
+        (rec.rated_at or "", rid)
+        for rid, rec in session.ratings.items()
+        if rec.rating in ("love", "like") and rid in session.results
+    ]
+    return [rid for _, rid in sorted(rows, reverse=True)]

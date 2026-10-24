@@ -22,6 +22,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -36,6 +37,7 @@ EXAMPLES = [
     ("curtains", "boho curtains"),
 ]
 COLORS = ["#c9d6df", "#e8d8c3", "#d4e0cf", "#e9cfd2", "#d9d3ea", "#f1e5b8"]
+COFFEE = "coffee tables with a mix of wood and metal with storage"
 FAILS: list[str] = []
 
 
@@ -111,13 +113,41 @@ def chips(page: Page) -> list[str]:
     return [t.strip() for t in page.locator("#chips .chip").all_inner_texts()]
 
 
+def card_ids(page: Page, scope: str = "#grid") -> list[str]:
+    return [c.get_attribute("data-id") or "" for c in page.locator(f"{scope} .card").all()]
+
+
+def hold(page: Page, pattern: str) -> Callable[[], None]:
+    """Hold the next request matching `pattern` (so a loading state can be looked at); the
+    returned function lets it go and stops intercepting."""
+    held: list[Route] = []
+
+    def handler(route: Route) -> None:
+        if held:
+            route.continue_()
+        else:
+            held.append(route)
+
+    page.route(pattern, handler)
+
+    def release() -> None:
+        held[0].continue_()
+        page.unroute(pattern, handler)
+
+    return release
+
+
+def saved_counts(page: Page) -> tuple[str, str]:
+    return page.inner_text("#tab-loved"), page.inner_text("#tab-liked")
+
+
 def run_checks(base: str, shots: Path) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
             context = browser.new_context(viewport={"width": 1280, "height": 900})
-            requested = install_routes(context, 0)
+            install_routes(context, 0)
             page = context.new_page()
             page.on(
                 "console",
@@ -133,128 +163,245 @@ def run_checks(base: str, shots: Path) -> None:
             page.goto(base)
             page.wait_for_selector("#examples button")
             check(page.locator(".card").count() == 0, "no cards before a search")
-            check(page.locator("#shop-again").is_disabled(), "Shop Again is disabled")
             check(
-                page.locator(".again").get_attribute("title") == "Coming next",
-                "Shop Again tooltip says Coming next",
+                page.locator("#shop-again").is_disabled(), "Shop Again is disabled before a rating"
             )
+            check(
+                page.locator("#again-wrap").get_attribute("title") == "Rate a few results first",
+                "tooltip says Rate a few results first",
+            )
+            check(page.inner_text("#saved-toggle") == "Show saved (0)", "Saved toggle starts at 0")
             page.screenshot(path=str(shots / "01-empty.png"))
 
-            for slug, text in EXAMPLES:
-                print(f"search: {text}")
-                search(page, text)
-                n = page.locator(".card").count()
-                check(0 < n <= 24, f"{n} result cards")
-                print("   chips:", " | ".join(chips(page)))
-                print("   footer:", page.inner_text("#stats"))
-                check("Serper call" in page.inner_text("#stats"), "footer shows Serper calls")
-                check("est. $" in page.inner_text("#stats"), "footer shows the estimated cost")
-                page.screenshot(path=str(shots / f"02-results-{slug}.png"))
-            full = shots / "03-results-curtains-full.png"
-            page.screenshot(path=str(full), full_page=True)
-
-            # price chip check on the first example
-            search(page, EXAMPLES[0][1])
-            check(any("up to $1,000" in c for c in chips(page)), "price chip reads up to $1,000")
-            check(any(c.endswith("modern") for c in chips(page)), "style chip shows modern")
-            prices = [
-                float(t.replace("$", "").replace(",", ""))
-                for t in page.locator(".card .price:not(.na)").all_inner_texts()
-            ]
-            check(
-                bool(prices) and max(prices) <= 1000,
-                f"all prices at or under $1,000 ({len(prices)})",
+            print("a failed search shows a readable error and a retry")
+            page.route(
+                "**/api/search",
+                lambda r: r.fulfill(
+                    status=502,
+                    content_type="application/json",
+                    body='{"error": "serper: HTTP 402 payment required"}',
+                ),
             )
+            page.fill("#request", COFFEE)
+            page.click("#search-btn")
+            page.locator("#status.error").wait_for()
+            check("serper: HTTP 402" in page.inner_text("#status"), "error message is shown")
+            check(page.locator("#retry").is_visible(), "a Retry button is shown")
+            page.screenshot(path=str(shots / "02-error-retry.png"))
+            page.unroute("**/api/search")
+            page.click("#retry")
+            wait_for_results(page)
+            check(page.locator("#retry").is_hidden(), "Retry goes away after it works")
 
-            print("rate three results, comment, open one")
-            cards = page.locator(".card")
-            ids = [cards.nth(i).get_attribute("data-id") for i in range(3)]
+            print("search with a visible loading state")
+            page.fill("#request", COFFEE)
+            before = page.locator("#grid").bounding_box()
+            release = hold(page, "**/api/search")
+            page.click("#search-btn")
+            page.locator("#spinner").wait_for(state="visible")
+            check(
+                page.inner_text("#status") == "Searching, usually about 10 seconds",
+                "loading text says Searching, usually about 10 seconds",
+            )
+            check(page.locator("#search-btn").is_disabled(), "Search is disabled while loading")
+            check(page.locator("#shop-again").is_disabled(), "Shop Again is disabled while loading")
+            during = page.locator("#grid").bounding_box()
+            check(
+                before is not None
+                and during is not None
+                and abs(before["y"] - during["y"]) < 1
+                and during["height"] >= before["height"] - 1,
+                "the grid keeps its place and height while loading",
+            )
+            page.screenshot(path=str(shots / "03-loading.png"))
+            release()
+            wait_for_results(page)
+            after = page.locator("#grid").bounding_box()
+            check(
+                after is not None and abs(after["y"] - (before or {"y": 0})["y"]) < 1,
+                "results arrive in the same place",
+            )
+            check(page.locator("#spinner").is_hidden(), "spinner gone after results")
+            check(page.locator("#search-btn").is_enabled(), "Search is enabled again")
+            check(
+                "Serper calls = 4 credits ($0.0040)" in page.inner_text("#stats"),
+                "footer shows credits and cost",
+            )
+            print("   footer:", page.inner_text("#stats"))
+            first_ids = card_ids(page)
+            check(len(first_ids) == 24, f"{len(first_ids)} results")
+
+            print("rate three results, one with a comment")
+            cards = page.locator("#grid .card")
             love, like, dislike = (cards.nth(i) for i in range(3))
             love.locator(".rate.love").click()
+            check(page.locator("#shop-again").is_enabled(), "Shop Again is enabled after a rating")
+            check(page.locator("#again-wrap").get_attribute("title") is None, "tooltip gone")
             like.locator(".rate.like").click()
             dislike.locator(".rate.dislike").click()
-            for card, kind in ((love, "love"), (like, "like"), (dislike, "dislike")):
-                check(
-                    card.locator(f".rate.{kind}").get_attribute("aria-pressed") == "true",
-                    f"{kind} highlighted",
-                )
-            check("disliked" in (dislike.get_attribute("class") or ""), "disliked card is dimmed")
-            like.locator(".rate.like").click()
-            check(
-                like.locator(".rate.like").get_attribute("aria-pressed") == "false",
-                "clicking again clears the rating",
-            )
-            like.locator(".rate.like").click()
-            note = love.locator(".note")
-            note.fill("Love the arms, check the depth")
+            note = dislike.locator(".note")
+            note.fill("too dark")
             note.press("Enter")
-            dislike.locator(".note").fill("Too dark for the room")
-            page.locator("h1").click()  # blur saves the second note
             love.locator(".resolved").filter(has_text=re.compile(".+")).wait_for(timeout=10000)
-            check(
-                "Sold by" in love.locator(".resolved").inner_text()
-                or "Google" in love.locator(".resolved").inner_text(),
-                "loving a result resolves its link",
-            )
-            with context.expect_page() as popup_info:
-                like.locator(".open").click()
-            popup = popup_info.value
-            popup.wait_for_url(re.compile(r"^https://"), timeout=10000)
-            popup.wait_for_load_state()
-            check(
-                urlsplit(popup.url).scheme == "https" and "Mock retailer" in popup.title(),
-                f"Open goes to the retailer link in a new tab ({urlsplit(popup.url).hostname})",
-            )
-            popup.close()
             page.wait_for_load_state("networkidle")
-            lookups = page.inner_text("#stats")
-            print("   footer:", lookups)
-            check("link lookups 2 of 12" in lookups, "two lookups used (love, open)")
+            check(
+                page.inner_text("#saved-toggle") == "Show saved (2)",
+                "Saved count is 2 (loved + liked)",
+            )
             page.screenshot(path=str(shots / "04-rated.png"))
+
+            print("Shop Again")
+            grid_y = (page.locator("#grid").bounding_box() or {"y": -1})["y"]
+            release = hold(page, "**/api/shop-again")
+            page.click("#shop-again")
+            page.locator("#spinner").wait_for(state="visible")
+            check(
+                page.inner_text("#status") == "Finding new results, usually about 10 seconds",
+                "Shop Again loading text",
+            )
+            check(page.locator("#shop-again").is_disabled(), "Shop Again disabled while it runs")
+            page.screenshot(path=str(shots / "05-shop-again-loading.png"))
+            release()
+            wait_for_results(page)
+            page.locator("#prefs").wait_for(state="visible")
+            check(
+                abs((page.locator("#grid").bounding_box() or {"y": -9})["y"] - grid_y) < 1,
+                "the grid does not move when Shop Again brings the preference chips",
+            )
+            new_ids = card_ids(page)
+            check(len(new_ids) == 24, f"{len(new_ids)} new results")
+            check(
+                not set(new_ids) & set(first_ids), "no result from the first search is shown again"
+            )
+            print("   summary:", page.inner_text("#prefs-summary"))
+            print("   footer:", page.inner_text("#stats"))
+            pref_chips = page.locator("#pref-chips .chip.pref")
+            check(pref_chips.count() >= 2, f"{pref_chips.count()} preference chips")
+            check(page.locator("#pref-chips .chip.pref.like").count() >= 1, "a like chip with +")
+            check(
+                page.locator("#pref-chips .chip.pref.dislike").count() >= 1, "a dislike chip with -"
+            )
+            check(
+                "too dark" in page.inner_text("#pref-chips"), "the 'too dark' comment became a chip"
+            )
+            check(
+                "fewer too dark" in page.inner_text("#prefs-summary"),
+                "summary mentions fewer too dark",
+            )
+            check(
+                "Shop Again took" in page.inner_text("#stats")
+                and "credits" in page.inner_text("#stats"),
+                "footer is the Shop Again's",
+            )
+            page.screenshot(path=str(shots / "06-after-shop-again.png"))
+
+            print("delete a chip")
+            chips_before = pref_chips.count()
+            gone_text = pref_chips.first.inner_text()
+            pref_chips.first.locator(".x").click()
+            page.locator("#pref-chips .chip.pref").nth(chips_before - 1).wait_for(state="detached")
+            check(
+                page.locator("#pref-chips .chip.pref").count() == chips_before - 1,
+                "the chip is gone",
+            )
+            check(
+                gone_text.strip("+−\n ×") not in page.inner_text("#pref-chips"),
+                "its text is no longer shown",
+            )
+
+            print("Saved panel")
+            check(page.locator("#saved").is_hidden(), "Saved is closed at first")
+            page.click("#saved-toggle")
+            check(page.locator("#saved").is_visible(), "Show saved opens the panel")
+            check(
+                page.inner_text("#saved-toggle") == "Hide saved (2)", "toggle reads Hide saved (2)"
+            )
+            check(saved_counts(page) == ("Loved (1)", "Liked (1)"), f"tabs {saved_counts(page)}")
+            loved_ids = card_ids(page, "#saved-row")
+            check(loved_ids == [first_ids[0]], "the loved item from the first search is in Saved")
+            page.click("#tab-liked")
+            check(card_ids(page, "#saved-row") == [first_ids[1]], "the liked item is under Liked")
+            page.screenshot(path=str(shots / "07-saved-open.png"))
+            page.click("#saved-toggle")
+            check(page.locator("#saved").is_hidden(), "Hide saved closes the panel")
+            page.click("#saved-toggle")
+
+            print("re-rating from Saved")
+            newcard = page.locator("#grid .card").first
+            newcard.locator(".rate.like").click()
+            check(page.inner_text("#tab-liked") == "Liked (2)", "a new like joins Saved")
+            page.locator("#saved-row .card").nth(0).locator(".rate.like").click()
+            check(
+                page.inner_text("#tab-liked") == "Liked (1)",
+                "clearing a rating in Saved removes it",
+            )
+            check(
+                newcard.locator(".rate.like").get_attribute("aria-pressed") == "false",
+                "the same card in the grid is cleared too",
+            )
+            page.locator("#saved-row .card").first.locator(".note").fill("good arms")
+            page.locator("h1").click()
+            page.click("#tab-loved")
+
+            print("a second typed search keeps Saved")
+            search(page, "boho curtains")
+            check(
+                saved_counts(page) == ("Loved (1)", "Liked (1)"),
+                "Saved is unchanged by a new search",
+            )
+            check(page.locator("#saved").is_visible(), "the panel stays open")
+            third_ids = card_ids(page)
 
             print("reload")
             page.reload()
             wait_for_results(page)
-            cards = page.locator(".card")
+            check(card_ids(page) == third_ids, "the last search is restored")
+            check(page.locator("#saved").is_visible(), "the Saved panel is still open (remembered)")
+            check(saved_counts(page) == ("Loved (1)", "Liked (1)"), "Saved counts restored")
+            check(card_ids(page, "#saved-row") == [first_ids[0]], "the loved card is restored")
             check(
-                [cards.nth(i).get_attribute("data-id") for i in range(3)] == ids,
-                "same results restored in the same order",
+                page.locator("#saved-row .card")
+                .first.locator(".rate.love")
+                .get_attribute("aria-pressed")
+                == "true",
+                "its love state is restored",
             )
+            check(page.locator("#prefs").is_visible(), "preference chips restored")
             check(
-                cards.nth(0).locator(".rate.love").get_attribute("aria-pressed") == "true",
-                "love restored",
+                page.locator("#pref-chips .chip.pref").count() == chips_before - 1,
+                "the deleted chip is still deleted",
             )
+            page.click("#tab-liked")
             check(
-                cards.nth(1).locator(".rate.like").get_attribute("aria-pressed") == "true",
-                "like restored",
+                page.locator("#saved-row .card").first.locator(".note").input_value()
+                == "good arms",
+                "a note typed in Saved is restored",
             )
-            check(
-                cards.nth(2).locator(".rate.dislike").get_attribute("aria-pressed") == "true",
-                "dislike restored",
-            )
-            check(
-                cards.nth(0).locator(".note").input_value() == "Love the arms, check the depth",
-                "comment restored",
-            )
-            check(
-                cards.nth(2).locator(".note").input_value() == "Too dark for the room",
-                "comment saved on blur restored",
-            )
-            check(
-                cards.nth(1).locator(".resolved").inner_text() != "",
-                "resolved retailer info restored",
-            )
-            check(page.input_value("#request") == EXAMPLES[0][1], "search box restored")
-            check(any("up to $1,000" in c for c in chips(page)), "chips restored")
-            check("link lookups 2 of 12" in page.inner_text("#stats"), "lookup count restored")
-            page.screenshot(path=str(shots / "05-restored.png"))
+            check(page.locator("#shop-again").is_enabled(), "Shop Again is enabled after reload")
+            page.screenshot(path=str(shots / "08-restored.png"))
 
             page.set_viewport_size({"width": 390, "height": 844})
-            page.screenshot(path=str(shots / "06-restored-mobile.png"))
+            page.screenshot(path=str(shots / "09-mobile.png"))
+            page.evaluate("window.scrollTo(0, 0)")
             page.set_viewport_size({"width": 1280, "height": 900})
 
-            hosts = sorted(set(requested))
-            print("non-local hosts the page asked for (all answered by this script):", hosts)
+            print("start over")
+            page.click("#start-over")
+            check(page.locator("#start-over-confirm").is_visible(), "start over asks first")
+            page.click("#start-over-cancel")
+            check(page.locator("#grid .card").count() > 0, "cancel changes nothing")
+            page.click("#start-over")
+            page.click("#start-over-yes")
+            check(page.locator("#grid .card").count() == 0, "start over empties the page")
+            check(
+                page.inner_text("#saved-toggle") == "Hide saved (0)",
+                "Saved is empty in the new session",
+            )
+            check(page.locator("#prefs").is_hidden(), "preference chips cleared")
+            page.reload()
+            check(
+                page.locator("#grid .card").count() == 0, "a reload stays in the new empty session"
+            )
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()

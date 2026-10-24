@@ -9,11 +9,17 @@
     'boho curtains'
   ];
   var RATINGS = [['love', 'Love'], ['like', 'Like'], ['dislike', 'Dislike']];
-  var STORAGE_KEY = 'shop.session';
+  var KEY_SESSION = 'shop.session';
+  var KEY_SAVED_OPEN = 'shop.savedOpen';
+  var SEARCH_MSG = 'Searching, usually about 10 seconds';
+  var AGAIN_MSG = 'Finding new results, usually about 10 seconds';
+  var LOOKUP_MSG = 'Looking up the retailer link';
 
   var state = {
-    sessionId: null, search: null, ratings: {}, resolved: {},
-    used: 0, cap: 0, busy: false
+    sessionId: null, search: null, ratings: {}, resolved: {}, known: {},
+    profile: null, summary: '', used: 0, cap: 0, againsUsed: 0, againsCap: 0,
+    sessionUsd: 0, busy: 0, busyMessage: '', savedOpen: false, savedTab: 'love',
+    confirming: false
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -30,14 +36,16 @@
     return el;
   }
 
-  function storeGet() {
-    try { return window.localStorage.getItem(STORAGE_KEY); } catch (e) { return null; }
+  /* ---- browser storage (may be unavailable: everything still works without it) ---- */
+
+  function storeGet(key) {
+    try { return window.localStorage.getItem(key); } catch (e) { return null; }
   }
-  function storeSet(value) {
+  function storeSet(key, value) {
     try {
-      if (value) window.localStorage.setItem(STORAGE_KEY, value);
-      else window.localStorage.removeItem(STORAGE_KEY);
-    } catch (e) { /* storage unavailable: the session just will not survive a reload */ }
+      if (value) window.localStorage.setItem(key, value);
+      else window.localStorage.removeItem(key);
+    } catch (e) { /* ignored */ }
   }
 
   function api(method, path, body) {
@@ -58,11 +66,71 @@
     });
   }
 
-  function setStatus(text, isError) {
+  /* ---- status line: loading, messages, errors with a retry ---- */
+
+  var retryAction = null;
+
+  function renderStatus(text, isError) {
     var el = $('status');
     el.textContent = text || '';
     el.className = isError ? 'status error' : 'status';
+    $('retry').hidden = !(isError && retryAction);
   }
+
+  function fail(message, retry) {
+    retryAction = retry || null;
+    if (state.busy > 0) { state.pendingError = message; return; }
+    renderStatus(message, true);
+  }
+
+  function begin(message) {
+    state.busy += 1;
+    state.busyMessage = message;
+    state.pendingError = null;
+    retryAction = null;
+    $('spinner').hidden = false;
+    renderStatus(message, false);
+    updateButtons();
+  }
+
+  function end() {
+    state.busy = Math.max(0, state.busy - 1);
+    if (state.busy === 0) {
+      $('spinner').hidden = true;
+      if (state.pendingError) {
+        renderStatus(state.pendingError, true);
+        state.pendingError = null;
+      } else if (!retryAction) {
+        renderStatus(defaultStatus(), false);
+      }
+    }
+    updateButtons();
+  }
+
+  function defaultStatus() {
+    var s = state.search;
+    if (!s) return '';
+    var msg = s.warnings.join(' ');
+    if (msg) return msg;
+    return s.results.length ? s.results.length + (s.kind === 'shop_again' ? ' new results' : ' results') : 'No results.';
+  }
+
+  function hasRating() {
+    return Object.keys(state.ratings).some(function (id) { return state.ratings[id].rating; });
+  }
+
+  function updateButtons() {
+    $('search-btn').disabled = state.busy > 0;
+    var againOk = hasRating() && state.againsUsed < state.againsCap && !!state.search;
+    $('shop-again').disabled = state.busy > 0 || !againOk;
+    $('shop-again').setAttribute('aria-disabled', $('shop-again').disabled ? 'true' : 'false');
+    var wrap = $('again-wrap');
+    if (!hasRating()) wrap.setAttribute('title', 'Rate a few results first');
+    else if (state.againsUsed >= state.againsCap) wrap.setAttribute('title', 'Shop Again limit reached for this session');
+    else wrap.removeAttribute('title');
+  }
+
+  /* ---- formatting ---- */
 
   function money(value, currency) {
     if (value === null || value === undefined) return null;
@@ -76,7 +144,7 @@
     return '$' + Number(value).toFixed(value < 0.1 ? 4 : 3);
   }
 
-  /* ---- chips: how the request was understood ---- */
+  /* ---- chips: the parsed request, and the preference profile ---- */
 
   function priceText(q) {
     var lo = q.price_min, hi = q.price_max;
@@ -105,22 +173,65 @@
     q.avoid.forEach(function (t) { add('Avoid', t, 'avoid'); });
   }
 
+  function prefChip(kind, text) {
+    var x = h('button', { type: 'button', class: 'x', 'aria-label': 'Remove ' + text }, ['×']);
+    x.addEventListener('click', function () { removePref(kind, text, x); });
+    return h('span', { class: 'chip pref ' + kind, 'data-kind': kind }, [
+      h('span', { class: 'k' }, [kind === 'like' ? '+' : '−']), text, x
+    ]);
+  }
+
+  function renderPrefs() {
+    var box = $('prefs');
+    var p = state.profile;
+    // shown whenever there are results, so the first Shop Again does not move the grid
+    box.hidden = !state.search;
+    $('prefs-summary').textContent = state.summary || (p && (p.likes.length || p.dislikes.length)
+      ? '' : 'Rate a few results, then press Shop Again to steer the next set.');
+    var chips = $('pref-chips');
+    chips.textContent = '';
+    if (!p) return;
+    p.likes.forEach(function (t) { chips.appendChild(prefChip('like', t)); });
+    p.dislikes.forEach(function (t) { chips.appendChild(prefChip('dislike', t)); });
+  }
+
+  function removePref(kind, phrase, button) {
+    button.disabled = true;
+    api('POST', '/api/preference/remove', { session_id: state.sessionId, kind: kind, phrase: phrase })
+      .then(function (data) {
+        state.profile = data.profile;
+        state.summary = data.profile_summary;
+        renderPrefs();
+      })
+      .catch(function (err) {
+        button.disabled = false;
+        fail(err.message, null);
+      });
+  }
+
+  /* ---- footer ---- */
+
   function renderStats() {
     var s = state.search;
     var el = $('stats');
-    if (!s) {
-      el.textContent = state.cap ? 'Link lookups: ' + state.used + ' of ' + state.cap + ' this session' : '';
-      return;
-    }
+    var lookups = state.cap ? 'link lookups ' + state.used + ' of ' + state.cap : '';
+    if (!s) { el.textContent = lookups ? lookups + ' this session' : ''; return; }
+    var calls = s.serper_calls;
     el.textContent = [
-      'Search took ' + s.seconds.total.toFixed(1) + ' s',
-      s.serper_calls + (s.serper_calls === 1 ? ' Serper call' : ' Serper calls'),
-      'est. ' + usd(s.total_usd) + ' (Anthropic ' + usd(s.anthropic_usd) + ', Serper ' + usd(s.provider_usd) + ')',
-      'link lookups ' + state.used + ' of ' + state.cap
+      (s.kind === 'shop_again' ? 'Shop Again took ' : 'Search took ') + s.seconds.total.toFixed(1) + ' s',
+      calls + (calls === 1 ? ' Serper call' : ' Serper calls') + ' = ' + s.serper_credits + ' credits (' + usd(s.provider_usd) + ')',
+      'Anthropic ' + usd(s.anthropic_usd),
+      'est. total ' + usd(s.total_usd),
+      'session ' + usd(state.sessionUsd),
+      lookups
     ].join(' · ');
   }
 
-  /* ---- cards ---- */
+  /* ---- cards (the grid and the Saved panel share them) ---- */
+
+  function cardsFor(id) {
+    return document.querySelectorAll('.card[data-id="' + CSS.escape(id) + '"]');
+  }
 
   function resolvedLine(card, id) {
     var el = card.querySelector('.resolved');
@@ -152,6 +263,10 @@
     resolvedLine(card, id);
   }
 
+  function syncAll(id) {
+    cardsFor(id).forEach(function (card) { syncCard(card, id); });
+  }
+
   function safeUrl(value) {
     try {
       var u = new URL(value);
@@ -159,46 +274,64 @@
     } catch (e) { return null; }
   }
 
-  function resolve(id) {
+  function resolve(id, quiet) {
+    if (!quiet) begin(LOOKUP_MSG);
     return api('POST', '/api/resolve', { session_id: state.sessionId, result_id: id })
       .then(function (data) {
         state.resolved[id] = data.resolved;
         state.used = data.lookups_used;
         state.cap = data.lookups_cap;
         renderStats();
-        var card = document.querySelector('.card[data-id="' + CSS.escape(id) + '"]');
-        if (card) resolvedLine(card, id);
+        syncAll(id);
         return data.resolved;
+      })
+      .then(function (r) { if (!quiet) end(); return r; }, function (err) {
+        if (!quiet) { fail(err.message, function () { resolve(id, false); }); end(); }
+        throw err;
       });
   }
 
+  function savedIdsNow() {
+    return Object.keys(state.ratings).filter(function (id) {
+      var r = state.ratings[id].rating;
+      return (r === 'love' || r === 'like') && state.known[id];
+    });
+  }
+
   function setRating(id, rating) {
-    var prev = state.ratings[id] || { rating: null, comment: '' };
+    var prev = state.ratings[id] || { rating: null, comment: '', rated_at: null };
     var next = prev.rating === rating ? null : rating;
-    state.ratings[id] = { rating: next, comment: prev.comment };
-    var card = document.querySelector('.card[data-id="' + CSS.escape(id) + '"]');
-    if (card) syncCard(card, id);
+    var before = savedIdsNow().join();
+    state.ratings[id] = {
+      rating: next, comment: prev.comment, rated_at: next ? new Date().toISOString().replace('Z', '+00:00') : null
+    };
+    syncAll(id);
+    updateButtons();
+    if (savedIdsNow().join() !== before) renderSaved();
     api('POST', '/api/rate', { session_id: state.sessionId, result_id: id, rating: next })
       .then(function () {
-        if (next === 'love') return resolve(id).catch(function () { /* shown on Open instead */ });
+        if (next === 'love') return resolve(id, true).catch(function () { /* shown on Open instead */ });
       })
       .catch(function (err) {
         state.ratings[id] = prev;
-        if (card) syncCard(card, id);
-        setStatus(err.message, true);
+        syncAll(id);
+        updateButtons();
+        renderSaved();
+        fail(err.message, null);
       });
   }
 
   function saveComment(id, input) {
-    var prev = state.ratings[id] || { rating: null, comment: '' };
+    var prev = state.ratings[id] || { rating: null, comment: '', rated_at: null };
     var value = input.value.trim();
     if (value === (prev.comment || '')) return;
-    state.ratings[id] = { rating: prev.rating, comment: value };
+    state.ratings[id] = { rating: prev.rating, comment: value, rated_at: prev.rated_at };
     api('POST', '/api/rate', { session_id: state.sessionId, result_id: id, comment: value })
+      .then(function () { syncAll(id); })
       .catch(function (err) {
         state.ratings[id] = prev;
         input.value = prev.comment || '';
-        setStatus(err.message, true);
+        fail(err.message, null);
       });
   }
 
@@ -207,7 +340,7 @@
     var tab = window.open('about:blank', '_blank');
     button.disabled = true;
     button.textContent = 'Opening…';
-    resolve(id).then(function (r) {
+    resolve(id, false).then(function (r) {
       var url = safeUrl(r.link);
       if (tab && url) {
         tab.opener = null;
@@ -215,10 +348,9 @@
       } else if (tab) {
         tab.close();
       }
-      if (!url) setStatus('No link is available for this product.', true);
-    }).catch(function (err) {
+      if (!url) fail('No link is available for this product.', null);
+    }).catch(function () {
       if (tab) tab.close();
-      setStatus(err.message, true);
     }).then(function () {
       button.disabled = false;
       button.textContent = 'Open';
@@ -227,6 +359,7 @@
 
   function renderCard(r) {
     var thumb = h('div', { class: 'thumb' });
+    var initial = (r.title.replace(/^\[[^\]]*\]\s*/, '').charAt(0) || '?').toUpperCase();
     if (r.thumbnail_url && r.thumbnail_url.indexOf('https://') === 0) {
       var img = document.createElement('img');
       img.alt = '';
@@ -234,21 +367,21 @@
       img.referrerPolicy = 'no-referrer';
       img.addEventListener('error', function () {
         thumb.className = 'thumb noimg';
-        thumb.textContent = (r.title.replace(/^\[[^\]]*\]\s*/, '').charAt(0) || '?').toUpperCase();
+        thumb.textContent = initial;
       });
       img.src = r.thumbnail_url;
       thumb.appendChild(img);
     } else {
       thumb.className = 'thumb noimg';
-      thumb.textContent = (r.title.charAt(0) || '?').toUpperCase();
+      thumb.textContent = initial;
     }
 
     var price = money(r.price, r.currency);
-    var priceEl = h('span', { class: price ? 'price' : 'price na' }, [price || 'Price not listed']);
-    var title = h('h3', { class: 'title', title: r.title }, [r.title]);
     var body = h('div', { class: 'body' }, [
-      title,
-      h('div', { class: 'price-row' }, [priceEl]),
+      h('h3', { class: 'title', title: r.title }, [r.title]),
+      h('div', { class: 'price-row' }, [
+        h('span', { class: price ? 'price' : 'price na' }, [price || 'Price not listed'])
+      ]),
       h('div', { class: 'seller' }, [r.seller || 'Seller not listed'])
     ]);
     if (r.size_hint) body.appendChild(h('span', { class: 'size' }, [r.size_hint]));
@@ -283,25 +416,65 @@
     return card;
   }
 
+  /* ---- the Saved panel ---- */
+
+  function savedItems(kind) {
+    return savedIdsNow().filter(function (id) { return state.ratings[id].rating === kind; })
+      .sort(function (a, b) {
+        return String(state.ratings[b].rated_at || '').localeCompare(String(state.ratings[a].rated_at || ''));
+      }).map(function (id) { return state.known[id]; });
+  }
+
+  function renderSaved() {
+    var loved = savedItems('love');
+    var liked = savedItems('like');
+    var total = loved.length + liked.length;
+    $('saved-toggle').textContent = (state.savedOpen ? 'Hide saved' : 'Show saved') + ' (' + total + ')';
+    $('saved-toggle').setAttribute('aria-expanded', state.savedOpen ? 'true' : 'false');
+    $('saved').hidden = !state.savedOpen;
+    $('tab-loved').textContent = 'Loved (' + loved.length + ')';
+    $('tab-liked').textContent = 'Liked (' + liked.length + ')';
+    $('tab-loved').setAttribute('aria-selected', state.savedTab === 'love' ? 'true' : 'false');
+    $('tab-liked').setAttribute('aria-selected', state.savedTab === 'like' ? 'true' : 'false');
+    var row = $('saved-row');
+    row.textContent = '';
+    if (!state.savedOpen) return;
+    var items = state.savedTab === 'love' ? loved : liked;
+    if (!items.length) {
+      row.appendChild(h('p', { class: 'saved-empty' }, [
+        state.savedTab === 'love'
+          ? 'Nothing loved yet. Love a result to keep it here.'
+          : 'Nothing liked yet. Like a result to keep it here.'
+      ]));
+      return;
+    }
+    items.forEach(function (r) { row.appendChild(renderCard(r)); });
+  }
+
+  /* ---- results ---- */
+
   function renderResults() {
     var grid = $('grid');
     grid.textContent = '';
+    grid.style.minHeight = '';
     var s = state.search;
     $('empty').hidden = !!s;
     renderChips(s && s.query);
+    renderPrefs();
     renderStats();
+    renderSaved();
+    updateButtons();
     if (!s) return;
     $('request').value = s.request;
     s.results.forEach(function (r) { grid.appendChild(renderCard(r)); });
-    var msg = s.warnings.join(' ');
-    setStatus(msg || (s.results.length
-      ? s.results.length + ' results'
-      : 'No results.'), false);
+    if (state.busy === 0 && !retryAction) renderStatus(defaultStatus(), false);
   }
 
   function showSkeleton() {
     var grid = $('grid');
+    var height = grid.offsetHeight;
     grid.textContent = '';
+    if (height) grid.style.minHeight = height + 'px'; // hold the space so nothing jumps
     for (var i = 0; i < 8; i++) grid.appendChild(h('div', { class: 'skeleton' }));
     $('empty').hidden = true;
   }
@@ -311,9 +484,16 @@
     state.search = data.search || null;
     state.ratings = data.ratings || {};
     state.resolved = data.resolved || {};
+    state.profile = data.profile || null;
+    state.summary = data.profile_summary || '';
     state.used = data.lookups_used || 0;
     state.cap = data.lookups_cap || 0;
-    if (state.sessionId) storeSet(state.sessionId);
+    state.againsUsed = data.shop_agains_used || 0;
+    state.againsCap = data.shop_agains_cap || 0;
+    state.sessionUsd = data.session_usd || 0;
+    (data.saved || []).forEach(function (r) { state.known[r.id] = r; });
+    if (state.search) state.search.results.forEach(function (r) { state.known[r.id] = r; });
+    if (state.sessionId) storeSet(KEY_SESSION, state.sessionId);
     var badge = $('mode-badge');
     if (data.mode === 'mock') {
       badge.hidden = false;
@@ -323,27 +503,51 @@
 
   function search(text) {
     var request = text.trim();
-    if (!request || state.busy) return;
-    state.busy = true;
-    $('search-btn').disabled = true;
-    setStatus('Searching…', false);
+    if (!request || state.busy > 0) return;
+    begin(SEARCH_MSG);
     showSkeleton();
     api('POST', '/api/search', { session_id: state.sessionId, request: request })
       .then(function (data) {
         adopt(data);
         renderResults();
+        end();
       })
       .catch(function (err) {
-        if (err.status === 404) { state.sessionId = null; storeSet(null); }
-        $('grid').textContent = '';
-        setStatus(err.message, true);
-        $('empty').hidden = !!state.search;
-        if (state.search) renderResults();
-      })
-      .then(function () {
-        state.busy = false;
-        $('search-btn').disabled = false;
+        if (err.status === 404) { state.sessionId = null; storeSet(KEY_SESSION, null); }
+        renderResults();
+        fail(err.message, function () { search(request); });
+        end();
       });
+  }
+
+  function shopAgain() {
+    if (state.busy > 0 || $('shop-again').disabled) return;
+    begin(AGAIN_MSG);
+    showSkeleton();
+    api('POST', '/api/shop-again', { session_id: state.sessionId })
+      .then(function (data) {
+        adopt(data);
+        renderResults();
+        end();
+      })
+      .catch(function (err) {
+        renderResults();
+        fail(err.message, function () { shopAgain(); });
+        end();
+      });
+  }
+
+  function startOver() {
+    state.sessionId = null; state.search = null; state.ratings = {}; state.resolved = {};
+    state.known = {}; state.profile = null; state.summary = ''; state.used = 0;
+    state.againsUsed = 0; state.sessionUsd = 0; state.confirming = false;
+    storeSet(KEY_SESSION, null);
+    retryAction = null;
+    $('request').value = '';
+    $('start-over-confirm').hidden = true;
+    $('start-over').hidden = false;
+    renderResults();
+    renderStatus('', false);
   }
 
   function init() {
@@ -357,13 +561,37 @@
       e.preventDefault();
       search($('request').value);
     });
-    var saved = storeGet();
+    $('shop-again').addEventListener('click', shopAgain);
+    $('retry').addEventListener('click', function () {
+      var action = retryAction;
+      retryAction = null;
+      renderStatus('', false);
+      if (action) action();
+    });
+    $('saved-toggle').addEventListener('click', function () {
+      state.savedOpen = !state.savedOpen;
+      storeSet(KEY_SAVED_OPEN, state.savedOpen ? '1' : '0');
+      renderSaved();
+    });
+    $('tab-loved').addEventListener('click', function () { state.savedTab = 'love'; renderSaved(); });
+    $('tab-liked').addEventListener('click', function () { state.savedTab = 'like'; renderSaved(); });
+    $('start-over').addEventListener('click', function () {
+      $('start-over').hidden = true;
+      $('start-over-confirm').hidden = false;
+    });
+    $('start-over-cancel').addEventListener('click', function () {
+      $('start-over-confirm').hidden = true;
+      $('start-over').hidden = false;
+    });
+    $('start-over-yes').addEventListener('click', startOver);
+
+    state.savedOpen = storeGet(KEY_SAVED_OPEN) === '1';
+    var saved = storeGet(KEY_SESSION);
     var path = '/api/session' + (saved ? '?id=' + encodeURIComponent(saved) : '');
     api('GET', path).then(function (data) {
       adopt(data);
       renderResults();
-    }).catch(function (err) {
-      if (err.status === 404) storeSet(null);
+    }).catch(function () {
       renderResults();
     });
   }

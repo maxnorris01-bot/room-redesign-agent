@@ -31,7 +31,11 @@ STATIC_FILES: dict[str, tuple[str, str]] = {
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/static/style.css": ("style.css", "text/css; charset=utf-8"),
 }
-API_PATHS = {"/api/session", "/api/search", "/api/rate", "/api/resolve"}
+API_PATHS = {
+    "/api/session", "/api/search", "/api/rate", "/api/resolve", "/api/shop-again",
+    "/api/preference/remove",
+}  # fmt: skip
+POST_PATHS = API_PATHS - {"/api/session"}
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src https:; "
     "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -95,8 +99,10 @@ class ShopApp:
             if path == "/api/session":
                 ids = parse_qs(parts.query).get("id", [])
                 return json_response(200, self.service.session_view(ids[0] if ids else None))
+            if path in POST_PATHS:
+                return Response(405, b'{"error": "method not allowed"}', headers={"Allow": "POST"})
             return error_response(404, "not found")
-        if method == "POST" and path in {"/api/search", "/api/rate", "/api/resolve"}:
+        if method == "POST" and path in POST_PATHS:
             return self._post(path, headers, body)
         if path in STATIC_FILES or path in API_PATHS:
             return Response(405, b'{"error": "method not allowed"}', headers={"Allow": "GET, POST"})
@@ -123,6 +129,12 @@ class ShopApp:
                     data.get("result_id"),
                     data["rating"] if "rating" in data else UNSET,
                     data["comment"] if "comment" in data else UNSET,
+                )
+            elif path == "/api/shop-again":
+                result = self.service.shop_again(data.get("session_id"))
+            elif path == "/api/preference/remove":
+                result = self.service.remove_preference(
+                    data.get("session_id"), data.get("kind"), data.get("phrase")
                 )
             else:
                 result = self.service.resolve(data.get("session_id"), data.get("result_id"))
