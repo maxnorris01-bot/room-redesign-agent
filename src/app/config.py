@@ -112,6 +112,9 @@ class Config:
     # Which style-check prompt to load: 2 (default) sees the room photo and thumbnails; 1 is the
     # text-only original. Per run via the CLI, not the env.
     style_prompt_version: str = "2"
+    # Shop Mode (ADR 0012): product lookups (about one SerpApi search each) allowed per session,
+    # spent only when the visitor opens or loves a result. A guess; past it the Google link is used.
+    shop_lookups_per_session: int = 12
     # Fit (coarse, code-only): fail if an item's longer side is over this fraction of the room's
     # shorter side, or its footprint is over `fit_max_footprint_fraction` of the floor area.
     # UNTUNED GUESSES. Rugs and other large flat items will trip them; see ADR 0006.
@@ -151,6 +154,8 @@ class Config:
             raise ValueError("APP_LOOKUPS_PER_SLOT must be >= 1")
         if self.max_revisions < 0:
             raise ValueError("APP_MAX_REVISIONS must be >= 0")
+        if self.shop_lookups_per_session < 0:
+            raise ValueError("APP_SHOP_LOOKUPS_PER_SESSION must be >= 0")
 
     def items_for(self, freeplay: bool) -> int:
         """Slots to shop for: the explicit count, else the mode's default."""
@@ -220,6 +225,9 @@ class Config:
                 os.environ.get("APP_DEFAULT_ITEMS_FREEPLAY", cls.default_items_freeplay)
             ),
             max_items=int(os.environ.get("APP_MAX_ITEMS", cls.max_items)),
+            shop_lookups_per_session=int(
+                os.environ.get("APP_SHOP_LOOKUPS_PER_SESSION", cls.shop_lookups_per_session)
+            ),
             lookups_per_slot=(
                 int(os.environ["APP_LOOKUPS_PER_SLOT"])
                 if os.environ.get("APP_LOOKUPS_PER_SLOT")

@@ -48,5 +48,10 @@ python_version = "3.11"
 strict = true
 files = ["src", "evals", "scripts"]
 
+[[tool.mypy.overrides]]
+# scripts/shop_browser_check.py: Playwright is supplied by `uv run --with`, not installed here
+module = ["playwright", "playwright.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Shop</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="top-row">
+      <h1 class="brand">Shop</h1>
+      <span id="mode-badge" class="badge" hidden></span>
+    </div>
+    <form id="search-form" class="search" autocomplete="off">
+      <input id="request" type="text" maxlength="300" required
+        placeholder="What are you looking for? e.g. modern couches under $1000"
+        aria-label="Describe what you want to buy">
+      <button id="search-btn" type="submit" class="primary">Search</button>
+    </form>
+    <div id="chips" class="chips" aria-label="How your request was understood"></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <section id="empty" class="empty">
+    <h2>Find something to buy</h2>
+    <p>Describe it in your own words. The price and the kind of product are applied as filters;
+      style, materials and features decide the order. Rate what you see, and add a note if you like.</p>
+    <div id="examples" class="examples"></div>
+  </section>
+  <section id="grid" class="grid" aria-label="Results"></section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <span id="stats" class="stats"></span>
+    <span class="again" title="Coming next">
+      <button id="shop-again" type="button" disabled aria-disabled="true">Shop Again</button>
+    </span>
+  </div>
+</footer>
+</body>
+</html>

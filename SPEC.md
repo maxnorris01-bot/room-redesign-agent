@@ -2,12 +2,35 @@
 
 *Scoped 2026-10-18 in a Cowork chat. Decisions and reasoning: `docs/working-notes-and-decisions.md` and `docs/adr/`. This file is the contract for implementation sessions.*
 
+## Modes (ADR 0012, proposed)
+
+The product has two modes. **Shop Mode** comes first; **Redesign Mode** follows.
+
+| | Shop Mode | Redesign Mode |
+|---|---|---|
+| Input | A text request ("modern couches under $1000") | A room photo, preferences |
+| Output | A browsable grid of real products; the visitor rates each love, like or dislike with an optional comment | A furniture list and a photo-real render of the picks in the room |
+| Status | Stage 1 shipped (below) | Not started as a mode; the pipeline in "Product" below exists and is kept |
+
+**Shipped in Shop Mode stage 1:** request parsing (one small-model call into a typed query: search text,
+category, price range, style, material, must-have and avoid terms); Serper shopping search (page 2 only
+when fewer than 24 results survive); hard filters for price and category, dedupe, at most 4 results per
+seller; an id-only ranking against the soft preferences; the top 24 with size hints; lazy retailer-link
+lookups (only on Open or Love, at most 12 per session, never twice); JSON sessions under `shop-data/`
+holding every search, every result shown, every rating and comment, and every resolved link; a local web
+page (127.0.0.1 only). **Later:** Shop Again (uses the ratings and comments), an eval of about 12 prompts,
+deployment as a portfolio-site tab, then Redesign Mode. The **2D room plan is dropped from the product**
+(ADR 0012); step 2 of "Product" below is superseded, and the plan code survives only in the developer run
+report.
+
 ## Product (v1 target)
+
+*This section describes the room pipeline, which becomes Redesign Mode. See "Modes" above for what is shipped and what is later.*
 
 A tab on the portfolio site where a visitor uploads a room photo and gives budget and style goals. The system:
 
 1. **Perceives** the room: a multimodal call returns structured data (rough dimensions, walls, windows, doors, fixed/structural items, movable furniture, art, living things such as pets or people, style descriptors).
-2. **Builds a blank 2D room canvas** from that structured data (top-down, editable later). Photo-real empty-room generation is a gated experiment, not v1 (ADR 0003).
+2. ~~**Builds a blank 2D room canvas** from that structured data~~ *Superseded: the 2D plan is dropped from the product (ADR 0012); the photo-real render is the main output (ADR 0011).*
 3. **Asks the user for preferences** (style, must-keep items, priorities) before proposing. For now the keep-or-replace choice arrives as CLI flags (`--keep`, `--replace`), defaulting from perception's `keepable` flags; slots are requested replacements, gaps, suggested replacements, then accent pieces, up to 3 (ADR 0007, proposed). With `--budget` each slot gets a per-item price ceiling (budget x item cap / (1 + shipping buffer)) instead of an equal share of the budget. Without `--budget` (freeplay, ADR 0008) there is no ceiling: each slot is limited to a coarse price tier (value, mid or premium: thirds of that slot's own search prices), and `--items` sets how many pieces to shop for (2 to 10; 5 by default). A slot with nothing in budget is shown as empty with what was seen (cheapest, median, count) and up to two real over-limit options with verified retailer links, clearly outside the total and never picks.
 4. **Retrieves** real furniture options. Default: structured Google Shopping data (search, a model that only picks ids, then a per-product lookup for the direct retailer URL; ADR 0005, proposed). Claude's web search tool stays selectable. Prices and URLs always come from provider data, never from a model.
 5. **Proposes** a furniture set (with a running budget total in budget mode, none in freeplay): one structured model call picks from each slot's finalists; code builds every item from the real candidate data (the model never supplies a price, seller or URL; a slot may replace an existing item and the final item records which; a kept item that is part of a set with a replaced one is flagged, and `--replace-matching` replaces it too). Layout is not part of the proposal yet (it needs the canvas). ADR 0006, proposed.
@@ -66,3 +89,13 @@ and `make reports` every run plus `spike-output/index.html`. The commands print 
 macOS `open <path>` command; nothing opens by itself. The page is static HTML and CSS (no script, no
 external fonts), escapes every provider string, and loads product thumbnails from their hosts. It is
 a developer tool, not the product UI.
+
+## Shop Mode (developer commands)
+
+`make shop` starts the page in mock mode (fixture results, no network, no key) on
+`http://127.0.0.1:8765/`; stop it with Ctrl-C. `make shop-live` does the same with real Anthropic,
+Serper and SerpApi calls and prints the expected cost per search first (Anthropic about $0.01 or less,
+Serper 1 or 2 calls; a SerpApi lookup only on Open or Love, at most 12 per session). Sessions are saved
+in `shop-data/` (gitignored). `make shop-check` drives the page in a headless browser in mock mode and
+writes screenshots to `spike-output/shop-screenshots/`. The server listens on 127.0.0.1 only and
+sends a strict Content Security Policy.

@@ -62,6 +62,33 @@ def canonical_category(category: str) -> str:
     return c
 
 
+def known_category(category: str) -> str | None:
+    """The canonical key for `category` when this module knows it, else None ("curtains" is None).
+
+    Known means a synonym group ("couch" -> "sofa") or a plausible-size entry ("dining table").
+    """
+    canon = canonical_category(category)
+    if canon in {name for name, _ in _SYNONYMS} or canon in SIZE_RANGE_IN:
+        return canon
+    return None
+
+
+def category_hits(text: str) -> set[str]:
+    """Known categories whose keywords appear in `text` as whole words (a plural counts).
+
+    "Walnut Sofa Table" hits {"sofa"}; "Coffee Table and Side Table Set" hits both tables. Used to
+    tell that a search result is plainly another kind of product than the one asked for.
+    """
+    lowered = text.lower()
+    hits: set[str] = set()
+    pairs = [(name, (name, *keywords)) for name, keywords in _SYNONYMS]
+    pairs += [(name, (name,)) for name in SIZE_RANGE_IN if name not in {n for n, _ in _SYNONYMS}]
+    for name, keywords in pairs:
+        if any(re.search(rf"\b{re.escape(k)}s?\b", lowered) for k in keywords):
+            hits.add(name)
+    return hits
+
+
 def already_covered(category: str, taken: list[str]) -> bool:
     c = norm(category)
     canon = canonical_category(category)

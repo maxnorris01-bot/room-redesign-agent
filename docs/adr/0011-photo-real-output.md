@@ -1,5 +1,7 @@
 # 0011. Photo-real output, with the 2D plan as the instant first view
 
+> Note (2026-10-24): ADR 0012 drops the 2D plan from the product, so decision 1's "2D plan as the instant first view" no longer applies; the rest stands. This ADR's status is unchanged.
+
 - **Status:** proposed
 - **Date:** 2026-10-23
 

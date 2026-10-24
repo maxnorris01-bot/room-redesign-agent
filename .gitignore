@@ -17,3 +17,5 @@ spike-output/
 # Photo-real spike: product images placed by hand, and render output
 render-inputs/
 render-output/
+# Shop Mode sessions (ratings, comments, searches)
+shop-data/
