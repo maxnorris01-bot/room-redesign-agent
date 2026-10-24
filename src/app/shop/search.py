@@ -24,6 +24,7 @@ from app.config import Config
 from app.llm import Budget, LLMOutputError, complete
 from app.prompts import load_prompt
 from app.schemas import DimensionsM, RankedFinalists, SchemaError, parse_model, to_output_schema
+from app.shop.decide import lexicon_tags, value_shares
 from app.shop.models import (
     FilterCounts,
     LinkKind,
@@ -34,19 +35,23 @@ from app.shop.models import (
     result_id,
 )
 from app.shop.parse import parse_request
+from app.shop.thresholds import (
+    DIVERSITY_MAX_SHARE,
+    SELLER_MAX_SHARE,
+    SELLER_PINNED_SHARE,
+)
 from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.shopping_retrieval import _record_provider_call, cap_per_seller, seller_key
 from app.sizes import IN_M, resolve_size
 
 MAX_EXAMPLES = 8  # loved/liked and disliked titles shown to the ranker, each
 RANK_VERSION = "1"  # typed searches
-RANK_VERSION_AGAIN = "3"  # Shop Again: profile, inferred chips, examples (v2 kept, unused)
+RANK_VERSION_AGAIN = "4"  # Shop Again: converged and open dimensions, examples (v2, v3 kept)
 RESULT_COUNT = 24  # results returned, and the fewest that avoid a second Serper page
 SELLER_CAP = 4  # most results one seller may have in the returned list. UNTUNED GUESS.
 MAX_POOL = 60  # candidates shown to the ranker (keeps the prompt small)
 MAX_POOL_AGAIN = 80  # a Shop Again pools several phrasings, so the ranker sees more
 POOL_TARGET_AGAIN = 60  # extra pages are fetched only while the pool is smaller than this
-AFFINITY_SELLER_CAP = 8  # results allowed from a seller the shopper has shown an affinity for
 RANK_MAX_TOKENS = 2500
 MAX_TITLE_CHARS = 100
 # Titles with these words are parts or covers, not the product (applied only for a known category).
@@ -61,9 +66,13 @@ class AgainContext:
     exclude_ids: set[str] = field(default_factory=set)  # result ids shown earlier in the session
     exclude_title_keys: set[str] = field(default_factory=set)  # same listing under another id
     deprioritize_sellers: set[str] = field(default_factory=set)  # seller keys, ranked last
-    affinity_sellers: set[str] = field(
-        default_factory=set
-    )  # seller keys allowed `AFFINITY_SELLER_CAP`
+    affinity_sellers: set[str] = field(default_factory=set)  # seller keys: up to 50% of a batch
+    pinned_sellers: set[str] = field(default_factory=set)  # seller keys the visitor pinned: 80%
+    guard_dims: list[str] = field(default_factory=list)  # dimensions no value may dominate
+    converged: dict[str, str] = field(default_factory=dict)  # dimension -> the preferred value
+    open_dims: dict[str, list[str]] = field(default_factory=dict)  # dimension -> liked values
+    price_line: str = ""  # "mixed (...)" or a band; empty: no price signal
+    dropped_phrasings: list[str] = field(default_factory=list)  # left out to fit the call cap
     likes: list[str] = field(default_factory=list)  # stated profile phrases (from comments)
     dislikes: list[str] = field(default_factory=list)
     inferred_likes: list[str] = field(default_factory=list)  # learned from the rated items
@@ -95,6 +104,10 @@ class SearchOutcome:
     serper_credits: int = 0
     note: str = ""
     queries: list[str] = field(default_factory=list)  # Serper phrasings used
+    dropped_phrasings: list[str] = field(default_factory=list)  # phrasings cut to fit the call cap
+    diversity: dict[str, tuple[str, float]] = field(default_factory=dict)  # dim -> (value, share)
+    seller_share: tuple[str, float] | None = None  # the largest seller and its share of the batch
+    display_query: ShopQuery | None = None  # what the request chips show (the typed parse)
     pages: dict[str, int] = field(default_factory=dict)  # phrasing key -> highest page fetched
     alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
 
@@ -221,11 +234,22 @@ def rank_user_text(
             ),
             line("Profile likes (the shopper's own words)", again.likes),
             line("Profile dislikes (the shopper's own words)", again.dislikes),
-            line("Inferred likes (learned from the rated items)", again.inferred_likes),
+            "Converged preferences (learned from the rated items; apply them): "
+            + (
+                "; ".join(f"{d.replace('_', ' ')}: {v}" for d, v in again.converged.items())
+                or "none"
+            ),
+            "Open dimensions (the shopper likes several values; keep them mixed, no pressure): "
+            + (
+                "; ".join(
+                    f"{d.replace('_', ' ')}: {', '.join(v)}" for d, v in again.open_dims.items()
+                )
+                or "none"
+            ),
             line("Inferred dislikes", again.inferred_dislikes),
             f"Seller the shopper likes: {again.seller_affinity or 'none'}",
-            f"Price band of the loved and liked items: {again.price_band or 'none'}"
-            " (a preference signal; the price filter above is unchanged)",
+            f"Price: {again.price_line or 'no signal'}"
+            " (a hint about taste, never a limit; the price filter above is unchanged)",
             "More like these (the shopper loved or liked them):",
             *[
                 f"  * {r.title[:MAX_TITLE_CHARS]} | {_price(r.price)} | {r.seller or '?'} | {how}"
@@ -296,10 +320,27 @@ def build_results(
     query: ShopQuery,
     pool_index: dict[str, int],
     affinity_sellers: set[str] | None = None,
-) -> tuple[list[ShopResult], int]:
-    """Walk the ranked order keeping at most `SELLER_CAP` per seller (`AFFINITY_SELLER_CAP` for a
-    seller the shopper has shown an affinity for), up to `RESULT_COUNT`."""
+    pinned_sellers: set[str] | None = None,
+    guard_dims: list[str] | None = None,
+) -> tuple[list[ShopResult], int, int]:
+    """Walk the ranked order, up to `RESULT_COUNT`, keeping:
+
+      * at most `SELLER_CAP` results per seller, except a seller the shopper has an affinity for
+        (up to `SELLER_MAX_SHARE` of a batch) and a pinned seller (`SELLER_PINNED_SHARE`);
+      * for each guarded dimension, at most `DIVERSITY_MAX_SHARE` of a batch from any one known
+        value (titles with no keyword for the dimension are unknown and never counted); an item
+        over that is skipped and the next best ranked item of another value takes its place.
+
+    Returns (results, skipped by the seller cap, skipped by the diversity guard).
+    """
     affinity = affinity_sellers or set()
+    pinned = pinned_sellers or set()
+    guard = guard_dims or []
+    affinity_cap = int(SELLER_MAX_SHARE * RESULT_COUNT)
+    pinned_cap = int(SELLER_PINNED_SHARE * RESULT_COUNT)
+    value_cap = int(DIVERSITY_MAX_SHARE * RESULT_COUNT)
+    value_counts: dict[tuple[str, str], int] = {}
+    diversity_skipped = 0
     per_seller: dict[str, int] = {}
     results: list[ShopResult] = []
     capped = 0
@@ -307,9 +348,20 @@ def build_results(
         if len(results) >= RESULT_COUNT:
             break
         key = seller_key(candidate.seller)
-        if per_seller.get(key, 0) >= (AFFINITY_SELLER_CAP if key in affinity else SELLER_CAP):
+        cap = pinned_cap if key in pinned else affinity_cap if key in affinity else SELLER_CAP
+        if per_seller.get(key, 0) >= cap:
             capped += 1
             continue
+        tags = lexicon_tags(candidate.title) if guard else {}
+        if any(
+            (v := tags.get(dim)) is not None and value_counts.get((dim, v), 0) >= value_cap
+            for dim in guard
+        ):
+            diversity_skipped += 1
+            continue
+        for dim in guard:
+            if (v := tags.get(dim)) is not None:
+                value_counts[(dim, v)] = value_counts.get((dim, v), 0) + 1
         per_seller[key] = per_seller.get(key, 0) + 1
         link, kind = _link(candidate)
         results.append(
@@ -333,7 +385,7 @@ def build_results(
                 rank_reason=reason,
             )
         )
-    return results, capped
+    return results, capped, diversity_skipped
 
 
 def _search_page(
@@ -462,10 +514,39 @@ def run_query(
         keep = [x for x in ordered if seller_key(x[0].seller) not in again.deprioritize_sellers]
         later = [x for x in ordered if seller_key(x[0].seller) in again.deprioritize_sellers]
         ordered = keep + later
-    results, capped = build_results(
-        ordered, query, pool_index, again.affinity_sellers if again is not None else None
+    results, capped, diversity_skipped = build_results(
+        ordered,
+        query,
+        pool_index,
+        again.affinity_sellers if again is not None else None,
+        again.pinned_sellers if again is not None else None,
+        again.guard_dims if again is not None else None,
     )
     counts.seller_capped = capped
+    diversity: dict[str, tuple[str, float]] = {}
+    seller_share: tuple[str, float] | None = None
+    if again is not None and results:
+        dims = list(dict.fromkeys(["shape", "material", *again.guard_dims]))
+        for dim, top in value_shares([r.title for r in results], dims).items():
+            if top is not None:
+                diversity[dim] = top
+        by_seller: dict[str, int] = {}
+        for r in results:
+            by_seller[r.seller] = by_seller.get(r.seller, 0) + 1
+        name = max(sorted(by_seller), key=lambda k: by_seller[k])
+        seller_share = (name, round(by_seller[name] / len(results), 4))
+        for dim in again.guard_dims:
+            top = diversity.get(dim)
+            if top is not None and top[1] > DIVERSITY_MAX_SHARE:
+                warnings.append(
+                    f"Could not keep {dim.replace('_', ' ')} mixed: the pool is mostly {top[0]} "
+                    f"({top[1]:.0%} of these results)."
+                )
+        if again.dropped_phrasings:
+            warnings.append(
+                f"Left out {len(again.dropped_phrasings)} search phrasing(s) to stay within the "
+                f"{again.max_calls}-call cap: {'; '.join(again.dropped_phrasings)}."
+            )
     t_end = time.perf_counter()
     if again is not None and len(results) < RESULT_COUNT:
         warnings.append(
@@ -494,6 +575,9 @@ def run_query(
         serper_credits=calls * config.serper_credits_per_call if search.name == "serper" else 0,
         queries=used,
         pages=pages,
+        dropped_phrasings=list(again.dropped_phrasings) if again is not None else [],
+        diversity=diversity,
+        seller_share=seller_share,
     )
 
 

@@ -19,7 +19,7 @@ from app.shop.models import (
     clean_comment,
     clean_request,
 )
-from app.shop.prefs import normalize_phrase, profile_summary, reapply_removed, remove_entry
+from app.shop.prefs import pin_seller, profile_summary, reapply_removed, remove_entry, with_pins
 from app.shop.resolve import UnknownResult, resolve
 from app.shop.search import SearchOutcome, run_search
 from app.shop.store import (
@@ -33,6 +33,7 @@ from app.shop.store import (
     now_iso_ms,
     saved_ids,
 )
+from app.shop.textutil import normalize_phrase
 from app.shopping import ProductLookup, ProviderError, SearchProvider
 from app.thumbnails import Thumbnailer, build_thumbnailer
 
@@ -127,6 +128,14 @@ class ShopService:
                 "seconds": last.seconds,
                 "kind": last.kind,
                 "note": last.note,
+                "used_query": last.used_query.model_dump(mode="json") if last.used_query else None,
+                "diversity": {d: {"value": v[0], "share": v[1]} for d, v in last.diversity.items()},
+                "seller_share": (
+                    {"seller": last.seller_share[0], "share": last.seller_share[1]}
+                    if last.seller_share
+                    else None
+                ),
+                "dropped_phrasings": last.dropped_phrasings,
                 "queries": last.queries,
                 "alignment": (
                     {"matches": last.alignment_matches, "total": last.alignment_total}
@@ -211,7 +220,8 @@ class ShopService:
             SearchRecord(
                 index=index,
                 request=request,
-                query=outcome.query,
+                query=outcome.display_query or outcome.query,
+                used_query=outcome.query if outcome.display_query else None,
                 created_at=now_iso(),
                 result_ids=[r.id for r in outcome.results],
                 serper_calls=outcome.serper_calls,
@@ -226,6 +236,9 @@ class ShopService:
                 serper_credits=outcome.serper_credits,
                 note=note,
                 queries=outcome.queries,
+                dropped_phrasings=outcome.dropped_phrasings,
+                diversity={d: [v[0], v[1]] for d, v in outcome.diversity.items()},
+                seller_share=list(outcome.seller_share) if outcome.seller_share else None,
                 pages=outcome.pages,
                 alignment_matches=outcome.alignment[0] if outcome.alignment else None,
                 alignment_total=outcome.alignment[1] if outcome.alignment else None,
@@ -322,7 +335,9 @@ class ShopService:
             # ratings made while the search ran are kept; the profile replaces the old one except
             # that entries deleted meanwhile stay deleted
             if live.profile is not None:
-                profile = reapply_removed(profile, live.profile.removed)
+                profile = with_pins(
+                    reapply_removed(profile, live.profile.removed), live.profile.pinned_sellers
+                )
             live.profile = profile
             live.shop_agains_used += 1
             self._record(live, live.searches[-1].request if live.searches else "", outcome,
@@ -348,4 +363,22 @@ class ShopService:
                 "profile": updated.model_dump(mode="json"),
                 "profile_summary": profile_summary(updated),
                 "removed": normalize_phrase(phrase),
+            }
+
+    def pin_preference(self, session_id: Any, phrase: Any) -> dict[str, Any]:
+        """Pin or unpin the seller chip: a pinned seller may fill up to 80% of a Shop Again batch
+        (otherwise 50%). Stored in the session's profile."""
+        if not isinstance(phrase, str) or not phrase.strip() or len(phrase) > 80:
+            raise ApiError(400, "phrase must be short text")
+        self._load(session_id)
+        assert isinstance(session_id, str)
+        with self.store.transaction(session_id) as session:
+            updated = pin_seller(session.profile, phrase) if session.profile else None
+            if updated is None:
+                raise ApiError(404, "no such seller chip")
+            session.profile = updated
+            return {
+                "profile": updated.model_dump(mode="json"),
+                "profile_summary": profile_summary(updated),
+                "pinned": bool(updated.pinned_sellers),
             }

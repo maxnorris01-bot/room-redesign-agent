@@ -174,13 +174,30 @@
   }
 
   // One chip. `tip` is an array of plain lines shown in a hover/focus tooltip (text nodes only).
-  function prefChip(kind, polarity, text, tag, tip) {
+  // opts: detail (text after the phrase), cls (extra classes), pin (a seller chip: click to pin).
+  function prefChip(kind, polarity, text, tag, tip, opts) {
+    opts = opts || {};
     var x = h('button', { type: 'button', class: 'x', 'aria-label': 'Remove ' + text }, ['×']);
     x.addEventListener('click', function () { removePref(kind, text, x); });
-    var marker = kind === 'guess' ? '?' : (polarity === 'dislike' ? '−' : '+');
-    var cls = 'chip pref ' + polarity + (kind === 'inferred' || kind === 'guess' ? ' ' + kind : '');
-    var kids = [h('span', { class: 'k' }, [marker]), h('span', { class: 'txt' }, [text])];
+    var marker = kind === 'guess' ? '?' : (opts.cls && opts.cls.indexOf('neutral') >= 0 ? '≈'
+      : (polarity === 'dislike' ? '−' : '+'));
+    var cls = 'chip pref ' + polarity + (kind === 'inferred' || kind === 'guess' ? ' ' + kind : '') +
+      (opts.cls ? ' ' + opts.cls : '');
+    var label;
+    if (opts.pin) {
+      label = h('button', {
+        type: 'button', class: 'txt pinbtn',
+        title: 'Click to pin or unpin this seller (a pinned seller can fill more of a batch)',
+        'aria-pressed': opts.pinned ? 'true' : 'false'
+      }, [text]);
+      label.addEventListener('click', function () { pinSeller(text); });
+    } else {
+      label = h('span', { class: 'txt' }, [text]);
+    }
+    var kids = [h('span', { class: 'k' }, [marker]), label];
+    if (opts.detail) kids.push(h('span', { class: 'detail' }, [opts.detail]));
     if (tag) kids.push(h('span', { class: 'tag' }, [tag]));
+    if (opts.pinned) kids.push(h('span', { class: 'tag pinned-tag' }, ['pinned']));
     kids.push(x);
     if (tip && tip.length) {
       kids.push(h('span', { class: 'tip', role: 'tooltip' }, tip.map(function (line, i) {
@@ -188,6 +205,40 @@
       })));
     }
     return h('span', { class: cls, 'data-kind': kind, tabindex: '0' }, kids);
+  }
+
+  function inferredChip(e) {
+    var tip;
+    var opts = {};
+    var tag = 'inferred';
+    if (e.status === 'open') {
+      tag = 'open';
+      opts = { cls: 'neutral', detail: e.detail };
+      tip = ['Open: you liked more than one value, so it does not steer the search or the order.']
+        .concat(e.evidence_titles);
+    } else if (e.status === 'mixed') {
+      tag = 'mixed';
+      opts = { cls: 'neutral', detail: e.detail };
+      tip = ['Mixed: your loved and liked items cost different amounts, so price does not steer.']
+        .concat(e.evidence_titles);
+    } else if (e.attr_kind === 'seller') {
+      opts = { pin: true, pinned: !!e.pinned };
+      tip = ['Learned from what you rated. Click the name to pin it:']
+        .concat(e.evidence_titles);
+    } else {
+      tip = ['Learned from what you rated:'].concat(e.evidence_titles);
+    }
+    return prefChip('inferred', e.polarity, e.text, tag, tip, opts);
+  }
+
+  function pinSeller(phrase) {
+    api('POST', '/api/preference/pin', { session_id: state.sessionId, phrase: phrase })
+      .then(function (data) {
+        state.profile = data.profile;
+        state.summary = data.profile_summary;
+        renderPrefs();
+      })
+      .catch(function (err) { fail(err.message, null); });
   }
 
   function renderPrefs() {
@@ -202,17 +253,16 @@
     var chips = $('pref-chips');
     chips.textContent = '';
     if (!p) return;
-    var inferred = function (pol) {
-      return p.inferred.filter(function (e) { return e.polarity === pol; });
-    };
-    var inferredChip = function (e) {
-      var tip = ['Learned from what you rated:'].concat(e.evidence_titles);
-      return prefChip('inferred', e.polarity, e.text, 'inferred', tip);
+    var inferred = function (pol, open) {
+      return p.inferred.filter(function (e) {
+        return e.polarity === pol && ((e.status === 'open' || e.status === 'mixed') === open);
+      });
     };
     p.likes.forEach(function (t) { chips.appendChild(prefChip('like', 'like', t, '', ['From your own words'])); });
-    inferred('like').forEach(function (e) { chips.appendChild(inferredChip(e)); });
+    inferred('like', false).forEach(function (e) { chips.appendChild(inferredChip(e)); });
+    inferred('like', true).forEach(function (e) { chips.appendChild(inferredChip(e)); });
     p.dislikes.forEach(function (t) { chips.appendChild(prefChip('dislike', 'dislike', t, '', ['From your own words'])); });
-    inferred('dislike').forEach(function (e) { chips.appendChild(inferredChip(e)); });
+    inferred('dislike', false).forEach(function (e) { chips.appendChild(inferredChip(e)); });
     (p.guesses || []).forEach(function (t) {
       chips.appendChild(prefChip('guess', 'guess', t, 'guess', [
         'A guess from your request wording', 'Nothing you rated confirms it, so it is not counted as a like.'
@@ -236,6 +286,15 @@
 
   /* ---- footer ---- */
 
+  function diversityText(s) {
+    if (s.kind !== 'shop_again' || !s.diversity) return '';
+    var parts = Object.keys(s.diversity).map(function (d) {
+      return d.replace('_', ' ') + ' ' + Math.round(s.diversity[d].share * 100) + '%';
+    });
+    if (s.seller_share) parts.push('top seller ' + Math.round(s.seller_share.share * 100) + '%');
+    return parts.length ? 'largest share: ' + parts.join(', ') : '';
+  }
+
   function renderStats() {
     var s = state.search;
     var el = $('stats');
@@ -250,6 +309,7 @@
       'Anthropic ' + usd(s.anthropic_usd),
       'est. total ' + usd(s.total_usd),
       s.alignment ? 'matches your preferences: ' + s.alignment.matches + ' of ' + s.alignment.total : '',
+      diversityText(s),
       'session ' + usd(state.sessionUsd),
       lookups
     ].filter(Boolean).join(' · ');

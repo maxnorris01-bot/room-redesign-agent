@@ -119,19 +119,42 @@ def mock_service(tmp_path: Path, **kw: Any) -> ShopService:
 COFFEE = "coffee tables with a mix of wood and metal with storage"
 
 
+def pick(first: list[dict[str, Any]], *needles: str, premium: bool = True) -> dict[str, Any]:
+    """The first result (from the premium seller, or not) whose title has every needle."""
+    for r in first:
+        if (r["seller"] == PREMIUM_SELLER) == premium and all(
+            n.lower() in r["title"].lower() for n in needles
+        ):
+            return r
+    raise AssertionError(f"no result with {needles} in the first batch")
+
+
 def brass_scenario(svc: ShopService) -> tuple[str, list[dict[str, Any]]]:
-    """A mock session that loves two brushed brass items from the premium seller, with no comments,
-    likes two others and dislikes one. Returns (session id, the first batch)."""
+    """The owner's mixed case, in mock form: loves a round walnut drum and a rectangular wood and
+    black metal lift-top from one premium seller (no comments), likes a round and a rectangular
+    item from other sellers, dislikes one. Shape comes out open. Returns (session id, first batch)."""
     view = svc.search(None, COFFEE)
     sid, first = view["session_id"], view["search"]["results"]
-    brass = [r for r in first if r["seller"] == PREMIUM_SELLER and "Brushed Brass" in r["title"]]
-    assert len(brass) >= 2, "the fixtures should put premium brass items in the first batch"
-    svc.rate(sid, brass[0]["id"], "love")
-    svc.rate(sid, brass[1]["id"], "love")
-    others = [r for r in first if r["seller"] != PREMIUM_SELLER]
-    svc.rate(sid, others[0]["id"], "like")
-    svc.rate(sid, others[1]["id"], "like")
-    svc.rate(sid, others[2]["id"], "dislike")
+    svc.rate(sid, pick(first, "Round Walnut Drum")["id"], "love")
+    svc.rate(sid, pick(first, "Rectangular Wood and Black Metal")["id"], "love")
+    svc.rate(sid, pick(first, "Round ", premium=False)["id"], "like")
+    svc.rate(sid, pick(first, "Rectangular ", premium=False)["id"], "like")
+    svc.rate(sid, pick(first, "Oval ", premium=False)["id"], "dislike")
+    return sid, first
+
+
+def round_scenario(svc: ShopService) -> tuple[str, list[dict[str, Any]]]:
+    """Scenario B: loves two round items from the premium seller, likes two rectangular ones from
+    others, dislikes one. Round carries 75% of the like mass against about a third of what was
+    shown, so shape converges."""
+    view = svc.search(None, COFFEE)
+    sid, first = view["session_id"], view["search"]["results"]
+    svc.rate(sid, pick(first, "Round Walnut Drum")["id"], "love")
+    svc.rate(sid, pick(first, "Round Brushed Brass Drum")["id"], "love")
+    svc.rate(sid, pick(first, "Rectangular ", premium=False)["id"], "like")
+    rect2 = [r for r in first if r["seller"] != PREMIUM_SELLER and "Rectangular" in r["title"]][1]
+    svc.rate(sid, rect2["id"], "like")
+    svc.rate(sid, pick(first, "Oval ", premium=False)["id"], "dislike")
     return sid, first
 
 
@@ -142,21 +165,24 @@ def as_results(rows: list[dict[str, Any]]) -> list[ShopResult]:
 # ---- learning from the items, with no comments --------------------------------------------------------
 
 
-def test_two_loved_items_teach_an_attribute_with_no_comment(tmp_path: Path) -> None:
+def test_two_loved_round_items_converge_shape_with_no_comment(tmp_path: Path) -> None:
     svc = mock_service(tmp_path)
-    sid, first = brass_scenario(svc)
+    sid, first = round_scenario(svc)
     again = svc.shop_again(sid)
     profile = again["profile"]
     assert profile["likes"] == [] and profile["dislikes"] == []  # nothing was said
-    inferred = {e["text"]: e for e in profile["inferred"]}
-    brass = inferred["brushed brass"]
-    assert brass["attr_kind"] == "color_finish" and brass["polarity"] == "like"
-    assert len(brass["evidence"]) == 2 and brass["weight"] == 6  # two loved items, 3 each
-    assert all("Brushed Brass" in t for t in brass["evidence_titles"])
-    assert "brushed brass" in again["profile_summary"]
+    shape = [e for e in profile["inferred"] if e["dimension"] == "shape"]
+    assert [(e["text"], e["status"], e["polarity"]) for e in shape] == [
+        ("round", "converged", "like")
+    ]
+    assert shape[0]["share"] == 0.75 and shape[0]["lift"] > 1.3
+    assert len(shape[0]["evidence"]) == 2 and shape[0]["weight"] == 6
+    assert all("Round" in t for t in shape[0]["evidence_titles"])
+    assert "round" in again["profile_summary"]
+    assert not any(e["status"] == "open" and e["dimension"] == "shape" for e in profile["inferred"])
 
 
-def test_the_mock_scenario_shows_seller_affinity_queries_and_better_alignment(
+def test_the_mixed_scenario_shows_seller_affinity_open_shape_and_better_alignment(
     tmp_path: Path,
 ) -> None:
     svc = mock_service(tmp_path)
@@ -166,14 +192,21 @@ def test_the_mock_scenario_shows_seller_affinity_queries_and_better_alignment(
     found = again["search"]
     seller = [e for e in profile.inferred if e.attr_kind == "seller"]
     assert [e.text for e in seller] == [f"seller: {PREMIUM_SELLER}"]
+    shape = [e for e in profile.inferred if e.dimension == "shape"]
+    assert [(e.status, sorted(e.values)) for e in shape] == [("open", ["rectangular", "round"])]
     assert any(PREMIUM_SELLER.lower() in q.lower() for q in found["queries"])  # the seller query
-    assert len(found["queries"]) == 3 and found["serper_calls"] == 4
-    assert PREMIUM_SELLER in again["profile_summary"]
+    assert any("round" in q.lower() for q in found["queries"])  # one phrasing per open value
+    assert any("rectangular" in q.lower() for q in found["queries"])
+    assert found["queries"][0] == "wood and metal coffee table with storage"  # typed: no seller
+    assert (
+        PREMIUM_SELLER in again["profile_summary"] and "Shape is open" in again["profile_summary"]
+    )
     first_align = preference_alignment(as_results(first), profile)
     again_align = preference_alignment(as_results(found["results"]), profile)
     assert again_align > first_align
-    assert found["alignment"]["total"] == len(found["results"])
-    assert found["alignment"]["matches"] > 0
+    assert (
+        found["alignment"]["total"] == len(found["results"]) and found["alignment"]["matches"] > 0
+    )
     premium_first = sum(1 for r in first if r["seller"] == PREMIUM_SELLER)
     premium_again = sum(1 for r in found["results"] if r["seller"] == PREMIUM_SELLER)
     assert premium_again > premium_first
@@ -195,6 +228,7 @@ def test_an_upper_price_band_shows_in_the_mock_scenario_and_leaves_the_cap_alone
     )
     assert "in the upper price range" in again["profile_summary"]
     assert again["search"]["query"]["price_max"] == 1500.0  # the typed cap is untouched
+    assert again["search"]["used_query"]["price_max"] == 1500.0
     assert all(r["price"] <= 1500 for r in again["search"]["results"])
 
 
@@ -481,21 +515,23 @@ def test_a_guess_never_reaches_the_ranker_as_a_like(
 # ---- deleted chips -------------------------------------------------------------------------------------------
 
 
-def test_deleted_inferred_seller_and_band_chips_never_come_back(tmp_path: Path) -> None:
+def test_deleted_chips_never_come_back(tmp_path: Path) -> None:
     svc = mock_service(tmp_path)
     sid, _ = brass_scenario(svc)
     one = svc.shop_again(sid)
     texts = [e["text"] for e in one["profile"]["inferred"]]
-    assert "brushed brass" in texts and f"seller: {PREMIUM_SELLER}" in texts
-    for text in ("brushed brass", f"seller: {PREMIUM_SELLER}"):
+    assert f"seller: {PREMIUM_SELLER}" in texts and "shape: open" in texts
+    for text in (f"seller: {PREMIUM_SELLER}", "shape: open"):
         out = svc.remove_preference(sid, "inferred", text)
         assert text not in [e["text"] for e in out["profile"]["inferred"]]
     two = svc.shop_again(sid)
     after = [e["text"] for e in two["profile"]["inferred"]]
-    assert "brushed brass" not in after and f"seller: {PREMIUM_SELLER}" not in after
-    assert PREMIUM_SELLER not in two["profile_summary"]
+    assert f"seller: {PREMIUM_SELLER}" not in after and "shape: open" not in after
+    assert (
+        PREMIUM_SELLER not in two["profile_summary"]
+        and "Shape is open" not in two["profile_summary"]
+    )
     assert all(PREMIUM_SELLER.lower() not in q.lower() for q in two["search"]["queries"])
-    assert "brushed brass" not in " ".join(two["search"]["queries"]).lower()
 
 
 def test_reapply_removed_filters_every_part_of_the_profile() -> None:
@@ -591,21 +627,21 @@ def test_images_are_attached_when_they_can_be_fetched(
 ) -> None:
     client = RouterClient()
     use_client(monkeypatch, client)
-    search = FakeSearch([[cand(f"a{i}", 40.0 + i, title=f"Brass Table {i}") for i in range(10)]])
+    search = FakeSearch([[cand(f"a{i}", 40.0 + i, title=f"Walnut Table {i}") for i in range(10)]])
     svc = make_service(tmp_path, search, FakeLookup())
     first = svc.search(None, "tables")
     sid = first["session_id"]
     for r in first["search"]["results"][:3]:
         svc.rate(sid, r["id"], "love")
-    search.sequence = [[cand(f"n{i}", 40.0, title=f"Brass N{i}") for i in range(10)]]
+    search.sequence = [[cand(f"n{i}", 40.0, title=f"Walnut N{i}") for i in range(10)]]
     again = svc.shop_again(sid)
-    prefs_call = next(
-        c for c in client.calls if "PreferenceProfileV2" in json.dumps(c["output_config"])
-    )
+    prefs_call = next(c for c in client.calls if "PreferenceTags" in json.dumps(c["output_config"]))
     blocks = prefs_call["messages"][0]["content"]
     assert [b["type"] for b in blocks] == ["image", "image", "image", "text"]  # images first
     assert again["profile"]["images"] == {"offered": 3, "used": 3, "failed": 0, "reasons": []}
     assert "image 1" in blocks[-1]["text"] and "image 3" in blocks[-1]["text"]
+    cues = [e["text"] for e in again["profile"]["inferred"] if e["attr_kind"] == "quality_cue"]
+    assert cues == ["visible grain"]  # a cue only the photos show, and three loved items show it
 
 
 def test_a_failed_image_fetch_falls_back_to_the_title_and_is_recorded(
@@ -613,9 +649,7 @@ def test_a_failed_image_fetch_falls_back_to_the_title_and_is_recorded(
 ) -> None:
     client = RouterClient()
     use_client(monkeypatch, client)
-    search = FakeSearch(
-        [[cand(f"a{i}", 40.0 + i, title=f"Brushed Brass Table {i}") for i in range(10)]]
-    )
+    search = FakeSearch([[cand(f"a{i}", 40.0 + i, title=f"Walnut Table {i}") for i in range(10)]])
     thumbs = FailingThumbs()
     svc = make_service(tmp_path, search, FakeLookup())
     svc.thumbnailer = thumbs
@@ -623,11 +657,9 @@ def test_a_failed_image_fetch_falls_back_to_the_title_and_is_recorded(
     sid = first["session_id"]
     for r in first["search"]["results"][:3]:
         svc.rate(sid, r["id"], "love")
-    search.sequence = [[cand(f"n{i}", 40.0, title=f"Brushed Brass N{i}") for i in range(10)]]
+    search.sequence = [[cand(f"n{i}", 40.0, title=f"Walnut N{i}") for i in range(10)]]
     again = svc.shop_again(sid)
-    prefs_call = next(
-        c for c in client.calls if "PreferenceProfileV2" in json.dumps(c["output_config"])
-    )
+    prefs_call = next(c for c in client.calls if "PreferenceTags" in json.dumps(c["output_config"]))
     content = prefs_call["messages"][0]["content"]
     assert isinstance(content, str) and "image none" in content  # title only
     images = again["profile"]["images"]
@@ -635,8 +667,10 @@ def test_a_failed_image_fetch_falls_back_to_the_title_and_is_recorded(
     assert images["reasons"] and "timed out" in images["reasons"][0]
     assert "https://" not in json.dumps(images)  # reasons name a host and a reason, never a url
     assert len(thumbs.urls) == 3 and all(u.startswith("https://") for u in thumbs.urls)
-    assert any(e["text"] == "brushed brass" for e in again["profile"]["inferred"])  # still learned
-    assert not any(e["text"] == "premium metal finish" for e in again["profile"]["inferred"])
+    assert again["search"]["kind"] == "shop_again" and again["search"]["results"]  # carried on
+    assert not any(
+        e["attr_kind"] == "quality_cue" for e in again["profile"]["inferred"]
+    )  # no photo
 
 
 def test_the_image_fetch_uses_the_guarded_thumbnailer() -> None:
@@ -655,7 +689,15 @@ def test_the_image_fetch_uses_the_guarded_thumbnailer() -> None:
 
 
 def entry(kind: str, text: str, weight: int = 3, pol: str = "like") -> ProfileEntry:
-    return ProfileEntry(text=text, attr_kind=kind, polarity=pol, weight=weight)  # type: ignore[arg-type]
+    dim = (
+        kind
+        if kind in ("shape", "material", "color_finish", "frame_or_legs", "frame_color", "style")
+        else ""
+    )
+    return ProfileEntry(
+        text=text, attr_kind=kind, polarity=pol, weight=weight, dimension=dim,
+        values=[text] if dim else [],
+    )  # type: ignore[arg-type]  # fmt: skip
 
 
 def test_three_phrasings_adjusted_original_attributes_and_seller() -> None:
@@ -677,7 +719,7 @@ def test_three_phrasings_adjusted_original_attributes_and_seller() -> None:
     queries = build_queries(base, profile, adjusted)
     assert queries == [
         "coffee table with storage",
-        "coffee table brushed brass walnut drum",
+        "coffee table brushed brass drum walnut",
         "West Elm coffee table storage",
     ]
     assert build_queries(base, StoredProfile(), base) == ["coffee table with storage"]
@@ -715,13 +757,18 @@ def two_loved_brass(
     return svc, search, client, sid
 
 
+SHAPES_CYCLE = ["Round", "Rectangular", "Oval"]
+MATERIALS_CYCLE = ["Walnut", "Glass", "Marble", "Black Steel", "Oak"]
+
+
 def pages_of(size: int, count: int = 7) -> list[list[Any]]:
+    """Pages of varied candidates (three shapes, four materials), so no guard trims the list."""
     return [
         [
             cand(
                 f"{p}{i}",
                 60.0 + i,
-                title=f"Brushed Brass {p.upper()} Table {i}",
+                title=f"{SHAPES_CYCLE[i % 3]} {MATERIALS_CYCLE[i % 5]} Table {p.upper()}{i}",
                 seller=f"S{i % 9}",
             )
             for i in range(size)
@@ -737,12 +784,12 @@ def test_extra_pages_stop_once_the_pool_reaches_sixty(
     calls_before = len(search.calls)
     search.sequence = pages_of(20)
     again = svc.shop_again(sid)
-    assert len(search.calls) - calls_before == 3  # two phrasings, one extra page: 60 candidates
+    assert len(search.calls) - calls_before == 3  # three pages of 20: 60 candidates, then stop
     rank_text = client.calls[-1]["messages"][0]["content"]
     pool_lines = [x for x in rank_text.splitlines() if x.startswith("- id: ")]
     assert len(pool_lines) == 60 and len(again["search"]["results"]) == 24
     assert again["search"]["serper_calls"] == 3 and again["search"]["serper_credits"] == 6
-    assert len({q for q, _ in search.calls[calls_before:]}) == 2  # more than one phrasing
+    assert len({q for q, _ in search.calls[calls_before:]}) == 1  # nothing converged: one phrasing
 
 
 def test_a_thin_pool_uses_all_four_serper_calls_and_never_a_fifth(
@@ -824,7 +871,7 @@ def test_a_repeated_phrasing_starts_after_the_pages_already_fetched(
     assert stored[0].pages == {"boho curtains": 2} and stored[1].pages == {"boho curtains": 4}
 
 
-def test_seller_cap_is_four_normally_and_eight_for_an_affinity_seller(
+def test_seller_cap_is_four_normally_half_for_an_affinity_seller_and_most_when_pinned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     use_client(monkeypatch, RouterClient())
@@ -837,18 +884,41 @@ def test_seller_cap_is_four_normally_and_eight_for_an_affinity_seller(
     by_title = {r["title"]: r["id"] for r in first["search"]["results"]}
     svc.rate(sid, by_title["Brass Shown 0"], "love")
     svc.rate(sid, by_title["Brass Shown 1"], "love")
-    fresh = [cand(f"nf{i}", 60.0, title=f"Fav New {i}", seller="FavShop") for i in range(12)]
-    fresh += [cand(f"no{i}", 60.0, title=f"Other New {i}", seller="OtherShop") for i in range(12)]
-    search.sequence = [fresh]
+
+    def fresh(tag: str) -> list[Any]:
+        out = [
+            cand(f"{tag}f{i}", 60.0, title=f"Fav {tag} {i}", seller="FavShop") for i in range(22)
+        ]
+        return out + [
+            cand(f"{tag}o{i}", 60.0, title=f"Other {tag} {i}", seller="OtherShop")
+            for i in range(12)
+        ]
+
+    search.sequence = [fresh("a")]
     again = svc.shop_again(sid)
     sellers = [r["seller"] for r in again["search"]["results"]]
-    assert sellers.count("FavShop") == 8  # an affinity seller: eight
+    assert sellers.count("FavShop") == 12  # an affinity seller: 50% of a batch of 24
     assert sellers.count("OtherShop") == 4  # everyone else: four
-    typed = svc.store.load(sid)
-    assert typed.profile is not None and any(
-        e.attr_kind == "seller" for e in typed.profile.inferred
+    assert again["search"]["seller_share"] == {"seller": "FavShop", "share": 0.75}
+    stored = svc.store.load(sid).profile
+    assert stored is not None and any(
+        e.attr_kind == "seller" and not e.pinned for e in stored.inferred
     )
-    assert again["search"]["counts"]["seller_capped"] > 0
+    # pin the seller: it may now take 80% of a batch (19 of 24); the pin is stored in the session
+    pinned = svc.pin_preference(sid, "seller: FavShop")
+    assert pinned["pinned"] is True
+    assert svc.store.load(sid).profile.pinned_sellers == ["favshop"]  # type: ignore[union-attr]
+    assert svc.session_view(sid)["profile"]["inferred"][0]["pinned"] is True
+    search.sequence = [fresh("b")]
+    again2 = svc.shop_again(sid)
+    sellers2 = [r["seller"] for r in again2["search"]["results"]]
+    assert sellers2.count("FavShop") == 19 and sellers2.count("OtherShop") == 4
+    assert svc.store.load(sid).profile.pinned_sellers == ["favshop"]  # type: ignore[union-attr]
+    unpinned = svc.pin_preference(sid, "seller: FavShop")  # clicking again unpins
+    assert unpinned["pinned"] is False and svc.store.load(sid).profile.pinned_sellers == []  # type: ignore[union-attr]
+    with pytest.raises(ApiError) as err:
+        svc.pin_preference(sid, "seller: Nobody")
+    assert err.value.status == 404
 
 
 # ---- the summary line, the measure -------------------------------------------------------------------------------
@@ -897,7 +967,7 @@ def result(rid: str, title: str, seller: str = "S", price: float | None = 100.0)
 def test_alignment_counts_inferred_likes_by_title_seller_or_price_band() -> None:
     profile = StoredProfile(
         inferred=[
-            entry("color_finish", "brushed brass"),
+            entry("color_finish", "brass"),
             entry("seller", "seller: West Elm"),
             ProfileEntry(
                 text="upper range, about $600 to $1,000",
@@ -916,12 +986,12 @@ def test_alignment_counts_inferred_likes_by_title_seller_or_price_band() -> None
         result("2", "Plain Table", seller="west elm"),  # seller
         result("3", "Plain Table", price=800.0),  # band
         result("4", "Plain Table", price=300.0),  # nothing
-        result("5", "Brushed Brass Glass Table"),  # a like but also a dislike
+        result("5", "Glass Brushed Brass Table"),  # a like but also a dislike
         result("6", "Flimsy Table", seller="West Elm"),  # a like but a stated dislike
-        result("7", "Brass Table"),  # only half of "brushed brass"
+        result("7", "Brass Table"),  # the finish value brass
     ]
-    assert alignment_counts(results, profile) == (3, 7)
-    assert preference_alignment(results, profile) == pytest.approx(3 / 7, abs=1e-4)
+    assert alignment_counts(results, profile) == (4, 7)
+    assert preference_alignment(results, profile) == pytest.approx(4 / 7, abs=1e-4)
 
 
 def test_alignment_ignores_guesses_stated_likes_and_empty_profiles() -> None:
@@ -1081,7 +1151,7 @@ def test_shop_again_still_works_when_the_model_returns_nonsense(
     search.sequence = [[cand(f"n{i}", 45.0) for i in range(30)]]
     again = svc.shop_again(sid)
     assert len(again["search"]["results"]) == 24
-    assert any("Could not update your preferences" in w for w in again["search"]["warnings"])
+    assert any("Could not read the items" in w for w in again["search"]["warnings"])
     assert again["profile"]["inferred"] == []
 
 

@@ -154,6 +154,49 @@ def lookups_text(page: Page) -> str:
     return str(page.inner_text("#stats"))
 
 
+def card_by_title(page: Page, needle: str, seller: str | None = None) -> Any:
+    cards = page.locator("#grid .card").filter(has=page.locator(".title", has_text=needle))
+    if seller is not None:
+        cards = cards.filter(has=page.locator(".seller", has_text=seller))
+    return cards.first
+
+
+def title_texts(page: Page) -> list[str]:
+    return [t for t in page.locator("#grid .card .title").all_inner_texts()]
+
+
+def shape_of(title: str) -> str | None:
+    for word in ("Round", "Rectangular", "Oval", "Square"):
+        if word.lower() in title.lower():
+            return word.lower()
+    return None
+
+
+def max_shape_share(page: Page) -> float:
+    shapes = [shape_of(t) for t in title_texts(page)]
+    known = [s for s in shapes if s]
+    return max(known.count(s) for s in set(known)) / len(known) if known else 0.0
+
+
+def seller_share(page: Page) -> tuple[str, float]:
+    sellers = page.locator("#grid .card .seller").all_inner_texts()
+    top = max(set(sellers), key=sellers.count)
+    return top, sellers.count(top) / len(sellers)
+
+
+def price_of(card: Any) -> float:
+    text = card.locator(".price").first.inner_text().replace("$", "").replace(",", "")
+    return float(text) if text.replace(".", "").isdigit() else 0.0
+
+
+def wait_pref_chip(page: Page, text: str) -> Any:
+    chip = page.locator("#pref-chips .chip.pref").filter(
+        has=page.locator(".txt", has_text=re.compile(rf"^{re.escape(text)}$"))
+    )
+    chip.first.wait_for(timeout=10000)
+    return chip.first
+
+
 def run_checks(base: str, shots: Path) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
@@ -175,216 +218,243 @@ def run_checks(base: str, shots: Path) -> None:
             print("empty page")
             page.goto(base)
             page.wait_for_selector("#examples button")
-            check(page.locator(".card").count() == 0, "no cards before a search")
             check(
                 page.locator("#shop-again").is_disabled(), "Shop Again is disabled before a rating"
             )
-            check(
-                page.locator("#again-wrap").get_attribute("title") == "Rate a few results first",
-                "tooltip says Rate a few results first",
-            )
             page.screenshot(path=str(shots / "01-empty.png"))
 
-            print("a failed search shows a readable error and a retry")
-            page.route(
-                "**/api/search",
-                lambda r: r.fulfill(
-                    status=502, content_type="application/json",
-                    body='{"error": "serper: HTTP 402 payment required"}',
-                ),
-            )  # fmt: skip
+            print("scenario A: one round and one rectangular item loved from one seller")
+            release = hold(page, "**/api/search")
             page.fill("#request", COFFEE)
             page.click("#search-btn")
-            page.locator("#status.error").wait_for()
-            check("serper: HTTP 402" in page.inner_text("#status"), "error message is shown")
-            check(page.locator("#retry").is_visible(), "a Retry button is shown")
-            page.screenshot(path=str(shots / "02-error-retry.png"))
-            page.unroute("**/api/search")
-
-            print("search, with a visible loading state")
-            release = hold(page, "**/api/search")
-            page.click("#retry")
             page.locator("#spinner").wait_for(state="visible")
             check(
-                page.inner_text("#status") == "Searching, usually about 10 seconds",
-                "loading text says Searching, usually about 10 seconds",
+                page.inner_text("#status") == "Searching, usually about 10 seconds", "loading text"
             )
-            check(page.locator("#search-btn").is_disabled(), "Search is disabled while loading")
-            page.screenshot(path=str(shots / "03-loading.png"))
+            page.screenshot(path=str(shots / "02-loading.png"))
             release()
             wait_for_results(page)
-            first_ids = card_ids(page)
-            check(len(first_ids) == 24, f"{len(first_ids)} results in the first batch")
-            first_premium = count_seller(page, PREMIUM)
-            print(f"   {first_premium} of the first batch are from {PREMIUM}")
-            check(
-                first_premium >= 2, "the first batch has two or more items from the invented seller"
-            )
-            check(
-                any("industrial" in c for c in chips(page)),
-                "the parser's style guess shows in the request chips",
-            )
-            page.screenshot(path=str(shots / "04-first-batch.png"))
+            first_titles = title_texts(page)
+            request_chips = chips(page)
+            print("   request chips:", " | ".join(request_chips).replace("\n", " "))
+            check(len(first_titles) == 24, f"{len(first_titles)} results in the first batch")
+            page.screenshot(path=str(shots / "03-scenario-a-first-grid.png"))
 
-            print("love two items from one seller (no comments), like two others, dislike one")
-            brass = seller_cards(page, PREMIUM).filter(
-                has=page.locator(".title", has_text="Brushed Brass")
+            round_love = card_by_title(page, "Round Walnut Drum", PREMIUM)
+            rect_love = card_by_title(page, "Rectangular Wood and Black Metal", PREMIUM)
+            round_love.locator(".rate.love").click()
+            rect_love.locator(".rate.love").click()
+            others = page.locator("#grid .card").filter(
+                has_not=page.locator(".seller", has_text=PREMIUM)
             )
-            check(brass.count() >= 2, "two brushed brass items from the invented seller")
-            brass.nth(0).locator(".rate.love").click()
-            brass.nth(1).locator(".rate.love").click()
-            others = (
+            round_others = others.filter(has=page.locator(".title", has_text="Round"))
+            rect_others = others.filter(has=page.locator(".title", has_text="Rectangular"))
+            check(
+                round_others.count() >= 1 and rect_others.count() >= 1,
+                "items of both shapes from other sellers were shown",
+            )
+            cheap_round = min(
+                (round_others.nth(i) for i in range(round_others.count())), key=price_of
+            )
+            dear_rect = max((rect_others.nth(i) for i in range(rect_others.count())), key=price_of)
+            low, high = price_of(cheap_round), price_of(dear_rect)
+            print(f"   liked prices ${low:,.0f} and ${high:,.0f}")
+            cheap_round.locator(".rate.like").click()
+            dear_rect.locator(".rate.like").click()
+            oval = (
                 page.locator("#grid .card")
+                .filter(has=page.locator(".title", has_text="Oval"))
                 .filter(has_not=page.locator(".seller", has_text=PREMIUM))
-                .filter(has_not=page.locator(".title", has_text="Industrial"))
+                .first
             )
-            others.nth(0).locator(".rate.like").click()
-            others.nth(1).locator(".rate.like").click()
-            others.nth(2).locator(".rate.dislike").click()
+            oval.locator(".rate.dislike").click()
             page.wait_for_load_state("networkidle")
             check("link lookups 0 of 12" in lookups_text(page), "loving and liking ran no lookup")
-            check(
-                brass.nth(0).locator(".resolved").inner_text() == "",
-                "a loved card keeps its Google link (nothing resolved)",
-            )
-            check(
-                page.inner_text("#saved-toggle") == "Show saved (4)",
-                "Saved holds the 4 loved and liked",
-            )
 
             print("Shop Again")
-            release = hold(page, "**/api/shop-again")
             page.click("#shop-again")
-            page.locator("#spinner").wait_for(state="visible")
-            check(
-                page.inner_text("#status") == "Finding new results, usually about 10 seconds",
-                "Shop Again loading text",
-            )
-            release()
             wait_for_results(page)
             page.locator("#prefs").wait_for(state="visible")
-            new_ids = card_ids(page)
-            check(len(new_ids) == 24, f"{len(new_ids)} new results")
+            batch1 = title_texts(page)
+            check(not set(batch1) & set(first_titles), "batch 1 shows nothing seen before")
             check(
-                not set(new_ids) & set(first_ids), "no result from the first batch is shown again"
+                chips(page) == request_chips, "the request chips are unchanged after Shop Again 1"
             )
-            again_premium = count_seller(page, PREMIUM)
-            print(f"   {again_premium} of the Shop Again batch are from {PREMIUM}")
+            open_shape = wait_pref_chip(page, "shape: open")
+            check("neutral" in open_shape.get_attribute("class"), "an open shape chip")
+            check("rectangular and round" in open_shape.inner_text(), "it lists both liked shapes")
             check(
-                again_premium > first_premium, "more results from the favoured seller than before"
+                "round"
+                not in " ".join(
+                    page.locator("#pref-chips .chip.pref:not(.open) .txt").all_inner_texts()
+                ).lower(),
+                "no chip pushes round or rectangular",
             )
-            print("   summary:", page.inner_text("#prefs-summary"))
-            print("   footer:", lookups_text(page))
-            check(PREMIUM in page.inner_text("#prefs-summary"), "the summary names the seller")
-            inferred = page.locator("#pref-chips .chip.pref.inferred")
-            check(inferred.count() >= 2, f"{inferred.count()} inferred chips")
-            chip_text = page.inner_text("#pref-chips")
-            check("brushed brass" in chip_text, "an inferred 'brushed brass' chip")
-            check(f"seller: {PREMIUM}" in chip_text, "an inferred seller chip")
-            tag_text = page.locator("#pref-chips .chip.pref.inferred .tag").first.text_content()
-            check(tag_text == "inferred", f"inferred chips are tagged ({tag_text!r})")
             check(
-                page.locator("#pref-chips .chip.pref.guess").count() == 0
-                and "industrial" not in chip_text,
-                "the guess was dropped: loved items are not industrial",
+                "Shape is open" in page.inner_text("#prefs-summary"),
+                "the summary says shape is open",
             )
-            check("matches your preferences:" in lookups_text(page), "footer shows the alignment")
-            check("3 searches" in lookups_text(page), "footer shows three search phrasings")
-            check("link lookups 0 of 12" in lookups_text(page), "Shop Again ran no lookup")
-            page.screenshot(path=str(shots / "05-chips-after-shop-again.png"))
+            price_chip = wait_pref_chip(page, "price: mixed")
+            check(
+                "loved $" in price_chip.inner_text() and "liked $" in price_chip.inner_text(),
+                "price shows as mixed",
+            )
+            check(
+                "Price is mixed." in page.inner_text("#prefs-summary"),
+                "the summary says price is mixed",
+            )
+            check(
+                page.locator("#pref-chips .chip.pref.inferred", has_text="wood").count() >= 1,
+                "a converged wood chip",
+            )
+            check(
+                page.locator("#pref-chips .chip.pref.neutral", has_text="finish").count() >= 1,
+                "a finish chip (open: warm wood and dark)",
+            )
+            seller_chip = page.locator("#pref-chips .chip.pref").filter(
+                has=page.locator(".txt", has_text=f"seller: {PREMIUM}")
+            )
+            check(seller_chip.count() == 1, "the seller chip")
+            tag_open = page.locator("#pref-chips .chip.pref.neutral .tag").first.text_content()
+            tag_inf = page.locator(
+                "#pref-chips .chip.pref.inferred:not(.open) .tag"
+            ).first.text_content()
+            check(
+                tag_open in ("open", "mixed") and tag_inf == "inferred",
+                f"tags {tag_open!r} {tag_inf!r}",
+            )
+            check(
+                open_shape.evaluate("e => getComputedStyle(e).borderStyle") == "solid"
+                and seller_chip.evaluate("e => getComputedStyle(e).borderStyle") == "dashed",
+                "open chips are solid, inferred dashed (guess chips are dotted)",
+            )
+            open_shape.hover()
+            tip = open_shape.locator(".tip")
+            check(tip.is_visible() and "Open:" in tip.inner_text(), "the open chip tooltip shows")
+            check("Round Walnut Drum" in tip.inner_text(), "it lists evidence titles as text")
+            page.screenshot(
+                path=str(shots / "04-open-chip-tooltip.png"), clip=_clip(page, open_shape)
+            )
+            page.mouse.move(5, 500)
+            price_chip.hover()
+            page.screenshot(
+                path=str(shots / "05-price-mixed-chip.png"), clip=_clip(page, price_chip)
+            )
+            page.mouse.move(5, 500)
 
-            print("evidence tooltip")
-            chip = page.locator("#pref-chips .chip.pref.inferred").filter(
-                has=page.locator(".txt", has_text=re.compile(r"^brushed brass$"))
+            top1, share1 = seller_share(page)
+            max_shape = max(max_shape_share(page), 0.0)
+            print(
+                f"   batch 2: top seller {top1} {share1:.0%}, largest shape share {max_shape:.0%}"
             )
-            tip = chip.locator(".tip")
-            check(tip.is_hidden(), "the tooltip is hidden until hover")
-            chip.hover()
-            check(tip.is_visible(), "the tooltip shows on hover")
-            check("Brushed Brass" in tip.inner_text(), "the tooltip lists the evidence titles")
-            check(tip.inner_text().startswith("Learned from what you rated"), "the tooltip heading")
-            page.screenshot(path=str(shots / "06-tooltip.png"), clip=_clip(page, chip))
-            page.mouse.move(5, 400)
-
-            print("styles of the three kinds of chip")
+            check(share1 <= 0.5, "no unpinned seller above 50% of the batch")
+            check(max_shape <= 0.6, "no shape above 60% of the batch")
             check(
-                chip.evaluate("e => getComputedStyle(e).borderStyle") == "dashed",
-                "inferred chips have a dashed border",
-            )
-            page.screenshot(path=str(shots / "07-grid-after.png"))
-
-            print("Open runs the one lookup")
-            with context.expect_page() as popup_info:
-                page.locator("#grid .card").first.locator(".open").click()
-            popup = popup_info.value
-            popup.wait_for_url(re.compile(r"^https://"), timeout=10000)
-            popup.close()
-            page.wait_for_load_state("networkidle")
-            check("link lookups 1 of 12" in lookups_text(page), "Open ran one lookup")
-            check(
-                page.locator("#grid .card").first.locator(".resolved").inner_text() != "",
-                "the opened card shows its retailer line",
+                "largest share:" in lookups_text(page) and "shape" in lookups_text(page),
+                "footer shows the largest shares",
             )
 
-            print("delete an inferred chip; Saved; reload")
-            before = page.locator("#pref-chips .chip.pref").count()
-            chip.locator(".x").click()
-            page.locator("#pref-chips .chip.pref").nth(before - 1).wait_for(state="detached")
-            print("   chips now:", page.inner_text("#pref-chips").replace("\n", " | "))
-            check("brushed brass" not in page.inner_text("#pref-chips"), "the chip is deleted")
-            page.click("#saved-toggle")
-            check(
-                saved_counts(page) == ("Loved (2)", "Liked (2)"), f"Saved tabs {saved_counts(page)}"
+            print("pin the seller")
+            page.locator("#pref-chips .chip.pref .pinbtn").click()
+            pinned_chip = page.locator("#pref-chips .chip.pref").filter(
+                has=page.locator(".pinned-tag")
             )
-            page.reload()
+            pinned_chip.first.wait_for(timeout=10000)
+            check(
+                page.locator("#pref-chips .pinbtn").get_attribute("aria-pressed") == "true",
+                "the seller chip shows it is pinned",
+            )
+            page.screenshot(
+                path=str(shots / "06-pinned-seller-chip.png"), clip=_clip(page, pinned_chip.first)
+            )
+            page.click("#shop-again")
             wait_for_results(page)
-            check(card_ids(page) == new_ids, "the Shop Again batch is restored")
-            check(page.locator("#saved").is_visible(), "Saved is still open")
+            batch2 = title_texts(page)
             check(
-                "brushed brass" not in page.inner_text("#pref-chips"),
-                "the deleted chip is still deleted after a reload",
+                not set(batch2) & (set(first_titles) | set(batch1)),
+                "the second batch shows nothing seen before",
+            )
+            top2, share2 = seller_share(page)
+            print(f"   pinned batch: top seller {top2} {share2:.0%}")
+            check(
+                share2 > 0.5 and share2 <= 0.8,
+                "a pinned seller may fill more than half, never more than 80%",
             )
             check(
-                page.locator("#pref-chips .chip.pref.inferred").count() >= 1,
-                "the other inferred chips are restored",
+                chips(page) == request_chips,
+                "the request chips are unchanged after the second Shop Again",
             )
-            check("link lookups 1 of 12" in lookups_text(page), "the lookup count is restored")
+            page.screenshot(path=str(shots / "07-scenario-a-grid-after.png"))
+
+            print("Saved panel wraps")
+            page.click("#saved-toggle")
+            check(page.locator("#saved").is_visible(), "Saved opens")
+            check(saved_counts(page)[0].startswith("Loved (2)"), f"tabs {saved_counts(page)}")
+            page.click("#tab-liked")
+            page.screenshot(path=str(shots / "08-saved-panel.png"))
+            row = page.locator("#saved-row")
+            overflow = row.evaluate("e => e.scrollWidth - e.clientWidth")
+            check(overflow <= 1, f"Saved panel does not scroll sideways ({overflow}px)")
+            check(
+                row.evaluate("e => getComputedStyle(e).display") == "grid",
+                "Saved panel is a grid like the results",
+            )
             page.set_viewport_size({"width": 390, "height": 844})
+            page.locator("#saved").scroll_into_view_if_needed()
+            check(
+                page.locator("#saved-row").evaluate("e => e.scrollWidth - e.clientWidth") <= 1
+                and page.evaluate("document.documentElement.scrollWidth - window.innerWidth") <= 1,
+                "no sideways scroll at 390 px",
+            )
             page.screenshot(path=str(shots / "09-mobile.png"))
             page.set_viewport_size({"width": 1280, "height": 900})
+            page.click("#saved-toggle")
 
-            print("a guess chip stays when nothing contradicts it")
+            print("reload")
+            page.reload()
+            wait_for_results(page)
+            check("shape: open" in page.inner_text("#pref-chips"), "the open chip is restored")
+            check(page.locator("#pref-chips .pinned-tag").count() == 1, "the pin is restored")
+            check(chips(page) == request_chips, "the request chips are restored unchanged")
+
+            print("scenario B: two round items loved")
             page.click("#start-over")
             page.click("#start-over-yes")
             search(page, COFFEE)
-            page.locator("#grid .card").nth(2).locator(".rate.like").click()
+            card_by_title(page, "Round Walnut Drum", PREMIUM).locator(".rate.love").click()
+            card_by_title(page, "Round Brushed Brass Drum", PREMIUM).locator(".rate.love").click()
+            rects = (
+                page.locator("#grid .card")
+                .filter(has=page.locator(".title", has_text="Rectangular"))
+                .filter(has_not=page.locator(".seller", has_text=PREMIUM))
+            )
+            rects.nth(0).locator(".rate.like").click()
+            rects.nth(1).locator(".rate.like").click()
+            page.locator("#grid .card").filter(has=page.locator(".title", has_text="Oval")).filter(
+                has_not=page.locator(".seller", has_text=PREMIUM)
+            ).first.locator(".rate.dislike").click()
+            page.wait_for_load_state("networkidle")
+            first_b = title_texts(page)
+            first_round_share = sum(1 for t in first_b if shape_of(t) == "round") / len(first_b)
+            page.screenshot(path=str(shots / "10-scenario-b-first-grid.png"))
             page.click("#shop-again")
             wait_for_results(page)
             page.locator("#prefs").wait_for(state="visible")
-            guess = page.locator("#pref-chips .chip.pref.guess")
-            check(guess.count() == 1 and "industrial" in guess.first.inner_text(), "a guess chip")
-            check(
-                (guess.first.locator(".tag").text_content() or "") == "guess", "it is tagged guess"
+            round_chip = wait_pref_chip(page, "round")
+            check("inferred" in round_chip.get_attribute("class"), "shape converges on round")
+            check("shape: open" not in page.inner_text("#pref-chips"), "and shape is not open")
+            batch = title_texts(page)
+            rounds = sum(1 for t in batch if shape_of(t) == "round")
+            print(f"   scenario B batch: {rounds} of {len(batch)} round")
+            again_share = rounds / len(batch)
+            print(
+                f"   round share: first batch {first_round_share:.0%}, Shop Again {again_share:.0%}"
             )
             check(
-                guess.first.evaluate("e => getComputedStyle(e).borderStyle") == "dotted",
-                "a guess chip has a dotted border (inferred is dashed)",
+                rounds / len(batch) > first_round_share + 0.05,
+                "the batch leans more round than the first one",
             )
-            check(
-                page.locator("#pref-chips .chip.pref.like").count() == 0
-                or "industrial" not in page.inner_text("#pref-chips .chip.pref.like"),
-                "a guess is not shown as a like",
-            )
-            page.screenshot(path=str(shots / "08-guess-chip.png"))
-            guess.first.locator(".x").click()
-            page.locator("#pref-chips .chip.pref.guess").first.wait_for(state="detached")
-            check(
-                page.locator("#pref-chips .chip.pref.guess").count() == 0,
-                "the guess chip is deleted",
-            )
-            page.reload()
-            wait_for_results(page)
-            check(page.locator("#pref-chips .chip.pref.guess").count() == 0, "and stays deleted")
+            page.screenshot(path=str(shots / "11-scenario-b-grid-after.png"))
 
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:

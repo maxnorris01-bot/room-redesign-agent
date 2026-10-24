@@ -78,6 +78,10 @@ class SearchRecord(_Model):
     note: str = ""
     queries: list[str] = []  # Serper phrasings used (a Shop Again may use up to three)
     pages: dict[str, int] = {}  # phrasing key -> highest Serper page fetched
+    used_query: ShopQuery | None = None  # a Shop Again: the adjusted query that was searched
+    diversity: dict[str, list[Any]] = {}  # dimension -> [most common value, its share]
+    seller_share: list[Any] | None = None  # [largest seller, its share of the batch]
+    dropped_phrasings: list[str] = []  # phrasings cut to fit the Serper call cap
     alignment_matches: int | None = None  # Shop Again: results matching the inferred preferences
     alignment_total: int | None = None
 

@@ -182,6 +182,41 @@ class PreferenceProfileV2(_Strict):
     query_adjustments: QueryAdjustments
 
 
+Shape = Literal["round", "oval", "rectangular", "square", "other"]
+SizeClass = Literal["small", "medium", "large"]
+
+
+class ItemTags(_Strict):
+    """What the model sees in one rated item (prompt shop_prefs v3). It describes; it never judges
+    preferences. A dimension the title, photo or price do not show is null."""
+
+    id: str = Field(description="The rated result's id, copied exactly")
+    shape: Shape | None
+    material: str | None = Field(description="Main material, e.g. walnut, steel, marble")
+    color_finish: str | None = Field(description="Colour or finish of the main surface")
+    frame_or_legs: str | None = Field(description="Leg or base type, e.g. hairpin legs, pedestal")
+    frame_color: str | None = Field(
+        description="Frame colour, e.g. black metal, brass, natural wood"
+    )
+    style: str | None = Field(description="Style, e.g. modern, mid-century")
+    size_class: SizeClass | None
+    quality_cues: list[str] = Field(
+        description="Short phrases for build or finish visible in the title, photo or price"
+    )
+
+
+class PreferenceTags(_Strict):
+    """What the v3 preference call returns: per-item tags, plus the shopper's own words from their
+    comments (stated likes and dislikes, price asks) and any parser guess a loved item contradicts.
+    """
+
+    items: list[ItemTags]
+    likes: list[str] = Field(description="Things the shopper said they like, in their own words")
+    dislikes: list[str] = Field(description="Things the shopper said they dislike")
+    contradicted_guesses: list[ContradictedGuess]
+    query_adjustments: QueryAdjustments
+
+
 class ProfileEntry(BaseModel):
     """An inferred chip as stored: sanitized, with the evidence that earned it."""
 
@@ -197,6 +232,17 @@ class ProfileEntry(BaseModel):
     low: float | None = None  # price_band only: the band's bounds in USD
     high: float | None = None
     band: str = ""  # price_band only: "upper" or "lower"
+    # stage 2c: entries decided in code from per-item tags (see app.shop.decide)
+    dimension: str = (
+        ""  # shape, material, color_finish, frame_or_legs, frame_color, style, size_class
+    )
+    status: str = "converged"  # converged | open | mixed (open and mixed chips exert no pressure)
+    values: list[str] = []  # converged: the one value; open: the values liked
+    detail: str = ""  # shown after the text, e.g. "liked round and rectangular"
+    share: float | None = None  # the value's share of the like (or dislike) mass
+    exposure: float | None = None  # its share of everything shown (None: not measurable)
+    lift: float | None = None  # share over exposure (None: not measurable)
+    pinned: bool = False  # seller chips only
 
 
 class ImageReport(BaseModel):
@@ -228,6 +274,7 @@ class StoredProfile(BaseModel):
     guesses: list[str] = []  # style terms the parser guessed that nothing has confirmed or dropped
     dropped_guesses: list[str] = []  # guesses a loved or liked item contradicted
     images: ImageReport = ImageReport()
+    pinned_sellers: list[str] = []  # seller keys the visitor pinned (stage 2c)
 
 
 def jsonable(model: BaseModel) -> dict[str, Any]:
