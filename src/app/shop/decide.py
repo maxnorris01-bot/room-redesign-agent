@@ -132,6 +132,9 @@ class Exposure:
 
     shares: dict[str, dict[str, float]] = field(default_factory=dict)  # dim -> value -> share
     coverage: dict[str, float] = field(default_factory=dict)  # dim -> share of shown with a value
+    # per dimension, how many shown results got their value from a photo, the title model or title
+    # keywords (stage 2h): the trace shows it
+    sources: dict[str, dict[str, int]] = field(default_factory=dict)
     source: str = "model"  # "model" (candidate tags) or "keywords" (the tagging call failed)
     tagged: int = 0  # shown results that came with tags
     total: int = 0  # shown results
@@ -143,7 +146,10 @@ class Exposure:
 
 
 def build_exposure(
-    shown: list[ShopResult], tags: TagMap | None = None, keywords: bool = False
+    shown: list[ShopResult],
+    tags: TagMap | None = None,
+    keywords: bool = False,
+    tag_source: Mapping[str, str] | None = None,
 ) -> Exposure:
     """Each dimension's value shares over the shown results that have a value for it, and the share
     of the shown results that have one (coverage). `tags` are the model's (by result id). With
@@ -152,16 +158,23 @@ def build_exposure(
     tags = tags or {}
     counts: dict[str, dict[str, int]] = {}
     known: dict[str, int] = {}
+    by_source: dict[str, dict[str, int]] = {}
     tagged = 0
     for r in shown:
         got = tags.get(r.id)
         if got is not None:
             tagged += 1
             values = {d: v for d, v in got.items() if v and d in DIMENSIONS}
+            source = (tag_source or {}).get(r.id, "title")
         elif keywords:
             values = title_tags(r.title)
+            source = "keyword"
         else:
             values = {}
+            source = ""
+        for dim in values:
+            by_source.setdefault(dim, {})
+            by_source[dim][source] = by_source[dim].get(source, 0) + 1
         for dim, raw in values.items():
             found = tag_values(dim, raw)
             for value in found:
@@ -173,9 +186,10 @@ def build_exposure(
     return Exposure(
         {d: {v: n / known[d] for v, n in by.items()} for d, by in counts.items() if by},
         {d: n / total for d, n in known.items()} if total else {},
-        "keywords" if keywords else "model",
-        tagged,
-        total,
+        sources=by_source,
+        source="keywords" if keywords else "model",
+        tagged=tagged,
+        total=total,
     )
 
 
@@ -248,6 +262,7 @@ def classify_dimension(
         "total_mass": total,
         "known_coverage": round(known / total, 4) if total else 0.0,
         "exposure_coverage": round(exp_cov, 4),
+        "exposure_sources": dict(exposure.sources.get(dim, {})),
         "exposure": {v: round(x, 4) for v, x in sorted(exposure.shares.get(dim, {}).items())},
         "converge_share": need,
         "loved": sorted({v for v, i in ids.items() if any(by_rating[x] == "love" for x in i)}),

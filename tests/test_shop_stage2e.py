@@ -787,7 +787,7 @@ def test_the_prompts_are_versioned_and_the_old_ones_kept() -> None:
     for v in ("1", "2", "3", "4", "5"):
         assert load_prompt("shop_prefs", v).version == v
     tags = load_prompt("shop_candidate_tags")
-    assert tags.version == "3" and "Allowed values" in tags.text and "no photo" in tags.text
+    assert tags.version == "4" and "Allowed values" in tags.text and "photo" in tags.text
     assert load_prompt("shop_candidate_tags", "2").version == "2"
     assert "frame_or_legs" not in load_prompt("shop_prefs").text
     assert "size_class" not in load_prompt("shop_prefs").text

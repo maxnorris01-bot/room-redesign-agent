@@ -1150,7 +1150,8 @@ def test_prompts_are_versioned_and_the_old_ones_kept() -> None:
     assert load_prompt("shop_prefs").version == "6"
     for v in ("1", "2", "3", "4", "5"):
         assert load_prompt("shop_prefs", v).version == v
-    assert load_prompt("shop_candidate_tags").version == "3"
+    assert load_prompt("shop_candidate_tags").version == "4"
+    assert load_prompt("shop_candidate_tags", "3").version == "3"
     assert load_prompt("shop_candidate_tags", "2").version == "2"
     assert load_prompt("shop_candidate_tags", "1").version == "1"
     assert "LIST of up to" in load_prompt("shop_prefs").text

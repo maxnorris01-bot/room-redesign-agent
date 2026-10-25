@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.shop.clock import Clock
+from app.shop.progress import SEARCH_STEPS, SHOP_AGAIN_STEPS, Progress
 
 MAX_RUNNING = 8
 JOB_TTL_S = 600.0
@@ -41,7 +42,7 @@ class Job:
     session_id: str | None
     kind: str
     state: str = "running"  # running | done | error
-    phase: str = "Starting"
+    progress: Progress | None = None
     result: dict[str, Any] | None = None
     error: tuple[int, str] | None = None
     started: float = 0.0
@@ -69,11 +70,12 @@ class JobManager:
         self,
         session_id: str | None,
         kind: str,
-        work: Callable[[Callable[[str], None]], dict[str, Any]],
+        work: Callable[[Progress], dict[str, Any]],
         failure: Callable[[Exception], tuple[int, str]],
     ) -> str:
-        """Run `work(set_phase)` in the background; returns the job id. `failure` turns an
-        exception raised by `work` into (HTTP status, safe message)."""
+        """Run `work(progress)` in the background; returns the job id. `progress` is callable (the
+        phase text) and carries the steps for the status bar. `failure` turns an exception raised by
+        `work` into (HTTP status, safe message)."""
         with self._lock:
             self._purge()
             running = [j for j in self._jobs.values() if j.state == "running"]
@@ -82,14 +84,15 @@ class JobManager:
             if len(running) >= MAX_RUNNING:
                 raise JobError(429, "Too many things are running; try again in a moment")
             job = Job(secrets.token_urlsafe(16), session_id, kind, started=self.clock.now())
+            steps = SHOP_AGAIN_STEPS if kind == "shop_again" else SEARCH_STEPS
+            job.progress = Progress(steps, self.clock)
             self._jobs[job.id] = job
-
-        def set_phase(text: str) -> None:
-            job.phase = text[:80]
+        progress = job.progress
 
         def run() -> None:
             try:
-                result = work(set_phase)
+                result = work(progress)
+                progress.finish_all()
                 job.result, job.state = result, "done"
             except Exception as exc:  # reported to the page, never raised into the thread
                 job.error, job.state = failure(exc), "error"
@@ -107,7 +110,13 @@ class JobManager:
             job = self._jobs.get(job_id) if JOB_ID_OK.match(job_id or "") else None
             if job is None or (job.session_id is not None and job.session_id != session_id):
                 raise JobError(404, "unknown job")
-            out: dict[str, Any] = {"state": job.state, "phase": job.phase, "kind": job.kind}
+            assert job.progress is not None
+            out: dict[str, Any] = {
+                "state": job.state, "phase": job.progress.phase, "kind": job.kind,
+                **job.progress.snapshot(),
+            }  # fmt: skip
+            if job.finished is not None:
+                out["elapsed_s"] = round(job.finished - job.started, 1)
             if job.state == "done":
                 out["result"] = job.result
             elif job.state == "error" and job.error is not None:

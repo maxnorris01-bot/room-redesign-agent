@@ -26,7 +26,9 @@ domain-specific keywords.
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -38,6 +40,17 @@ from typing import Any
 
 # Deterministic fake time-to-first-token reported by every mock response (never a measurement).
 MOCK_TTFT_SECONDS = 0.25
+
+
+def mock_step_delay() -> None:
+    """Mock mode only: wait `APP_SHOP_MOCK_DELAY` seconds (default 0) so a slow step can be seen
+    on the status bar. A timed wait on an event, not a sleep; it returns at once when it is 0."""
+    try:
+        seconds = float(os.environ.get("APP_SHOP_MOCK_DELAY", "0"))
+    except ValueError:
+        return
+    if seconds > 0:
+        threading.Event().wait(min(seconds, 30.0))
 
 
 def text_block(payload: dict[str, Any] | str) -> SimpleNamespace:
@@ -91,6 +104,7 @@ class ScriptedClient:
         self.messages = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs: Any) -> SimpleNamespace:
+        mock_step_delay()
         self.calls.append(kwargs)
         return self._responses.pop(0)
 

@@ -20,7 +20,7 @@
   var state = {
     sessionId: null, search: null, ratings: {}, resolved: {}, known: {},
     profile: null, summary: '', used: 0, cap: 0, againsUsed: 0, againsCap: 0,
-    sessionUsd: 0, busy: 0, busyMessage: '', savedOpen: false, savedTab: 'love',
+    sessionUsd: 0, prepUsd: 0, prep: null, busy: 0, busyMessage: '', savedOpen: false, savedTab: 'love',
     confirming: false, whyOpen: false
   };
 
@@ -94,7 +94,7 @@
     state.busyMessage = message;
     state.pendingError = null;
     retryAction = null;
-    $('spinner').hidden = false;
+    startStepBar(message);
     renderStatus(message, false);
     updateButtons();
   }
@@ -102,7 +102,7 @@
   function end() {
     state.busy = Math.max(0, state.busy - 1);
     if (state.busy === 0) {
-      $('spinner').hidden = true;
+      stopStepBar();
       if (state.pendingError) {
         renderStatus(state.pendingError, true);
         state.pendingError = null;
@@ -315,6 +315,14 @@
         (d.lift !== undefined && d.lift !== null ? '; lift ' + d.lift : '')
       ]));
     }
+    if (d.exposure_sources && Object.keys(d.exposure_sources).length) {
+      var src = d.exposure_sources;
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'shown results tagged for this from: ' + ['photo', 'title', 'keyword'].filter(function (k) {
+          return src[k];
+        }).map(function (k) { return src[k] + ' ' + (k === 'title' ? 'title (model)' : k); }).join(', ')
+      ]));
+    }
     if (d.leaves) {
       box.appendChild(h('p', { class: 'why-line' }, [
         'labels: ' + Object.keys(d.leaves).map(function (k) { return k + ' ' + d.leaves[k]; }).join(', ')
@@ -373,6 +381,27 @@
       ' (aim ' + sec(tm.target_s) + ', hard stop ' + sec(tm.hard_stop_s) + ')' +
       (tm.stopped_before ? '; stopped before ' + tm.stopped_before : '') + '.'
     ]));
+    if (b.tag_budget) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Candidate tagging: ' + b.tag_budget.queued + ' titles queued of a cap of ' + b.tag_budget.cap +
+        ' (' + b.tag_budget.reserve + ' held back for supply and refill).'
+      ]));
+    }
+    var tl = b.timeline;
+    if (tl && tl.phases && tl.phases.length) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Phases: ' + tl.phases.map(function (p) {
+          return p.phase + ' ' + Number(p.start).toFixed(1) + ' to ' +
+            (p.end === undefined ? '?' : Number(p.end).toFixed(1)) + ' s';
+        }).join(', ') + '.'
+      ]));
+    }
+    if (tl && tl.calls && tl.calls.length) {
+      box.appendChild(whyTable(['call', 'start (s)', 'took (s)', 'queue wait (s)', 'retries'],
+        tl.calls.map(function (c) {
+          return [c.kind + ' ' + c.label, c.start, c.duration, c.queue_wait, c.retries];
+        })));
+    }
     var dd = b.dedupe;
     if (dd) {
       var rules = Object.keys(dd.by_rule || {}).map(function (k) {
@@ -454,6 +483,13 @@
     panel.textContent = '';
     if (!has || !state.whyOpen) return;
     var tg = state.profile.tagging || {};
+    if (tg.from_cache !== undefined) {
+      panel.appendChild(h('p', { class: 'why-line' }, [
+        'Ratings read: ' + tg.from_cache + ' of ' + tg.items_total + ' reused from the background preparation (photo tags' +
+        ' and comment readings already done); ' + tg.model_items + ' sent to the model now' +
+        (tg.model_calls ? ' in ' + tg.model_calls + ' call(s)' : ', so no preferences call was needed') + '.'
+      ]));
+    }
     (state.search && state.search.warnings || []).forEach(function (w) {
       panel.appendChild(h('p', { class: 'why-line why-warn' }, ['Warning: ' + w]));
     });
@@ -589,6 +625,7 @@
       timingText(s),
       taggingText(s),
       'session ' + usd(state.sessionUsd),
+      state.prepUsd ? 'background preparation ' + usd(state.prepUsd) : '',
       lookups
     ].filter(Boolean).join(' · ');
   }
@@ -856,6 +893,8 @@
     state.againsUsed = data.shop_agains_used || 0;
     state.againsCap = data.shop_agains_cap || 0;
     state.sessionUsd = data.session_usd || 0;
+    state.prepUsd = data.prep_usd || 0;
+    state.prep = data.prep || null;
     (data.saved || []).forEach(function (r) { state.known[r.id] = r; });
     if (state.search) state.search.results.forEach(function (r) { state.known[r.id] = r; });
     if (state.sessionId) storeSet(KEY_SESSION, state.sessionId);
@@ -868,6 +907,65 @@
 
   /* A search or a Shop Again is a background job: POST answers with a job id, then the page polls
      for the phase ("Tagging results") and, at the end, the same view a direct call would give. */
+  var DEFAULT_STEPS = {
+    '/api/search': [['searching', 'Searching'], ['tagging', 'Tagging'], ['ranking', 'Ranking']],
+    '/api/shop-again': [['ratings', 'Finishing your last ratings'], ['searching', 'Searching'],
+      ['tagging', 'Tagging'], ['ranking', 'Ranking']]
+  };
+  var bar = { timer: null, started: 0, steps: [] };
+  var SLOW_S = 30;
+
+  function stepText(s) {
+    return s.label + (s.total ? ' (' + (s.done_count || 0) + ' of ' + s.total + ')' : '');
+  }
+
+  function renderSteps(steps) {
+    bar.steps = steps;
+    var list = $('steps');
+    list.textContent = '';
+    var done = 0;
+    var active = null;
+    steps.forEach(function (s) {
+      var finished = s.state === 'done' || s.state === 'skipped';
+      if (finished) done += 1;
+      if (s.state === 'active' && !active) active = s;
+      list.appendChild(h('li', { class: 'step ' + s.state }, [
+        h('span', { class: 'seg' }),
+        h('span', { class: 'name' }, [stepText(s)])
+      ]));
+    });
+    var box = $('stepbar');
+    box.setAttribute('aria-valuenow', String(done));
+    box.setAttribute('aria-valuemax', String(Math.max(1, steps.length)));
+    if (active) renderStatus(stepText(active) + '\u2026', false);
+  }
+
+  function tickElapsed() {
+    var seconds = Math.max(0, Math.floor((Date.now() - bar.started) / 1000));
+    $('elapsed').textContent = seconds + ' s';
+    $('slow-note').hidden = seconds < SLOW_S;
+  }
+
+  function startStepBar(message) {
+    var kind = message === AGAIN_MSG ? '/api/shop-again' : '/api/search';
+    bar.started = Date.now();
+    var box = $('stepbar');
+    box.hidden = false;
+    renderSteps(DEFAULT_STEPS[kind].map(function (p) {
+      return { id: p[0], label: p[1], state: 'pending', done_count: null, total: null };
+    }));
+    tickElapsed();
+    if (bar.timer) window.clearInterval(bar.timer);
+    bar.timer = window.setInterval(tickElapsed, 1000);
+  }
+
+  function stopStepBar() {
+    if (bar.timer) window.clearInterval(bar.timer);
+    bar.timer = null;
+    $('stepbar').hidden = true;
+    $('slow-note').hidden = true;
+  }
+
   function runJob(path, body) {
     return api('POST', path, body).then(function (job) {
       return new Promise(function (resolve, reject) {
@@ -875,7 +973,9 @@
           var owner = state.sessionId ? '?session=' + encodeURIComponent(state.sessionId) : '';
           api('GET', '/api/job/' + encodeURIComponent(job.job_id) + owner).then(function (st) {
             if (st.state === 'running') {
-              renderStatus((st.phase || state.busyMessage) + '\u2026', false);
+              if (st.steps) renderSteps(st.steps);
+              if (typeof st.elapsed_s === 'number') bar.started = Date.now() - st.elapsed_s * 1000;
+              if (!st.steps) renderStatus((st.phase || state.busyMessage) + '\u2026', false);
               window.setTimeout(poll, POLL_MS);
             } else if (st.state === 'done') {
               resolve(st.result);
@@ -928,9 +1028,12 @@
   }
 
   function startOver() {
+    if (state.sessionId) {  // stop the background preparation for the old session
+      api('POST', '/api/reset', { session_id: state.sessionId }).catch(function () { /* ignored */ });
+    }
     state.sessionId = null; state.search = null; state.ratings = {}; state.resolved = {};
     state.known = {}; state.profile = null; state.summary = ''; state.used = 0;
-    state.againsUsed = 0; state.sessionUsd = 0; state.confirming = false;
+    state.againsUsed = 0; state.sessionUsd = 0; state.prepUsd = 0; state.prep = null; state.confirming = false;
     storeSet(KEY_SESSION, null);
     retryAction = null;
     $('request').value = '';

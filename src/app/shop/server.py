@@ -34,7 +34,7 @@ STATIC_FILES: dict[str, tuple[str, str]] = {
 }
 API_PATHS = {
     "/api/session", "/api/search", "/api/rate", "/api/resolve", "/api/shop-again",
-    "/api/preference/remove", "/api/preference/pin",
+    "/api/preference/remove", "/api/preference/pin", "/api/reset",
 }  # fmt: skip
 POST_PATHS = API_PATHS - {"/api/session"}
 JOB_PREFIX = "/api/job/"  # GET /api/job/<id>?session=<session id>
@@ -145,6 +145,8 @@ class ShopApp:
                 result = self.service.remove_preference(
                     data.get("session_id"), data.get("kind"), data.get("phrase")
                 )
+            elif path == "/api/reset":
+                result = self.service.reset_session(data.get("session_id"))
             elif path == "/api/preference/pin":
                 result = self.service.pin_preference(data.get("session_id"), data.get("phrase"))
             else:

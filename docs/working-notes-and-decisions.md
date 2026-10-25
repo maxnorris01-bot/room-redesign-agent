@@ -138,6 +138,17 @@ this choice over the alternatives. Note what's still open or deferred within it,
   rejection falls back to the rows format on the one retry; a Shop Again gets its own step cap (40);
   replay 4 has 8 positive items (2 loved, 6 liked) and 38 dislikes, not 36, so the shape numbers are 67/33.
   See `docs/sessions/2026-10-24-shop-mode-stage-2g.md`.
+- **2026-10-25, stage 2h: prepare while the shopper browses (ADR 0012 amended).** The live Shop Again took
+  34.6 s and tagged what was shown from titles only. Decisions: tag every stored batch from title and photo in
+  the background (cached with a source, a photo tag wins) and read each comment as it is written; the
+  preferences call reuses them and is skipped when all is cached; a Shop Again waits at most 8 s for
+  preparation, then falls back to the live path; preparation spend (cap $0.05 a session, 4 calls at once)
+  is shown on its own in the footer; tagging starts as each search returns with one cap of 60 titles per
+  Shop Again (this was 140 because the cap applied per step); a step bar replaces the spinner; one seller
+  canonicalization feeds every table. My choices where the brief was silent: preparation is off in a bare
+  `Config` and on from the environment; first-come tagging happens before the rank call, with a 12-title
+  rank-ordered reserve; the fifth replay fixture was skipped (a saved session has no candidate pool). See
+  `docs/sessions/2026-10-25-shop-speed-prep.md`.
 
 ## See also
 

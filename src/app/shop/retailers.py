@@ -18,6 +18,7 @@ Nothing here is looked up on the web.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 DESIGN_PREMIUM = "design_premium"
@@ -99,12 +100,13 @@ _SUFFIXES = re.compile(
 def seller_key(name: str) -> str:
     """The one seller canonicalization (used by the retailer table, pins, caps and de-duplication).
 
-    Case, punctuation, "&" against "and", a leading "the", ".com", a marketplace sub-seller suffix
+    Case, punctuation, "&" against "and", a leading "the" or "www.", ".com", a marketplace sub-seller suffix
     (" - JerFit Life") and a trailing " Furniture" or " Official Store" are ignored: "west elm",
     "Room&Board", "Joybird Furniture", "Walmart - JerFit Life" and "crateandbarrel.com" are
     "westelm", "roomandboard", "joybird", "walmart" and "crateandbarrel".
     """
     lowered = name.lower().strip()
+    lowered = re.sub(r"^(https?://)?www\.", "", lowered)
     lowered = re.split(r"\s+[-\u2013\u2014|]\s+", lowered, maxsplit=1)[0]
     lowered = lowered.replace("&", " and ")
     lowered = re.sub(r"\.(com|net|org|co)\b", "", lowered)
@@ -149,3 +151,18 @@ def peers_of(name: str) -> list[Retailer]:
     if found is None:
         return []
     return [p for n in found.peers if (p := _BY_KEY.get(seller_key(n))) is not None]
+
+
+def count_sellers(names: Iterable[str]) -> dict[str, int]:
+    """How many of `names` are each seller, grouped by `seller_key` ("west elm", "West Elm" and
+    "westelm.com" are one row) and shown under the canonical display name; most first. Every trace
+    table uses this, so a variant spelling can never split a row or hide one."""
+    counts: dict[str, int] = {}
+    display: dict[str, str] = {}
+    for name in names:
+        key = seller_key(name)
+        display.setdefault(key, canonical_name(name))
+        counts[key] = counts.get(key, 0) + 1
+    return {
+        display[k]: n for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], display[kv[0]]))
+    }

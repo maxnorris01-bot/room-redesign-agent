@@ -16,6 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from app.config import Config
+from app.mock_llm import mock_step_delay
 from app.shop.retailers import RETAILERS, Retailer, seller_key
 from app.shopping import (
     FIXTURE_TITLE_PREFIX,
@@ -87,6 +88,7 @@ class ShopFixtureSearch:
     def search(
         self, query: str, gl: str = "us", hl: str = "en", page: int = 1
     ) -> list[SearchCandidate]:
+        mock_step_delay()
         self.calls.append((query, page))
         lowered = query.lower()
         fixture = next(
@@ -158,6 +160,7 @@ class ReplayPoolSearch(ShopFixtureSearch):
     ) -> list[SearchCandidate]:
         if _retailer_in(query) is not None:
             return super().search(query, gl, hl, page)
+        mock_step_delay()
         self.calls.append((query, page))
         key = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
         start = self._starts.setdefault(key, (len(self._starts) * 17) % len(self.pool))

@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,8 +43,10 @@ from app.shop.models import (
     result_id,
 )
 from app.shop.parse import parse_request
-from app.shop.retailers import seller_key, tier_of
+from app.shop.progress import Progress, Timeline
+from app.shop.retailers import count_sellers, seller_key, tier_of
 from app.shop.thresholds import (
+    CANDIDATE_TAG_BATCH,
     DIVERSITY_MAX_SHARE,
     MAX_PEER_SEARCHES,
     MINORITY_POOL_SHARE,
@@ -125,6 +128,7 @@ class AgainContext:
     clock: Clock | None = None
     progress: Callable[[str], None] | None = None
     hard_stop_at: float | None = None
+    timeline: Timeline | None = None
     prefetched: dict[tuple[str, int], list[SearchCandidate] | Exception] = field(
         default_factory=dict
     )
@@ -596,6 +600,108 @@ def query_key(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
 
+SUPPLY_TAG_RESERVE = 12  # of the tag cap, kept for the supply and refill candidates
+
+
+class TagPipeline:
+    """Candidate tagging that starts while the searches are still running.
+
+    Each search's candidates (after the hard filters and de-duplication) are queued for tagging the
+    moment that search returns, in batches of at most `CANDIDATE_TAG_BATCH` titles that run at the
+    same time (`shop_tag_workers`); after the rank call the top-ranked candidates still untagged
+    fill what is left. In all a Shop Again queues at most `cap` titles (`APP_SHOP_TAG_TOP_N`): the
+    initial work may use `cap - SUPPLY_TAG_RESERVE` of them and the supply and refill candidates
+    the rest, so a title is never tagged twice and the cap holds across every step. With an
+    inline pipeline (a provider that is not thread safe) each batch runs at once, in the caller.
+    """
+
+    def __init__(
+        self,
+        book: TagBook,
+        budget: Budget,
+        clock: Clock,
+        config: Config,
+        timeline: Timeline,
+        steps: Progress | None,
+        until: float,
+        inline: bool,
+    ) -> None:
+        self.book, self.budget, self.clock, self.config = book, budget, clock, config
+        self.timeline, self.steps, self.until = timeline, steps, until
+        self.cap = config.shop_tag_top_n
+        self.reserve = min(SUPPLY_TAG_RESERVE, self.cap // 5)
+        self.queued: set[str] = set()
+        self.titles_queued = 0
+        self.seconds = 0.0
+        self._futures: list[Future[None]] = []
+        self._lock = threading.Lock()
+        self._pool: ThreadPoolExecutor | None = (
+            None if inline else ThreadPoolExecutor(max_workers=config.shop_tag_workers)
+        )
+        self._started: float | None = None
+        self.deadline = until
+
+    def room(self, supply: bool) -> int:
+        left = self.cap - self.titles_queued
+        return max(0, left if supply else left - self.reserve)
+
+    def submit(self, candidates: list[SearchCandidate], supply: bool = False) -> int:
+        """Queue the untagged, not yet queued candidates, in this order, within the cap. Returns how
+        many titles were queued."""
+        with self._lock:
+            fresh: list[Taggable] = []
+            for c in candidates:
+                rid = result_id(c.product_id)
+                if rid in self.queued or self.book.get(rid) is not None:
+                    continue
+                if len(fresh) >= self.room(supply):
+                    break
+                self.queued.add(rid)
+                fresh.append(Taggable(rid, c.title, c.price, c.seller))
+            self.titles_queued += len(fresh)
+            if fresh and self._started is None:
+                self._started = self.clock.now()
+                self.deadline = min(self.until, self._started + self.config.shop_tag_budget_s)
+        if not fresh:
+            return 0
+        if self.steps is not None:
+            self.steps.begin("tagging", total=None)
+            self.steps.set_total("tagging", self.titles_queued)
+        size = CANDIDATE_TAG_BATCH
+        for start in range(0, len(fresh), size):
+            chunk = fresh[start : start + size]
+            queued_at = self.clock.now()
+            if self._pool is None:
+                self._run(chunk, queued_at)
+            else:
+                self._futures.append(self._pool.submit(self._run, chunk, queued_at))
+        return len(fresh)
+
+    def _run(self, chunk: list[Taggable], queued_at: float) -> None:
+        t0 = self.clock.now()
+        tag_results(
+            chunk, self.book, self.budget, self.clock, workers=1, until=self.deadline,
+            timeline=self.timeline,
+        )  # fmt: skip
+        with self._lock:
+            self.seconds += self.clock.now() - t0
+        if self.steps is not None:
+            self.steps.advance("tagging", len(chunk))
+
+    def wait(self) -> None:
+        """Wait for every queued batch (each is bounded by the tagging deadline); a budget error
+        raised in a worker surfaces here."""
+        futures, self._futures = self._futures, []
+        for fut in futures:
+            fut.result()
+        if self.steps is not None and self.titles_queued:
+            self.steps.finish("tagging")
+
+    def close(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+
+
 def run_query(
     query: ShopQuery,
     search: SearchProvider,
@@ -685,17 +791,40 @@ def run_query(
     supplied: set[str] = set()
 
     consumed: set[tuple[str, int]] = set()
+    book = again.tag_book if again is not None else None
+    timeline = (again.timeline if again is not None else None) or Timeline(clock)
+    prog = progress or (again.progress if again is not None else None)
+    steps = prog if isinstance(prog, Progress) else None
+    if steps is not None and again is None:
+        steps.skip("tagging")  # a typed search tags nothing: the step is already satisfied
+    pipeline: TagPipeline | None = None
+    if again is not None and book is not None and config.shop_tag_top_n > 0:
+        pipeline = TagPipeline(
+            book, budget, clock, config, timeline, steps, hard_stop_at, inline=not parallel
+        )
 
-    def fetch(text: str, page: int) -> list[SearchCandidate] | Exception:
+    def fetch(
+        text: str, page: int, queued_at: float | None = None
+    ) -> list[SearchCandidate] | Exception:
         """One search page (or the one already made while the preference call ran); a provider
         error is returned, not raised, so a concurrent batch can report every outcome."""
         if again is not None and (text, page) in again.prefetched:
             consumed.add((text, page))
             return again.prefetched[(text, page)]
         try:
-            return _search_page(search, text, page, budget, clock)
+            with timeline.span("search", f"{text} (page {page})", queued_at):
+                return _search_page(search, text, page, budget, clock)
         except ProviderError as exc:
             return exc
+
+    def queue_tags(found: list[SearchCandidate]) -> None:
+        """Start tagging one search's candidates (hard filters and de-duplication applied to that
+        search alone) without waiting for the other searches."""
+        if pipeline is None or again is None:
+            return
+        own, _ = apply_filters(found, query, seen)
+        own, _extra = _exclusions(own, again)
+        pipeline.submit(own)
 
     def absorb(text: str, page: int, more: list[SearchCandidate]) -> list[SearchCandidate]:
         """Merge a page into the pool; returns the candidates it newly added."""
@@ -721,7 +850,11 @@ def run_query(
             "found": 0, "new_candidates": 0, "error": "",
         }  # fmt: skip
 
-    say(f"Searching {len(texts) + len(peers)} retailers" if peers else "Searching")
+    n_searches = len(texts) + len(peers)
+    say(f"Searching {n_searches} retailers" if peers else "Searching")
+    if steps is not None:
+        steps.begin("searching", total=n_searches)
+    timeline.phase_start("searching")
     t_searches = clock.now()
     if parallel:
         # wave one: the first page of every phrasing and of every peer, at the same time
@@ -733,8 +866,20 @@ def run_query(
             qkey = query_key(peer_text)
             jobs.append((peer_text, skip.get(qkey, 0) + 1, (peer_key, peer_name)))
         jobs = jobs[:cap]
+        submitted = clock.now()
+
+        def search_and_queue(
+            job: tuple[str, int, tuple[str, str] | None],
+        ) -> list[SearchCandidate] | Exception:
+            got = fetch(job[0], job[1], submitted)
+            if not isinstance(got, Exception):
+                queue_tags(got)  # tagging starts as this search returns
+            if steps is not None:
+                steps.advance("searching")
+            return got
+
         with ThreadPoolExecutor(max_workers=min(config.shop_search_workers, len(jobs))) as ex:
-            outcomes = list(ex.map(lambda j: fetch(j[0], j[1]), jobs))
+            outcomes = list(ex.map(search_and_queue, jobs))
         calls += len(jobs)
         for n, ((text, page, peer), got) in enumerate(zip(jobs, outcomes, strict=True)):
             entry = peer_entry(peer[1], peer[0], text, page) if peer else None
@@ -781,7 +926,12 @@ def run_query(
             continue
         if not got:
             finished.add(i)
-        absorb(texts[i], page, got)
+        queue_tags_inline = absorb(texts[i], page, got)
+        if not parallel:
+            if pipeline is not None:
+                pipeline.submit(queue_tags_inline)
+            if steps is not None:
+                steps.advance("searching")
     if not parallel:  # peers after the phrasings, one after the other
         for peer_key, peer_name, peer_text in peers:
             if calls >= cap:
@@ -798,8 +948,15 @@ def run_query(
                 continue
             added = absorb(peer_text, peer_page, got)
             supplied.update(c.product_id for c in added)
+            if pipeline is not None:
+                pipeline.submit(added)
+            if steps is not None:
+                steps.advance("searching")
             entry["found"], entry["new_candidates"] = len(got), len(added)
             peer_log.append(entry)
+    if steps is not None:
+        steps.finish("searching")
+    timeline.phase_end("searching")
     if again is not None:  # a search made while the preference call ran but never used still billed
         calls += sum(1 for key in again.prefetched if key not in consumed)
     t_search = clock.now()
@@ -816,12 +973,16 @@ def run_query(
     ranked = False
     ordered: list[tuple[SearchCandidate, str]] = []
     t_rank = clock.now()
+    if steps is not None:
+        steps.begin("ranking")
+    timeline.phase_start("ranking")
     if pool:
         say("Ranking")
         if expired("ranking"):
             ordered = [(c, "") for c in pool]
         else:
-            ordered, rank_warning = order_pool(query, pool, budget, again)
+            with timeline.span("model", f"rank {len(pool)} candidates"):
+                ordered, rank_warning = order_pool(query, pool, budget, again)
             ranked = not rank_warning
             if rank_warning:
                 warnings.append(rank_warning)
@@ -832,41 +993,38 @@ def run_query(
         later = [x for x in ordered if seller_key(x[0].seller) in again.deprioritize_sellers]
         ordered = keep_first + later
     t_ranked = clock.now()
+    if steps is not None:
+        steps.finish("ranking")
+    timeline.phase_end("ranking")
 
-    # ---- stage 2e/2g: tag the top candidates by rank, then find the minority value ----
-    book = again.tag_book if again is not None else None
+    # ---- stage 2e/2g/2h: tag (the pipeline already did the searches' candidates), then find the
+    # minority value ----
     composition_info: dict[str, Any] = {}
     supply_log: list[dict[str, Any]] = []
     refill_log: list[dict[str, Any]] = []
     tag_seconds = 0.0
 
-    def tag_top(candidates: list[tuple[SearchCandidate, str]]) -> None:
-        """Tag the first `shop_tag_top_n` candidates (in this order) that carry no model tag yet."""
+    def tag_top(candidates: list[tuple[SearchCandidate, str]], supply: bool = False) -> None:
+        """Top up the tagging with the first of `candidates` (rank order) still untagged, inside the
+        Shop Again's cap, and wait for every queued batch. The supply and refill candidates may use
+        the cap's reserve."""
         nonlocal tag_seconds
-        if book is None or again is None:
+        if pipeline is None:
             return
-        todo = [
-            Taggable(result_id(c.product_id), c.title, c.price, c.seller)
-            for c, _ in candidates
-            if book.get(result_id(c.product_id)) is None
-        ][: config.shop_tag_top_n]
-        if not todo or expired("tagging"):
+        if expired("tagging"):
             return
         say("Tagging results")
-        t0 = clock.now()
-        tag_results(
-            todo,
-            book,
-            budget,
-            clock,
-            workers=config.shop_search_workers,
-            until=hard_stop_at,
-        )
-        tag_seconds += clock.now() - t0
+        timeline.phase_start("tagging")
+        pipeline.submit([c for c, _ in candidates], supply=supply)
+        pipeline.wait()
+        timeline.phase_end("tagging")
+        tag_seconds = pipeline.seconds
 
     if again is not None and book is not None:
         composition_info["peers"] = peer_log
         tag_top(ordered)
+        if not minority_values([c for c, _ in ordered], again):
+            tag_top(ordered, supply=True)  # no supply search is needed: the reserve tags more
         composition_info["pool_before"] = pool_composition(
             [c for c, _ in ordered], again, config.shop_tag_top_n
         )
@@ -898,7 +1056,7 @@ def run_query(
             for c, _r in new_pairs:
                 pool_index[c.product_id] = len(pool_index) + 1
             ordered = ordered + new_pairs
-            tag_top(new_pairs)
+            tag_top(new_pairs, supply=True)
             after = next(
                 (
                     n
@@ -993,7 +1151,7 @@ def run_query(
                 for c, _r in new_pairs:
                     pool_index[c.product_id] = len(pool_index) + 1
                 ordered = ordered + new_pairs
-                tag_top(new_pairs)
+                tag_top(new_pairs, supply=True)
                 refill_log.append(
                     {
                         "dimension": word[0], "value": word[1], "search": text, "page": page,
@@ -1019,9 +1177,7 @@ def run_query(
             top = top_share(batch_comp.get(dim, {}))
             if top is not None:
                 diversity[dim] = top
-        by_seller: dict[str, int] = {}
-        for r in results:
-            by_seller[r.seller] = by_seller.get(r.seller, 0) + 1
+        by_seller = count_sellers(r.seller for r in results)
         name = max(sorted(by_seller), key=lambda k: by_seller[k])
         seller_share = (name, round(by_seller[name] / len(results), 4))
         tier_counts: dict[str, int] = {}
@@ -1035,7 +1191,7 @@ def run_query(
             "tier": dict(sorted(tier_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
             "tag_sources": {"model": model_tagged, "keyword": len(results) - model_tagged},
             **batch_comp,
-            "seller": dict(sorted(by_seller.items(), key=lambda kv: (-kv[1], kv[0]))[:8]),
+            "seller": by_seller,  # every seller in the batch, by canonical name
         }
         pool_known = composition_info.get("pool_after", {})
         for dim, cap_share in again.guard_caps.items():
@@ -1091,6 +1247,13 @@ def run_query(
         composition_info["serper_credits"] = (
             calls * config.serper_credits_per_call if search.name == "serper" else 0
         )
+        composition_info["timeline"] = timeline.export()
+        if pipeline is not None:
+            composition_info["tag_budget"] = {
+                "cap": pipeline.cap,
+                "reserve": pipeline.reserve,
+                "queued": pipeline.titles_queued,
+            }
         composition_info["timings"] = {
             "target_s": config.shop_target_s,
             "hard_stop_s": config.shop_hard_stop_s,
@@ -1100,6 +1263,8 @@ def run_query(
             "total_in_search": round(t_end - t_start, 3),
             "stopped_before": stopped[0] if stopped else "",
         }
+    if pipeline is not None:
+        pipeline.close()
     return SearchOutcome(
         query=query,
         results=results,
@@ -1182,16 +1347,14 @@ def pool_composition(
         for c in pool
     ]  # fmt: skip
     comp = composition(fake, tags, ["shape", "color_finish"])
-    by_seller: dict[str, int] = {}
-    for c in pool:
-        by_seller[c.seller] = by_seller.get(c.seller, 0) + 1
+    by_seller = count_sellers(c.seller for c in pool)  # all of them: the batch's sellers are in it
     return {
         "size": len(pool),
         "tagged": sources["model"],
         "keyword_tagged": sources["keyword"],
         "tag_top_n": tag_top_n,
         **comp,
-        "seller": dict(sorted(by_seller.items(), key=lambda kv: (-kv[1], kv[0]))[:8]),
+        "seller": by_seller,
     }
 
 

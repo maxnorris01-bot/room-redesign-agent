@@ -633,7 +633,7 @@ def run_replay_4(
     before = title_texts(page)
     page.click("#shop-again")
     page.locator("#status").filter(has_text="Reading your ratings").wait_for(timeout=10000)
-    check(page.locator("#spinner").is_visible(), "the spinner is shown while the job runs")
+    check(page.locator("#stepbar").is_visible(), "the spinner is shown while the job runs")
     check("Reading your ratings" in page.inner_text("#status"), "the first phase is shown")
     page.screenshot(path=str(shots / "27-replay4-spinner-phase.png"))
     page.locator("#status").filter(has_text="Tagging results").wait_for(timeout=10000)
@@ -735,6 +735,8 @@ def run_checks(
     ids3: dict[str, str],
     base4: str,
     ids4: dict[str, str],
+    base5: str,
+    ids5: dict[str, str],
 ) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
@@ -765,7 +767,7 @@ def run_checks(
             release = hold(page, "**/api/search")
             page.fill("#request", COFFEE)
             page.click("#search-btn")
-            page.locator("#spinner").wait_for(state="visible")
+            page.locator("#stepbar").wait_for(state="visible")
             check(page.inner_text("#status") == "Searching", "loading text")
             page.screenshot(path=str(shots / "02-loading.png"))
             release()
@@ -995,9 +997,55 @@ def run_checks(
             run_replay(browser, base, shots, replay_ids, console_errors)
             run_replay_3(browser, base3, shots, ids3, console_errors)
             run_replay_4(browser, base4, shots, ids4, console_errors)
+            run_progress(browser, base5, shots, ids5, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
+
+
+def check_bar(page: Page, expect_ids: list[str], what: str) -> None:
+    box = page.locator("#stepbar")
+    check(box.get_attribute("role") == "progressbar", f"{what}: the bar is a progressbar")
+    steps = page.locator("#steps .step")
+    check(steps.count() == len(expect_ids), f"{what}: {steps.count()} steps")
+    now, top = box.get_attribute("aria-valuenow"), box.get_attribute("aria-valuemax")
+    check(top == str(len(expect_ids)) and now is not None, f"{what}: aria {now} of {top}")
+    live = page.locator("#status")
+    check(live.get_attribute("aria-live") == "polite", f"{what}: the step text is a polite region")
+    check(bool(live.inner_text().strip()), f"{what}: the step text reads '{live.inner_text()}'")
+
+
+def run_progress(
+    browser: Any, base: str, shots: Path, ids: dict[str, str], console_errors: list[str]
+) -> None:
+    print("the step bar, with each mock step slowed down so the run can be seen")
+    context, page = open_session(browser, base, ids["replay4"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    page.fill("#request", COFFEE)
+    page.click("#search-btn")
+    page.locator("#steps .step.active").first.wait_for(timeout=15000)
+    page.locator("#steps .step.skipped").first.wait_for(timeout=15000)
+    check_bar(page, ["searching", "tagging", "ranking"], "first search")
+    check(page.locator("#elapsed").inner_text().endswith(" s"), "the elapsed seconds are shown")
+    check(page.locator("#spinner").count() == 0, "there is no spinner")
+    page.screenshot(path=str(shots / "33-progress-search.png"))
+    wait_for_results(page)
+    check(page.locator("#stepbar").is_hidden(), "the bar is gone when the results arrive")
+    context.close()
+    context, page = open_session(browser, base, ids["replay4"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    page.click("#shop-again")
+    page.locator("#steps .step.active").first.wait_for(timeout=15000)
+    page.locator("#steps .step.done, #steps .step.skipped").first.wait_for(timeout=15000)
+    check_bar(page, ["ratings", "searching", "tagging", "ranking"], "Shop Again")
+    page.screenshot(path=str(shots / "34-progress-shop-again.png"))
+    page.emulate_media(color_scheme="dark")
+    page.screenshot(path=str(shots / "35-progress-shop-again-dark.png"))
+    page.set_viewport_size({"width": 390, "height": 800})
+    page.screenshot(path=str(shots / "36-progress-shop-again-mobile.png"))
+    wait_for_results(page)
+    check(page.locator("#stepbar").is_hidden(), "the bar is gone when Shop Again is done")
+    context.close()
 
 
 def _clip(page: Page, chip: Any) -> dict[str, float]:
@@ -1042,6 +1090,7 @@ def main() -> int:
         tempfile.TemporaryDirectory() as data_dir,
         tempfile.TemporaryDirectory() as data_dir3,
         tempfile.TemporaryDirectory() as data_dir4,
+        tempfile.TemporaryDirectory() as data_dir5,
     ):
         try:
             first, port = start_server(data_dir)
@@ -1051,10 +1100,15 @@ def main() -> int:
             servers.append(third)
             fourth, port4 = start_server(data_dir4, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_4})
             servers.append(fourth)
+            fifth, port5 = start_server(
+                data_dir5, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_4, "APP_SHOP_MOCK_DELAY": "1.2"}
+            )
+            servers.append(fifth)
             run_checks(
                 f"http://127.0.0.1:{port}/", OUT, seed_replays(data_dir),
                 f"http://127.0.0.1:{port3}/", seed_replays_3(data_dir3),
                 f"http://127.0.0.1:{port4}/", seed_replays_4(data_dir4),
+                f"http://127.0.0.1:{port5}/", seed_replays_4(data_dir5),
             )  # fmt: skip
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

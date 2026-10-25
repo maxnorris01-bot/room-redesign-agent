@@ -156,16 +156,41 @@ button.outline:hover { border-color: var(--accent); }
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   margin-bottom: 14px; min-height: 40px;
 }
-.status-area { display: flex; align-items: center; gap: 10px; min-height: 40px; flex: 1; min-width: 200px; }
+.status-area { display: flex; align-items: center; gap: 10px; min-height: 40px; flex: 1; min-width: min(200px, 100%); }
 .actions { display: flex; gap: 8px; align-items: center; }
 .again button.primary { padding: 9px 18px; }
 .again button:disabled { opacity: 0.5; cursor: not-allowed; }
-.spinner {
-  width: 18px; height: 18px; border-radius: 50%; border: 3px solid var(--line);
-  border-top-color: var(--accent); animation: spin 0.8s linear infinite; flex: none;
+.stepbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; width: 100%; }
+.steps { display: flex; gap: 6px; list-style: none; margin: 0; padding: 0; flex: 1 1 220px; min-width: 0; }
+.step { flex: 1 1 0; min-width: 0; }
+.step .seg {
+  display: block; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden;
+  position: relative;
 }
-.spinner[hidden] { display: none; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.step.done .seg, .step.skipped .seg { background: var(--like); }
+.step.active .seg {
+  background: linear-gradient(90deg, var(--line) 0%, var(--accent) 50%, var(--line) 100%);
+  background-size: 200% 100%; animation: sweep 1.2s linear infinite;
+}
+.step .name {
+  display: block; margin-top: 4px; font-size: 12px; color: var(--muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.step.active .name { color: var(--ink); font-weight: 600; }
+.step.done .name::before, .step.skipped .name::before { content: "\2713\00a0"; color: var(--like); }
+.elapsed { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; flex: none; }
+.stepbar:not([hidden]) ~ .status {
+  position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+@media (max-width: 560px) {
+  .step .name { white-space: normal; font-size: 11px; overflow-wrap: anywhere; }
+}
+.slow-note { margin: 0; flex-basis: 100%; font-size: 13px; color: var(--muted); }
+@keyframes sweep { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .step.active .seg { animation: none; background: var(--accent); }
+}
 .prefs { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .prefs-summary { margin: 0 0 6px; font-size: 14px; min-height: 1.4em; }
 #pref-chips { min-height: 30px; }

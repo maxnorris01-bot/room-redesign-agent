@@ -133,6 +133,16 @@ class Config:
     shop_tag_top_n: int = 60  # candidates tagged by the model: the top N untagged by rank
     shop_search_workers: int = 4  # concurrent Serper searches (4 to 5)
     shop_max_steps: int = 40  # model calls one Shop Again may make (tagging batches add up)
+    # stage 2h: background preparation (photo tags of each stored batch, comments read as they are
+    # written) so a Shop Again finds its inputs ready; the limits that keep it cheap and bounded
+    shop_prep_enabled: bool = False  # off for a bare Config (tests); `from_env` turns it on
+    shop_prep_wait_s: float = 8.0  # the most a Shop Again waits for preparation still running
+    shop_prep_max_concurrent: int = 4  # model calls at once across all background jobs
+    shop_prep_chunk: int = 12  # items per photo tagging call (a batch of 24 is 2 calls)
+    shop_prep_calls_per_batch: int = 4  # model calls one stored batch may start
+    shop_prep_max_usd: float = 0.05  # a session's background preparation stops at this spend
+    shop_tag_workers: int = 6  # tagging batches of one Shop Again that run at once
+    shop_mock_delay_s: float = 0.0  # mock mode only: seconds each mock search or model call takes
     # Serper bills credits, not calls: a shopping call took 2 credits in the live test. USD per
     # credit is the owner's figure from the live test (about $0.001), not a documented price.
     # Shop Mode costs Serper from these two; the room pipeline still uses serper_usd_per_query.
@@ -183,6 +193,16 @@ class Config:
             raise ValueError("APP_SHOP_AGAINS_PER_SESSION must be >= 0")
         if self.shop_again_max_serper_calls < 1:
             raise ValueError("APP_SHOP_AGAIN_MAX_SERPER_CALLS must be >= 1")
+        if self.shop_prep_wait_s < 0 or self.shop_prep_max_usd < 0 or self.shop_mock_delay_s < 0:
+            raise ValueError(
+                "APP_SHOP_PREP_WAIT_S, APP_SHOP_PREP_MAX_USD, APP_SHOP_MOCK_DELAY >= 0"
+            )
+        if (
+            self.shop_prep_max_concurrent < 1
+            or self.shop_prep_chunk < 1
+            or self.shop_tag_workers < 1
+        ):
+            raise ValueError("preparation concurrency, chunk and tag workers must be >= 1")
         if not 0 < self.shop_target_s <= self.shop_hard_stop_s:
             raise ValueError("APP_SHOP_TARGET_S must be positive and at most the hard stop")
         if self.shop_tag_top_n < 0 or not 1 <= self.shop_search_workers <= 8:
@@ -276,6 +296,12 @@ class Config:
             shop_again_max_serper_calls=int(
                 os.environ.get("APP_SHOP_AGAIN_MAX_SERPER_CALLS", cls.shop_again_max_serper_calls)
             ),
+            shop_prep_enabled=os.environ.get("APP_SHOP_PREP", "1").strip()
+            not in ("0", "false", "no"),
+            shop_prep_wait_s=float(os.environ.get("APP_SHOP_PREP_WAIT_S", cls.shop_prep_wait_s)),
+            shop_prep_max_usd=float(os.environ.get("APP_SHOP_PREP_MAX_USD", cls.shop_prep_max_usd)),
+            shop_tag_workers=int(os.environ.get("APP_SHOP_TAG_WORKERS", cls.shop_tag_workers)),
+            shop_mock_delay_s=float(os.environ.get("APP_SHOP_MOCK_DELAY", cls.shop_mock_delay_s)),
             shop_target_s=float(os.environ.get("APP_SHOP_TARGET_S", cls.shop_target_s)),
             shop_hard_stop_s=float(os.environ.get("APP_SHOP_HARD_STOP_S", cls.shop_hard_stop_s)),
             shop_tag_budget_s=float(os.environ.get("APP_SHOP_TAG_BUDGET_S", cls.shop_tag_budget_s)),

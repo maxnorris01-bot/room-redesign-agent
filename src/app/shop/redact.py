@@ -1,8 +1,8 @@
 """Safe descriptions of an exception for a trace, a page or a diagnostic.
 
 An exception message can echo a request, a header or a path. `redact` replaces anything that
-looks like a key, token or Authorization value with `[redacted]`; `describe_exception` gives the
-class, the redacted message (first 300 characters) and the repository file and line of the
+looks like a key, token, Authorization value or URL with `[redacted]`; `describe_exception` gives
+the class, the redacted message (first 300 characters) and the repository file and line of the
 innermost frame in `src/` or `scripts/`. Nothing here ever reads the environment or a request body.
 """
 
@@ -15,6 +15,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MESSAGE_CHARS = 300
 _PATTERNS = (
+    re.compile(r"(?i)\bhttps?://\S+"),  # a request URL (its query may hold a key)
     re.compile(r"(?i)(authorization|x-api-key|api[-_ ]?key|token|secret|password)\s*[:=]\s*\S+"),
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{6,}"),

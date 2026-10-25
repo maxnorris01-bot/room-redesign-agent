@@ -42,9 +42,13 @@
 <main class="wrap">
   <div class="toolbar">
     <div class="status-area">
-      <span id="spinner" class="spinner" hidden></span>
+      <div id="stepbar" class="stepbar" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuenow="0" aria-valuemax="1" hidden>
+        <ol id="steps" class="steps"></ol>
+        <span id="elapsed" class="elapsed"></span>
+      </div>
       <p id="status" class="status" role="status" aria-live="polite"></p>
       <a id="status-details" class="details-link" href="#why" hidden>details</a>
+      <p id="slow-note" class="slow-note" hidden>Taking longer than usual; this stops at 45 s</p>
       <button id="retry" type="button" class="quiet" hidden>Retry</button>
     </div>
     <div class="actions">
