@@ -3,7 +3,8 @@
 Stage 2g: the call is a FORCED TOOL CALL (`record_tags`, a strict JSON schema: an array of objects
 with index, shape, material, finish, frame_color and style as a list of up to two values) in batches
 of at most 40 titles that run concurrently, each with a deadline of its own and all of them inside
-one tagging budget; temperature 0 and no thinking. The text-rows format of stage 2e remains as the
+one tagging budget; no thinking and no sampling parameters (the installed SDK, and these models,
+do not accept `temperature`). The text-rows format of stage 2e remains as the
 fallback for an older answer and as the one retry when the tool call fails. At most ONE retry per
 batch, none for a call that came back with no text content in under 2 seconds (it would only fail
 again), and nothing that is not tagged by the budget's end is waited for: it stays unknown.
@@ -34,12 +35,13 @@ from typing import Any
 
 import anthropic
 
-from app.config import Config
+from app.config import BudgetExceededError, Config
 from app.llm import Budget, LLMOutputError, complete
 from app.prompts import load_prompt
 from app.schemas import to_output_schema
 from app.shop.clock import Clock
 from app.shop.models import CandidateTags
+from app.shop.redact import describe_exception
 from app.shop.thresholds import CANDIDATE_TAG_BATCH
 from app.shop.vocab import DIMENSIONS, normalize, normalize_style, vocab_text
 
@@ -293,7 +295,7 @@ def run_call(
     entry: dict[str, Any] = {
         "mode": mode, "items": len(batch), "max_tokens": limit, "stop_reason": "",
         "block_types": [], "json_ok": False, "rows_parsed": 0, "raw": "", "retry": retry,
-        "error": "", "seconds": 0.0, "usd": 0.0, "timeout_s": timeout_s,
+        "error": "", "where": "", "seconds": 0.0, "usd": 0.0, "timeout_s": timeout_s,
         "input_tokens": 0, "output_tokens": 0, "model": config.rank_model,
     }  # fmt: skip
     rows: dict[int, dict[str, str | None]] = {}
@@ -305,7 +307,6 @@ def run_call(
         "max_tokens": limit,
         "stream": True,
         "keep_truncated": True,
-        "temperature": 0,  # no sampling noise, and no thinking: no `effort`, no thinking block
         "timeout_s": timeout_s,
     }
     try:
@@ -343,6 +344,14 @@ def run_call(
         entry["usd"] = exc.cost_usd
     except anthropic.APIError as exc:  # a timeout, an overload, a rejected request
         entry["error"] = _api_reason(exc)
+    except BudgetExceededError:
+        raise
+    except (
+        Exception
+    ) as exc:  # a client-side failure (a TypeError from a call shape the SDK rejects):
+        # recorded with its redacted message and where in this repository it was raised, and the
+        # Shop Again goes on without tags instead of failing
+        entry["error"], entry["where"] = describe_exception(exc)
     finally:
         entry["seconds"] = round(clock.now() - t0, 3)
         with book.lock:
@@ -363,7 +372,8 @@ def failure_reason(entry: dict[str, Any]) -> str:
             f"blocks: {', '.join(entry['block_types']) or 'none'}) after {entry['seconds']:.1f} s"
         )
     if entry["error"]:
-        return f"the call failed: {entry['error']} after {entry['seconds']:.1f} s"
+        where = f" at {entry['where']}" if entry.get("where") else ""
+        return f"the call failed: {entry['error']}{where} after {entry['seconds']:.1f} s"
     if entry["stop_reason"] == "max_tokens":
         return (
             f"the answer was cut off at the {entry['max_tokens']}-token limit "

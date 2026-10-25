@@ -221,7 +221,6 @@ def complete(
     stream: bool = False,
     keep_truncated: bool = False,
     tool_choice: dict[str, Any] | None = None,
-    temperature: float | None = None,
     timeout_s: float | None = None,
 ) -> Completion:
     """Run one logical model call (resuming `pause_turn`) and return the final text.
@@ -230,8 +229,9 @@ def complete(
     `stop_reason` set) instead of raising, for callers that can use a partial answer.
 
     `tool_choice` forces a tool call (`{"type": "tool", "name": ...}`; `tools` lists the tool): the
-    tool's input comes back in `Completion.tool_input` and `text` is its JSON. `temperature` is sent
-    only when given. `timeout_s` is a per-request deadline on the live client (no SDK retries).
+    tool's input comes back in `Completion.tool_input` and `text` is its JSON.
+    `timeout_s` is a per-request deadline on the live client (no SDK retries). The installed SDK
+    takes no `temperature` (nor do these models), so none is sent.
 
     Pass `stream=True` for calls that can run long (research/tool-heavy calls) - see
     `_create_message`. Leave it `False` (default) for short calls with nothing to fix.
@@ -265,8 +265,6 @@ def complete(
             params["tools"] = tools
         if tool_choice is not None:
             params["tool_choice"] = tool_choice
-        if temperature is not None:
-            params["temperature"] = temperature
         if output_config:
             params["output_config"] = output_config
 

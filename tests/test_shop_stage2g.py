@@ -109,7 +109,7 @@ def tool_answer(kwargs: dict[str, Any]) -> Any:
 # ---- the forced tool call and its fallback ------------------------------------------------------------------
 
 
-def test_the_tagging_call_is_a_forced_tool_call_with_a_strict_schema_at_temperature_zero(
+def test_the_tagging_call_is_a_forced_tool_call_with_a_strict_schema_and_no_sampling_knob(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: dict[str, Any] = {}
@@ -124,7 +124,7 @@ def test_the_tagging_call_is_a_forced_tool_call_with_a_strict_schema_at_temperat
     book = TagBook()
     tag_results(taggables(5), book, Budget(config()), workers=1)
     assert seen["tool_choice"] == {"type": "tool", "name": "record_tags"}
-    assert seen["tools"] == [TAG_TOOL_DEF] and seen["temperature"] == 0
+    assert seen["tools"] == [TAG_TOOL_DEF] and "temperature" not in seen  # the SDK has none
     assert "effort" not in seen and "thinking" not in seen  # no extended thinking, no effort knob
     assert seen["timeout_s"] == config().shop_tag_call_timeout_s == 12.0
     assert seen["stream"] is True and seen["max_tokens"] == candidates_mod.tag_max_tokens(
