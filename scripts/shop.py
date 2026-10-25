@@ -44,10 +44,15 @@ def cost_lines(config: Config) -> list[str]:
         f"  Search: 1 call ({credits} credits, ${call_usd:.4f}), or 2 if fewer than 24 results "
         f"survive ({2 * credits} credits, ${2 * call_usd:.4f}); Anthropic about $0.01 or less "
         "(parse the request, rank the pool).",
-        f"  Shop Again: up to {calls} Serper calls ({calls * credits} credits, "
-        f"${calls * call_usd:.4f}) over up to 3 search phrasings; Anthropic about $0.002 to $0.01 "
-        "(one preference call that also reads up to 16 small product photos, one rank call over up "
-        f"to 80 candidates); at most {config.shop_agains_per_session} per session.",
+        f"  Shop Again: {calls} Serper calls normally, up to "
+        f"{config.shop_again_max_serper_calls_total} "
+        f"({config.shop_again_max_serper_calls_total * credits} credits, "
+        f"${config.shop_again_max_serper_calls_total * call_usd:.4f}) with peer retailer and "
+        "targeted searches; Anthropic about $0.003 to $0.01 (one preference call that reads up "
+        "to 16 small product photos, one rank call over up to 80 candidates, tagging calls of "
+        f"40 titles for the top {config.shop_tag_top_n} candidates); it aims for "
+        f"{config.shop_target_s:.0f} seconds and stops at {config.shop_hard_stop_s:.0f}; "
+        f"at most {config.shop_agains_per_session} per session.",
         "  Link lookups: none during a search or a Shop Again, and none when you love a result. "
         f"Only Open runs one SerpApi lookup (about ${config.serpapi_usd_per_search:.3f}), at most "
         f"{config.shop_lookups_per_session} per session, never twice for the same result.",

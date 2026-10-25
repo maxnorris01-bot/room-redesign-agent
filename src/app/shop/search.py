@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import math
 import re
-import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,7 +28,9 @@ from app.llm import Budget, LLMOutputError, complete
 from app.prompts import load_prompt
 from app.schemas import DimensionsM, RankedFinalists, SchemaError, parse_model, to_output_schema
 from app.shop.candidates import TagBook, Taggable, tag_results
+from app.shop.clock import Clock
 from app.shop.decide import composition, top_share
+from app.shop.dedupe import Dedupe, Index, Listing
 from app.shop.models import (
     MAX_SEARCH_TEXT_CHARS,
     FilterCounts,
@@ -116,6 +118,16 @@ class AgainContext:
     tier_share: float = 0.0
     tier_pinned: bool = False
     peer_queries: list[tuple[str, str, str]] = field(default_factory=list)
+    # stage 2g: what was shown or rated before (the de-duplication's "seen"), the clock and the
+    # phase callback of the job running this Shop Again, the absolute time it must stop at, and
+    # searches already made while the preference call ran: (text, page) -> results or the error
+    seen: list[Listing] = field(default_factory=list)
+    clock: Clock | None = None
+    progress: Callable[[str], None] | None = None
+    hard_stop_at: float | None = None
+    prefetched: dict[tuple[str, int], list[SearchCandidate] | Exception] = field(
+        default_factory=dict
+    )
 
 
 @dataclass
@@ -173,10 +185,36 @@ def plausible(title: str, category_key: str | None, search_text: str = "") -> bo
     return not hits or category_key in hits
 
 
+def listing_of(c: SearchCandidate) -> Listing:
+    """What the de-duplication rules look at in a search candidate."""
+    return Listing(
+        product_id=c.product_id,
+        title=c.title,
+        seller=c.seller,
+        price=c.price,
+        thumbnail=c.thumbnail_url or "",
+        has_link=is_https_url(c.google_panel_url or ""),
+    )
+
+
+def seen_listing(r: ShopResult, rated: bool) -> Listing:
+    return Listing(
+        product_id=r.product_id,
+        title=r.title,
+        seller=r.seller,
+        price=r.price,
+        thumbnail=r.thumbnail_url,
+        has_link=bool(r.link),
+        rated=rated,
+    )
+
+
 def apply_filters(
-    candidates: list[SearchCandidate], query: ShopQuery
+    candidates: list[SearchCandidate], query: ShopQuery, seen: Sequence[Listing] = ()
 ) -> tuple[list[SearchCandidate], FilterCounts]:
-    """Hard filters then dedupe, in search order. Returns the pool and what each step removed."""
+    """Hard filters, then the one de-duplication (`app.shop.dedupe`, against each other and against
+    `seen`: what was shown or rated earlier), in search order. Returns the pool and what each step
+    removed, with the per-rule numbers in `counts.dedupe`."""
     counts = FilterCounts(returned=len(candidates))
     priced_filter = query.price_min is not None or query.price_max is not None
     kept: list[SearchCandidate] = []
@@ -194,17 +232,11 @@ def apply_filters(
             counts.wrong_category += 1
             continue
         kept.append(c)
-    seen_ids: set[str] = set()
-    seen_titles: set[str] = set()
-    pool: list[SearchCandidate] = []
-    for c in kept:
-        title_key = normalized_title_key(c.title, c.seller)
-        if c.product_id in seen_ids or title_key in seen_titles:
-            counts.duplicates += 1
-            continue
-        seen_ids.add(c.product_id)
-        seen_titles.add(title_key)
-        pool.append(c)
+    pool, stats = Dedupe(listing_of).run(kept, seen)
+    counts.duplicates = stats.duplicates
+    counts.seen_excluded = stats.shown_before + stats.rated_before
+    counts.rated_excluded = stats.rated_before
+    counts.dedupe = stats.as_dict()
     counts.kept = len(pool)
     return pool, counts
 
@@ -427,9 +459,13 @@ def build_results(
         return tags(candidate) if tags is not None else title_tags(candidate.title)
 
     tier_count = 0
+    shown_here = Index()  # the batch so far: the same product never appears twice in it
 
     def try_take(index: int, candidate: SearchCandidate) -> bool:
         nonlocal tier_count
+        listing = listing_of(candidate)
+        if shown_here.match(listing) is not None:
+            return False
         in_tier = tier_limit is not None and tier_of(candidate.seller) == tier_limit[0]
         if in_tier and tier_limit is not None and tier_count >= tier_limit[1]:
             seller_skipped.add(index)
@@ -450,6 +486,7 @@ def build_results(
             for v in held[dim]:
                 value_counts[(dim, v)] = value_counts.get((dim, v), 0) + 1
         per_seller[key] = per_seller.get(key, 0) + 1
+        shown_here.add(listing)
         if in_tier:
             tier_count += 1
         accepted.append(index)
@@ -517,22 +554,23 @@ def build_results(
 
 
 def _search_page(
-    search: SearchProvider, text: str, page: int, budget: Budget
+    search: SearchProvider, text: str, page: int, budget: Budget, clock: Clock | None = None
 ) -> list[SearchCandidate]:
     config: Config = budget.config
+    clock = clock or Clock()
     usd = config.serper_usd_per_call if search.name == "serper" else config.serpapi_usd_per_search
-    started = time.perf_counter()
+    started = clock.now()
     try:
         found = search.search(text, page=page)
     except ProviderError:
         _record_provider_call(
             budget, "search", f"shop p{page}", search.name, usd,
-            round(time.perf_counter() - started, 3), ok=False,
+            round(clock.now() - started, 3), ok=False,
         )  # fmt: skip
         raise
     _record_provider_call(
         budget, "search", f"shop p{page}", search.name, usd,
-        round(time.perf_counter() - started, 3), ok=True,
+        round(clock.now() - started, 3), ok=True,
     )  # fmt: skip
     return found
 
@@ -565,21 +603,52 @@ def run_query(
     warnings: list[str],
     started: float,
     again: AgainContext | None = None,
+    clock: Clock | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> SearchOutcome:
-    """Search, filter, (exclude), rank and cap for an already parsed `query`.
+    """Search, filter, de-duplicate, rank, (tag), cap and return the results for a parsed `query`.
 
     A typed search fetches page 2 only when fewer than `RESULT_COUNT` results could be shown. A Shop
     Again runs page 1 of each of its phrasings (the adjusted query, then up to two built from the
-    profile: `again.extra_queries`), and further pages while fewer than `again.pool_target`
-    candidates survive the filters and exclusions, at most `again.max_calls` Serper calls in all; a
-    phrasing that returns nothing is not paged further. The first call failing raises
+    profile) and of up to 3 peer retailers, concurrently when the provider is thread safe
+    (`thread_safe`) and else one after the other; then further pages while the pool is thin. All of
+    it stays inside `again.max_calls_total` Serper calls. The first phrasing's page failing raises
     `ProviderError`; a later call failing, or ranking failing, degrades with a warning.
+
+    Stage 2g order for a Shop Again: searches, hard filters and de-duplication (against each
+    other and against everything shown or rated earlier), the pool cut to 80, ONE rank call, then
+    the model tags only the top `config.shop_tag_top_n` untagged candidates by rank (title
+    keywords stand in for the rest), then the supply step for a thin open value, the batch
+    selection, and one refill search when fewer than 24 results survive. Past
+    `again.hard_stop_at` every remaining optional step is skipped and the response says so.
     """
-    t_start = time.perf_counter()
+    clock = clock or (again.clock if again is not None else None) or Clock()
+    say = progress or (again.progress if again is not None else None) or (lambda _text: None)
+    t_start = clock.now()
+    hard_stop_at = (
+        again.hard_stop_at
+        if again is not None and again.hard_stop_at is not None
+        else t_start + config.shop_hard_stop_s
+    )
+    stopped: list[str] = []  # the step the hard stop skipped, once
+
+    def expired(step: str) -> bool:
+        if clock.now() < hard_stop_at:
+            return False
+        if not stopped:
+            stopped.append(step)
+            warnings.append(
+                f"Stopped at the {config.shop_hard_stop_s:.0f}-second limit before {step}; "
+                "showing what was found."
+            )
+        return True
+
+    seen = again.seen if again is not None else []
 
     def filtered(raw: list[SearchCandidate]) -> tuple[list[SearchCandidate], FilterCounts]:
-        pool, counts = apply_filters(raw, query)
-        pool, counts.seen_excluded = _exclusions(pool, again)
+        pool, counts = apply_filters(raw, query, seen)
+        pool, extra = _exclusions(pool, again)
+        counts.seen_excluded += extra
         counts.kept = len(pool)
         return pool, counts
 
@@ -587,12 +656,18 @@ def run_query(
     max_calls = again.max_calls if again is not None else 2
     if search.name != "serper":  # only Serper pages; other providers get one call
         texts, max_calls = texts[:1], 1
+    cap = (
+        max(max_calls, again.max_calls_total)
+        if again is not None and search.name == "serper"
+        else max_calls
+    )
     # the first page of every phrasing (after any pages the session already fetched for the same
     # words), then further pages of each while the pool is thin
     skip = again.skip_pages if again is not None else {}
     first = [skip.get(query_key(t), 0) + 1 for t in texts]
     plan = [(i, first[i]) for i in range(len(texts))]
     plan += [(i, first[i] + k) for k in range(1, max_calls) for i in range(len(texts))]
+    parallel = getattr(search, "thread_safe", False) and config.shop_search_workers > 1
 
     def enough(pool: list[SearchCandidate]) -> bool:
         if again is not None:
@@ -606,81 +681,197 @@ def run_query(
     finished: set[int] = set()  # phrasings that ran out of results
     used: list[str] = []
     pages: dict[str, int] = {}
-    for i, page in plan:
-        if calls >= max_calls:
-            break
-        if page > first[i] and (enough(pool) or i in finished):
-            continue
-        calls += 1
+    supplied: set[str] = set()
+
+    consumed: set[tuple[str, int]] = set()
+
+    def fetch(text: str, page: int) -> list[SearchCandidate] | Exception:
+        """One search page (or the one already made while the preference call ran); a provider
+        error is returned, not raised, so a concurrent batch can report every outcome."""
+        if again is not None and (text, page) in again.prefetched:
+            consumed.add((text, page))
+            return again.prefetched[(text, page)]
         try:
-            more = _search_page(search, texts[i], page, budget)
+            return _search_page(search, text, page, budget, clock)
         except ProviderError as exc:
-            if calls == 1:
-                raise  # nothing to show without the first page
-            warnings.append(f"Search page {page} unavailable ({exc}); showing what was found.")
-            finished.add(i)
-            continue
-        if texts[i] not in used:
-            used.append(texts[i])
-        pages[query_key(texts[i])] = max(pages.get(query_key(texts[i]), 0), page)
-        if not more:
-            finished.add(i)
+            return exc
+
+    def absorb(text: str, page: int, more: list[SearchCandidate]) -> list[SearchCandidate]:
+        """Merge a page into the pool; returns the candidates it newly added."""
+        nonlocal raw, pool, counts
+        if text not in used:
+            used.append(text)
+        pages[query_key(text)] = max(pages.get(query_key(text), 0), page)
+        before = {c.product_id for c in pool}
         raw = raw + more
         pool, counts = filtered(raw)
+        return [c for c in pool if c.product_id not in before]
 
-    # ---- stage 2e: tag the pool, then (open dimensions) go and find the minority value ----
-    book = again.tag_book if again is not None else None
-    composition_info: dict[str, Any] = {}
-    supplied: set[str] = set()
-    if again is not None and book is not None:
+    peer_log: list[dict[str, Any]] = []
+    peers = (
+        again.peer_queries[:MAX_PEER_SEARCHES]
+        if again is not None and search.name == "serper"
+        else []
+    )
 
-        def tag_pool() -> None:
-            assert book is not None
-            tag_results(
-                [Taggable(result_id(c.product_id), c.title, c.price, c.seller) for c in pool],
-                book,
-                budget,
-            )
+    def peer_entry(name: str, key: str, text: str, page: int) -> dict[str, Any]:
+        return {
+            "peer": name, "key": key, "search": text, "page": page,
+            "found": 0, "new_candidates": 0, "error": "",
+        }  # fmt: skip
 
-        cap = max(max_calls, again.max_calls_total) if search.name == "serper" else max_calls
-        # peer retailers: when the shopper likes a seller or a tier, search similar retailers too
-        # (one page each, at most `MAX_PEER_SEARCHES`, inside the total call cap)
-        peer_log: list[dict[str, Any]] = []
-        if search.name == "serper":
-            for peer_key, peer_name, peer_text in again.peer_queries[:MAX_PEER_SEARCHES]:
-                if calls >= cap:
-                    break
-                qkey = query_key(peer_text)
-                peer_page = max(again.skip_pages.get(qkey, 0), pages.get(qkey, 0)) + 1
-                calls += 1
-                entry: dict[str, Any] = {
-                    "peer": peer_name, "key": peer_key, "search": peer_text, "page": peer_page,
-                    "found": 0, "new_candidates": 0, "error": "",
-                }  # fmt: skip
-                try:
-                    more = _search_page(search, peer_text, peer_page, budget)
-                except ProviderError as exc:
-                    warnings.append(f"Search for {peer_name} unavailable ({exc}).")
+    say(f"Searching {len(texts) + len(peers)} retailers" if peers else "Searching")
+    t_searches = clock.now()
+    if parallel:
+        # wave one: the first page of every phrasing and of every peer, at the same time
+        jobs: list[tuple[str, int, tuple[str, str] | None]] = [
+            (texts[i], first[i], None) for i in range(len(texts))
+        ]
+        room = max(0, cap - len(jobs))
+        for peer_key, peer_name, peer_text in peers[:room]:
+            qkey = query_key(peer_text)
+            jobs.append((peer_text, skip.get(qkey, 0) + 1, (peer_key, peer_name)))
+        jobs = jobs[:cap]
+        with ThreadPoolExecutor(max_workers=min(config.shop_search_workers, len(jobs))) as ex:
+            outcomes = list(ex.map(lambda j: fetch(j[0], j[1]), jobs))
+        calls += len(jobs)
+        for n, ((text, page, peer), got) in enumerate(zip(jobs, outcomes, strict=True)):
+            entry = peer_entry(peer[1], peer[0], text, page) if peer else None
+            if isinstance(got, Exception):
+                if n == 0:
+                    raise got  # nothing to show without the first phrasing's first page
+                if peer is None:
+                    warnings.append(
+                        f"Search page {page} unavailable ({got}); showing what was found."
+                    )
+                    finished.add(n)
+                else:
+                    warnings.append(f"Search for {peer[1]} unavailable ({got}).")
+                    assert entry is not None
                     entry["error"] = "search failed"
                     peer_log.append(entry)
-                    continue
-                if peer_text not in used:
-                    used.append(peer_text)
-                pages[qkey] = max(pages.get(qkey, 0), peer_page)
-                before_ids = {c.product_id for c in pool}
-                raw = raw + more
-                pool, counts = filtered(raw)
-                added_peer = [c for c in pool if c.product_id not in before_ids]
-                supplied.update(c.product_id for c in added_peer)
-                entry["found"], entry["new_candidates"] = len(more), len(added_peer)
+                continue
+            added = absorb(text, page, got)
+            if not got and peer is None:
+                finished.add(n)
+            if peer is not None:
+                supplied.update(c.product_id for c in added)
+                assert entry is not None
+                entry["found"], entry["new_candidates"] = len(got), len(added)
                 peer_log.append(entry)
+        extra_plan = [(i, pg) for i, pg in plan if pg > first[i]]
+    else:
+        extra_plan = list(plan)
+    # sequential pages: all of `plan` when not parallel, the further pages when it is
+    for i, page in extra_plan:
+        if calls >= max_calls + (len(peers) if parallel else 0) and calls >= cap:
+            break
+        if calls >= (cap if parallel else max_calls):
+            break
+        if (page > first[i] or parallel) and (enough(pool) or i in finished):
+            continue
+        calls += 1
+        got = fetch(texts[i], page)
+        if isinstance(got, Exception):
+            if calls == 1:
+                raise got  # nothing to show without the first page
+            warnings.append(f"Search page {page} unavailable ({got}); showing what was found.")
+            finished.add(i)
+            continue
+        if not got:
+            finished.add(i)
+        absorb(texts[i], page, got)
+    if not parallel:  # peers after the phrasings, one after the other
+        for peer_key, peer_name, peer_text in peers:
+            if calls >= cap:
+                break
+            qkey = query_key(peer_text)
+            peer_page = max(skip.get(qkey, 0), pages.get(qkey, 0)) + 1
+            calls += 1
+            entry = peer_entry(peer_name, peer_key, peer_text, peer_page)
+            got = fetch(peer_text, peer_page)
+            if isinstance(got, Exception):
+                warnings.append(f"Search for {peer_name} unavailable ({got}).")
+                entry["error"] = "search failed"
+                peer_log.append(entry)
+                continue
+            added = absorb(peer_text, peer_page, got)
+            supplied.update(c.product_id for c in added)
+            entry["found"], entry["new_candidates"] = len(got), len(added)
+            peer_log.append(entry)
+    if again is not None:  # a search made while the preference call ran but never used still billed
+        calls += sum(1 for key in again.prefetched if key not in consumed)
+    t_search = clock.now()
+
+    # ---- cut the pool, rank it once ----
+    limit = MAX_POOL_AGAIN if again is not None else MAX_POOL
+    if len(pool) > limit:  # peer candidates are what the pool lacked: they are kept first
+        keep = [c for c in pool if c.product_id in supplied][:limit]
+        kept = {c.product_id for c in keep}
+        rest = [c for c in pool if c.product_id not in kept][: limit - len(keep)]
+        chosen = {c.product_id for c in [*keep, *rest]}
+        pool = [c for c in pool if c.product_id in chosen]
+    pool_index = {c.product_id: i + 1 for i, c in enumerate(pool)}
+    ranked = False
+    ordered: list[tuple[SearchCandidate, str]] = []
+    t_rank = clock.now()
+    if pool:
+        say("Ranking")
+        if expired("ranking"):
+            ordered = [(c, "") for c in pool]
+        else:
+            ordered, rank_warning = order_pool(query, pool, budget, again)
+            ranked = not rank_warning
+            if rank_warning:
+                warnings.append(rank_warning)
+    if again is not None and again.deprioritize_sellers:  # not excluded: ranked after the rest
+        keep_first = [
+            x for x in ordered if seller_key(x[0].seller) not in again.deprioritize_sellers
+        ]
+        later = [x for x in ordered if seller_key(x[0].seller) in again.deprioritize_sellers]
+        ordered = keep_first + later
+    t_ranked = clock.now()
+
+    # ---- stage 2e/2g: tag the top candidates by rank, then find the minority value ----
+    book = again.tag_book if again is not None else None
+    composition_info: dict[str, Any] = {}
+    supply_log: list[dict[str, Any]] = []
+    refill_log: list[dict[str, Any]] = []
+    tag_seconds = 0.0
+
+    def tag_top(candidates: list[tuple[SearchCandidate, str]]) -> None:
+        """Tag the first `shop_tag_top_n` candidates (in this order) that carry no model tag yet."""
+        nonlocal tag_seconds
+        if book is None or again is None:
+            return
+        todo = [
+            Taggable(result_id(c.product_id), c.title, c.price, c.seller)
+            for c, _ in candidates
+            if book.get(result_id(c.product_id)) is None
+        ][: config.shop_tag_top_n]
+        if not todo or expired("tagging"):
+            return
+        say("Tagging results")
+        t0 = clock.now()
+        tag_results(
+            todo,
+            book,
+            budget,
+            clock,
+            workers=config.shop_search_workers,
+            until=hard_stop_at,
+        )
+        tag_seconds += clock.now() - t0
+
+    if again is not None and book is not None:
         composition_info["peers"] = peer_log
-        tag_pool()
-        composition_info["pool_before"] = pool_composition(pool, again)
-        supply_log: list[dict[str, Any]] = []
+        tag_top(ordered)
+        composition_info["pool_before"] = pool_composition(
+            [c for c, _ in ordered], again, config.shop_tag_top_n
+        )
         extra_done: set[str] = set()
-        while calls < cap:
-            need = minority_values(pool, again)
+        while calls < cap and not expired("the supply search"):
+            need = minority_values([c for c, _ in ordered], again)
             step = next(((d, v, c, k) for d, v, c, k in need if f"{d}:{v}" not in extra_done), None)
             if step is None:
                 break
@@ -691,29 +882,26 @@ def run_query(
             key = query_key(text)
             page = max(again.skip_pages.get(key, 0), pages.get(key, 0)) + 1
             calls += 1
-            try:
-                more = _search_page(search, text, page, budget)
-            except ProviderError as exc:
+            got = fetch(text, page)
+            if isinstance(got, Exception):
                 warnings.append(
-                    f"Search for {value} {dim} unavailable ({exc}); showing what was found."
+                    f"Search for {value} {dim} unavailable ({got}); showing what was found."
                 )
                 extra_done.add(f"{dim}:{value}")
                 continue
-            if text not in used:
-                used.append(text)
-            pages[key] = max(pages.get(key, 0), page)
-            before = {c.product_id for c in pool}
-            raw = raw + more
-            pool, counts = filtered(raw)
-            added = [c for c in pool if c.product_id not in before]
+            added = absorb(text, page, got)
             supplied.update(c.product_id for c in added)
-            if not more or not added:
+            if not got or not added:
                 extra_done.add(f"{dim}:{value}")  # nothing new from this phrasing: stop asking it
-            tag_pool()
+            new_pairs = [(c, "") for c in added]  # appended in search order: no extra rank call
+            for c, _r in new_pairs:
+                pool_index[c.product_id] = len(pool_index) + 1
+            ordered = ordered + new_pairs
+            tag_top(new_pairs)
             after = next(
                 (
                     n
-                    for d, v, n, _ in minority_values(pool, again, all_values=True)
+                    for d, v, n, _ in minority_values([c for c, _ in ordered], again, True)
                     if (d, v) == (dim, value)
                 ),
                 None,
@@ -721,36 +909,16 @@ def run_query(
             supply_log.append(
                 {
                     "dimension": dim, "value": value, "search": text, "page": page,
-                    "found": len(more), "new_candidates": len(added),
+                    "found": len(got), "new_candidates": len(added),
                     "value_before": f"{count} of {known}", "value_after": after,
                 }
             )  # fmt: skip
         composition_info["supply"] = supply_log
-        composition_info["pool_after"] = pool_composition(pool, again)
-    t_search = time.perf_counter()
+        composition_info["pool_after"] = pool_composition(
+            [c for c, _ in ordered], again, config.shop_tag_top_n
+        )
 
-    limit = MAX_POOL_AGAIN if again is not None else MAX_POOL
-    if len(pool) > limit:  # supplied candidates are what the pool lacked: they are kept first
-        keep = [c for c in pool if c.product_id in supplied][:limit]
-        kept = {c.product_id for c in keep}
-        rest = [c for c in pool if c.product_id not in kept][: limit - len(keep)]
-        chosen = {c.product_id for c in [*keep, *rest]}
-        pool = [c for c in pool if c.product_id in chosen]
-    pool_index = {c.product_id: i + 1 for i, c in enumerate(pool)}
-    ranked = False
-    ordered: list[tuple[SearchCandidate, str]] = []
-    if pool:
-        ordered, rank_warning = order_pool(query, pool, budget, again)
-        ranked = not rank_warning
-        if rank_warning:
-            warnings.append(rank_warning)
-    if again is not None and again.deprioritize_sellers:  # not excluded: ranked after the rest
-        keep_first = [
-            x for x in ordered if seller_key(x[0].seller) not in again.deprioritize_sellers
-        ]
-        later = [x for x in ordered if seller_key(x[0].seller) in again.deprioritize_sellers]
-        ordered = keep_first + later
-
+    # ---- select the batch (and, when it is short, one refill search) ----
     tag_of: Callable[[SearchCandidate], Mapping[str, str | None]] | None = None
     strata: tuple[str, dict[str, int]] | None = None
     if again is not None:
@@ -759,10 +927,9 @@ def run_query(
             got = book.get(result_id(candidate.product_id)) if book is not None else None
             if got is not None:
                 return got
-            return title_tags(candidate.title) if book is None or book.failed else {}
+            return title_tags(candidate.title)  # the keyword reader stands in for untagged ones
 
         tag_of = _tag_of
-
         shape_values = [v for v in again.open_dims.get("shape", []) if v != OTHER]
         if len(shape_values) >= 2:
             strata = (
@@ -787,25 +954,62 @@ def run_query(
             "tier": again.affinity_tier, "cap": cap_n, "quota": tier_limit[2],
             "pinned": again.tier_pinned,
         }  # fmt: skip
-    results, capped, diversity_skipped = build_results(
-        ordered,
-        query,
-        pool_index,
-        again.affinity_sellers if again is not None else None,
-        again.pinned_sellers if again is not None else None,
-        None,
-        again.guard_caps if again is not None else None,
-        tag_of,
-        strata,
-        tier_limit,
-    )
+
+    def select() -> tuple[list[ShopResult], int, int]:
+        return build_results(
+            ordered,
+            query,
+            pool_index,
+            again.affinity_sellers if again is not None else None,
+            again.pinned_sellers if again is not None else None,
+            None,
+            again.guard_caps if again is not None else None,
+            tag_of,
+            strata,
+            tier_limit,
+        )
+
+    results, capped, diversity_skipped = select()
+    if (
+        again is not None
+        and len(results) < RESULT_COUNT
+        and calls < cap
+        and not expired("the refill search")
+    ):
+        word = _strongest_value(again)
+        if word is not None:
+            text = " ".join(f"{word[1]} {query.search_text}".split())[:MAX_SEARCH_TEXT_CHARS]
+            key = query_key(text)
+            page = max(again.skip_pages.get(key, 0), pages.get(key, 0)) + 1
+            calls += 1
+            got = fetch(text, page)
+            if isinstance(got, Exception):
+                warnings.append(f"Refill search unavailable ({got}).")
+            else:
+                added = absorb(text, page, got)
+                supplied.update(c.product_id for c in added)
+                new_pairs = [(c, "") for c in added]
+                for c, _r in new_pairs:
+                    pool_index[c.product_id] = len(pool_index) + 1
+                ordered = ordered + new_pairs
+                tag_top(new_pairs)
+                refill_log.append(
+                    {
+                        "dimension": word[0], "value": word[1], "search": text, "page": page,
+                        "found": len(got), "new_candidates": len(added),
+                        "before": len(results),
+                    }
+                )  # fmt: skip
+                results, capped, diversity_skipped = select()
+                refill_log[-1]["after"] = len(results)
     counts.seller_capped = capped
     diversity: dict[str, tuple[str, float]] = {}
     seller_share: tuple[str, float] | None = None
     if again is not None and results:
         dims = list(dict.fromkeys(["shape", *again.guard_caps]))
+        by_id = {result_id(c.product_id): c for c, _ in ordered}
         tagged_batch: dict[str, Mapping[str, str | None]] = {
-            r.id: tag_of(_candidate_of(r, ordered)) if tag_of else {} for r in results
+            r.id: tag_of(by_id[r.id]) if tag_of and r.id in by_id else {} for r in results
         }
         batch_comp = composition(
             results, tagged_batch, list(dict.fromkeys([*dims, "color_finish"]))
@@ -823,10 +1027,12 @@ def run_query(
         for r in results:
             label = tier_of(r.seller) or "(none)"
             tier_counts[label] = tier_counts.get(label, 0) + 1
+        model_tagged = sum(1 for r in results if book is not None and book.get(r.id) is not None)
         composition_info["batch"] = {
             "size": len(results),
             "distinct_sellers": len(by_seller),
             "tier": dict(sorted(tier_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+            "tag_sources": {"model": model_tagged, "keyword": len(results) - model_tagged},
             **batch_comp,
             "seller": dict(sorted(by_seller.items(), key=lambda kv: (-kv[1], kv[0]))[:8]),
         }
@@ -840,7 +1046,7 @@ def run_query(
             pool_counts = pool_known.get(dim, {})
             others = {v: n for v, n in pool_counts.items() if v not in (top[0], "(unknown)")}
             detail = (
-                f" The pool of {len(pool)} had {pool_counts.get(top[0], 0)} {top[0]} and "
+                f" The pool of {len(ordered)} had {pool_counts.get(top[0], 0)} {top[0]} and "
                 + (", ".join(f"{n} {v}" for v, n in others.items()) or "nothing else")
                 + f"; {calls} searches were run."
                 if pool_counts
@@ -855,30 +1061,55 @@ def run_query(
                 f"Left out {len(again.dropped_phrasings)} search phrasing(s) to stay within the "
                 f"{again.max_calls}-call cap: {'; '.join(again.dropped_phrasings)}."
             )
-    t_end = time.perf_counter()
+    t_end = clock.now()
+    dd = counts.dedupe or {}
+    filtered_out = counts.no_price + counts.out_of_range + counts.wrong_category
+    explanation = (
+        f"{counts.seen_excluded} seen or rated, {counts.duplicates} duplicates, "
+        f"{filtered_out} filtered out"
+    )
     if again is not None and len(results) < RESULT_COUNT:
         warnings.append(
-            f"Only {len(results)} new results found. Try changing the request."
+            f"Only {len(results)} new results found: {explanation}. Try changing the request."
             if results
-            else "No new results found. Try changing the request."
+            else f"No new results found: {explanation}. Try changing the request."
         )
     elif not results:
         warnings.append("No results matched the filters. Try loosening the price or the wording.")
-    if composition_info:
+    if again is not None:
+        composition_info["shortfall"] = {
+            "wanted": RESULT_COUNT, "got": len(results), "seen_or_rated": counts.seen_excluded,
+            "rated": counts.rated_excluded, "duplicates": counts.duplicates,
+            "filtered_out": filtered_out, "seller_capped": capped, "guarded": diversity_skipped,
+            "explanation": explanation,
+        }  # fmt: skip
+        composition_info["refill"] = refill_log
+        composition_info["dedupe"] = dd
+    if composition_info or again is not None:
         composition_info["serper_calls"] = calls
         composition_info["serper_credits"] = (
             calls * config.serper_credits_per_call if search.name == "serper" else 0
         )
+        composition_info["timings"] = {
+            "target_s": config.shop_target_s,
+            "hard_stop_s": config.shop_hard_stop_s,
+            "searches": round(t_search - t_searches, 3),
+            "rank": round(t_ranked - t_rank, 3),
+            "tagging": round(tag_seconds, 3),
+            "total_in_search": round(t_end - t_start, 3),
+            "stopped_before": stopped[0] if stopped else "",
+        }
     return SearchOutcome(
         query=query,
         results=results,
         counts=counts,
         serper_calls=calls,
         seconds={
-            "parse": round(t_start - started, 3),
+            "parse": round(max(0.0, t_start - started) if started < t_start else 0.0, 3),
             "search": round(t_search - t_start, 3),
-            "rank": round(t_end - t_search, 3),
-            "total": round(t_end - started, 3),
+            "rank": round(t_ranked - t_rank, 3),
+            "tagging": round(tag_seconds, 3),
+            "total": round(t_end - t_start, 3),
         },
         anthropic_usd=round(budget.cost_usd, 6),
         provider_usd=round(budget.provider_cost_usd, 6),
@@ -893,8 +1124,21 @@ def run_query(
         seller_share=seller_share,
         composition=composition_info,
         new_tags=dict(book.new) if book is not None else {},
-        peer_log=list(composition_info.get("peers", [])),
+        peer_log=list(peer_log),
     )
+
+
+def _strongest_value(again: AgainContext) -> tuple[str, str] | None:
+    """The converged value (else the first open value) a refill search can name: (dimension,
+    search words). Only dimensions that have search words (`PHRASE_DIMS`)."""
+    for dim in PHRASE_DIMS:
+        if dim in again.converged and again.converged[dim] != OTHER:
+            return dim, phrase_word(dim, again.converged[dim])
+    for dim in PHRASE_DIMS:
+        values = [v for v in again.open_dims.get(dim, []) if v != OTHER]
+        if values:
+            return dim, phrase_word(dim, values[0])
+    return None
 
 
 def _candidate_of(
@@ -906,19 +1150,28 @@ def _candidate_of(
     raise KeyError(result.product_id)
 
 
-def pool_composition(pool: list[SearchCandidate], again: AgainContext) -> dict[str, Any]:
-    """The pool's makeup for the trace: its size, the tag counts by shape and finish (a result with
-    no tag is "(unknown)"), and the seller counts."""
+def _merged_tags(c: SearchCandidate, again: AgainContext) -> tuple[Mapping[str, str | None], str]:
+    """A candidate's tags and where they came from: the model's (cached by result id), else the
+    title keyword reader's (`keyword`; empty when the title says nothing)."""
     book = again.tag_book
+    got = book.get(result_id(c.product_id)) if book is not None else None
+    if got is not None:
+        return got, "model"
+    return title_tags(c.title), "keyword"
+
+
+def pool_composition(
+    pool: list[SearchCandidate], again: AgainContext, tag_top_n: int = 0
+) -> dict[str, Any]:
+    """The pool's makeup for the trace: its size, how many candidates carry a model tag and how
+    many only a keyword reading (the guards and the supply step act on both), the tag counts by
+    shape and finish (a result with no tag is "(unknown)"), and the seller counts."""
     tags: dict[str, Mapping[str, str | None]] = {}
+    sources = {"model": 0, "keyword": 0}
     for c in pool:
-        rid = result_id(c.product_id)
-        got = book.get(rid) if book is not None else None
-        tags[rid] = (
-            got
-            if got is not None
-            else ({} if book is not None and not book.failed else title_tags(c.title))
-        )
+        got, source = _merged_tags(c, again)
+        tags[result_id(c.product_id)] = got
+        sources[source] += 1
     fake = [
         ShopResult(
             id=result_id(c.product_id), title=c.title, price=c.price, currency=c.currency,
@@ -933,7 +1186,9 @@ def pool_composition(pool: list[SearchCandidate], again: AgainContext) -> dict[s
         by_seller[c.seller] = by_seller.get(c.seller, 0) + 1
     return {
         "size": len(pool),
-        "tagged": sum(1 for c in pool if book is not None and book.get(result_id(c.product_id))),
+        "tagged": sources["model"],
+        "keyword_tagged": sources["keyword"],
+        "tag_top_n": tag_top_n,
         **comp,
         "seller": dict(sorted(by_seller.items(), key=lambda kv: (-kv[1], kv[0]))[:8]),
     }
@@ -943,9 +1198,10 @@ def minority_values(
     pool: list[SearchCandidate], again: AgainContext, all_values: bool = False
 ) -> list[tuple[str, str, int, int]]:
     """(dimension, value, count, known) for each value of an open dimension that has search words
-    and holds less than `MINORITY_POOL_SHARE` of the pool's tagged candidates (all of them when
-    `all_values`), the rarest first within a dimension, shape first. A pool with fewer than 8
-    tagged candidates for a dimension says nothing."""
+    and holds less than `MINORITY_POOL_SHARE` of the pool's candidates that carry a tag (the
+    model's, else the keyword reader's: a guard or a search can only act on what is tagged), the
+    rarest first within a dimension, shape first. A pool with fewer than 8 tagged candidates for a
+    dimension says nothing. No supply when the model's tagging failed."""
     book = again.tag_book
     if book is None or book.failed:
         return []
@@ -956,8 +1212,8 @@ def minority_values(
             continue
         counts: dict[str, int] = {}
         for c in pool:
-            got = book.get(result_id(c.product_id))
-            value = got.get(dim) if got is not None else None
+            got, _ = _merged_tags(c, again)
+            value = got.get(dim)
             if value:
                 counts[value] = counts.get(value, 0) + 1
         known = sum(counts.values())
@@ -969,13 +1225,22 @@ def minority_values(
     return out
 
 
-def run_search(request: str, search: SearchProvider, config: Config) -> SearchOutcome:
+def run_search(
+    request: str,
+    search: SearchProvider,
+    config: Config,
+    progress: Callable[[str], None] | None = None,
+    clock: Clock | None = None,
+) -> SearchOutcome:
     """Parse `request`, search, filter, rank and cap. Raises `ProviderError` when page 1 fails
     (nothing to show) and `BudgetExceededError` past a cap; page 2 and ranking degrade."""
-    t0 = time.perf_counter()
+    clock = clock or Clock()
+    t0 = clock.now()
     budget = Budget(config)
     warnings: list[str] = []
+    if progress is not None:
+        progress("Reading your request")
     query, _, parse_warning = parse_request(clean_request(request), budget)
     if parse_warning:
         warnings.append(parse_warning)
-    return run_query(query, search, config, budget, warnings, t0)
+    return run_query(query, search, config, budget, warnings, t0, None, clock, progress)

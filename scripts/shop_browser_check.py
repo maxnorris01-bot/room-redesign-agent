@@ -16,12 +16,14 @@ here). `make shop-check` supplies the package with `uv run --with playwright`.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -29,7 +31,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import BrowserContext, Page, Route, sync_playwright
 
-from app.shop.replay import REPLAY_FILE_2, REPLAY_FILE_3, seed_session
+from app.shop.replay import REPLAY_FILE_2, REPLAY_FILE_3, REPLAY_FILE_4, seed_session
 from app.shop.store import SessionStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -237,7 +239,7 @@ def seed_replays(data_dir: str) -> dict[str, str]:
 
 def seed_replays_3(data_dir: str) -> dict[str, str]:
     """The owner's third session, and a copy where the candidate tagging call fails (the mock-only
-    marker sits in a title in each half of the shown results, so the retry in halves fails too)."""
+    marker sits in a title in two of the shown results' batches, so both calls fail)."""
     store = SessionStore(Path(data_dir))
     clean = seed_session(store, replay=REPLAY_FILE_3)
     broken = seed_session(
@@ -249,6 +251,22 @@ def seed_replays_3(data_dir: str) -> dict[str, str]:
         },
     )
     return {"replay3": clean.session_id, "tagfail3": broken.session_id}
+
+
+def seed_replays_4(data_dir: str) -> dict[str, str]:
+    """The owner's fourth session, and a copy where the model's tagging answers come back empty for
+    two of the shown results' batches (a mock-only marker in two titles)."""
+    store = SessionStore(Path(data_dir))
+    clean = seed_session(store, replay=REPLAY_FILE_4)
+    broken = seed_session(
+        store,
+        replay=REPLAY_FILE_4,
+        shown_titles={
+            "E1": "Rectangular Walnut Coffee Table MOCK_TAGS_EMPTY",
+            "E40": "Round Oak Coffee Table MOCK_TAGS_EMPTY",
+        },
+    )
+    return {"replay4": clean.session_id, "empty4": broken.session_id}
 
 
 def open_session(browser: Any, base: str, session_id: str, width: int = 1280) -> tuple[Any, Page]:
@@ -535,7 +553,10 @@ def run_replay_3(
     import re as _re
 
     m = _re.search(r"candidates tagged (\d+) of (\d+)", foot)
-    check(m is not None and m.group(1) == m.group(2), "tag coverage is complete")
+    check(
+        m is not None and 60 <= int(m.group(1)) <= int(m.group(2)),
+        "the top 60 candidates by rank are tagged by the model",
+    )
     page.screenshot(path=str(shots / "22-replay3-chips.png"))
 
     page.locator("#why-toggle").click()
@@ -574,20 +595,146 @@ def run_replay_3(
     wait_for_results(page)
     status = page.inner_text("#status")
     check("Candidate tagging failed:" in status, f"the page shows the real reason: {status[:140]}")
-    check("cut off at the" in status and "token limit" in status, "the reason names the cut-off")
+    check("no text content" in status, "the reason names the empty answer")
     check("warm wood" not in page.inner_text("#pref-chips"), "no attribute chip without tags")
     page.locator("#why-toggle").click()
     why = page.locator("#why").inner_text()
     check(
-        "stop max_tokens" in why and "not valid JSON" in why, "the tagging calls are in the trace"
+        "Tagging call 1" in why and "stop max_tokens" in why, "the tagging calls are in the trace"
     )
-    check("(retry)" in why, "the retry in halves is shown")
+    check("error: llm.shop_candidate_tags" in why, "each failed call says why")
     page.screenshot(path=str(shots / "26-replay3-tagging-failed.png"), full_page=True)
     context.close()
 
 
+def run_replay_4(
+    browser: Any, base: str, shots: Path, ids: dict[str, str], console_errors: list[str]
+) -> None:
+    print("the owner's fourth session (46 ratings, duplicate listings), replayed through the page")
+    context, page = open_session(browser, base, ids["replay4"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    # the mock answers in milliseconds, so the first two polls are replaced by running phases to see
+    # what the page does with a phase text; the third is the real answer
+    phases = ["Reading your ratings", "Tagging results"]
+    polled = {"n": 0}
+
+    def fake_phase(route: Route) -> None:
+        if polled["n"] < len(phases):
+            body = json.dumps(
+                {"state": "running", "phase": phases[polled["n"]], "kind": "shop_again"}
+            )
+            polled["n"] += 1
+            route.fulfill(status=200, content_type="application/json", body=body)
+        else:
+            route.continue_()
+
+    page.route("**/api/job/**", fake_phase)
+    request_chips = chips(page)
+    before = title_texts(page)
+    page.click("#shop-again")
+    page.locator("#status").filter(has_text="Reading your ratings").wait_for(timeout=10000)
+    check(page.locator("#spinner").is_visible(), "the spinner is shown while the job runs")
+    check("Reading your ratings" in page.inner_text("#status"), "the first phase is shown")
+    page.screenshot(path=str(shots / "27-replay4-spinner-phase.png"))
+    page.locator("#status").filter(has_text="Tagging results").wait_for(timeout=10000)
+    check("Tagging results" in page.inner_text("#status"), "the next phase replaces it")
+    wait_for_results(page)
+    page.locator("#prefs").wait_for(state="visible")
+    status = page.inner_text("#status")
+    check(status == "24 new results.", f"the banner is one short sentence: {status!r}")
+    check(len(status) < 120 and status.count(". ") == 0, "and not a paragraph")
+    check(page.locator("#status-details").is_visible(), "with a details link")
+    wait_pref_chip(page, "seller: West Elm")
+    check(
+        "retailers like" not in page.inner_text("#pref-chips"),
+        "no retailer tier chip (22 dislikes in the tier: the net rule)",
+    )
+    wait_pref_chip(page, "shape: open")
+    check(chips(page) == request_chips, "the request chips are unchanged")
+    page.screenshot(path=str(shots / "28-replay4-short-banner.png"))
+    batch = title_texts(page)
+    check(len(batch) == 24 and len(set(batch)) == 24, "24 distinct titles in the grid")
+    check(not set(batch) & set(before), "nothing already shown comes back")
+    imgs = page.locator("#grid .card .thumb img")
+    srcs = [imgs.nth(i).get_attribute("src") for i in range(imgs.count())]
+    check(len(srcs) == len(set(srcs)), f"no thumbnail appears twice ({len(srcs)} thumbnails)")
+    check(
+        len(
+            {
+                (t.lower(), p)
+                for t, p in zip(
+                    batch, page.locator("#grid .card .price").all_inner_texts(), strict=True
+                )
+            }
+        )
+        == 24,
+        "no title and price appears twice",
+    )
+    foot = lookups_text(page)
+    print("   footer:", foot)
+    check(
+        "searches " in foot and "preferences " in foot and "rank " in foot,
+        "footer shows phase timings",
+    )
+    check("candidates tagged" in foot, "and the candidates tagged")
+    page.locator("#status-details").click()
+    why = page.locator("#why")
+    check(why.is_visible(), "the details link opens How I decided")
+    text = why.inner_text()
+    check(
+        re.search(r"Time: searches [\d.]+ s, preferences [\d.]+ s", text) is not None,
+        "phase timings are in the trace",
+    )
+    check("aim 30.0 s, hard stop 45.0 s" in text, "with the target and the hard stop")
+    check(
+        re.search(
+            r"Candidates \d+: kept \d+; seen before: \d+ shown, \d+ rated; duplicates \d+", text
+        )
+        is not None,
+        "de-duplication counts are in the trace",
+    )
+    check("same product id" in text, "per rule")
+    check("Peer retailer Room & Board" in text, "the peers searched are in the trace")
+    check("Tags behind the batch:" in text, "and where the batch's tags came from")
+    page.screenshot(path=str(shots / "29-replay4-trace.png"), full_page=True)
+    page.set_viewport_size({"width": 390, "height": 844})
+    check(
+        page.evaluate("document.documentElement.scrollWidth - window.innerWidth") <= 1,
+        "no sideways scroll at 390 px",
+    )
+    page.screenshot(path=str(shots / "31-replay4-mobile.png"))
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.locator("#why-toggle").click()
+    page.screenshot(path=str(shots / "30-replay4-grid.png"))
+    context.close()
+
+    print("the same session with the model's tagging answers coming back empty")
+    context, page = open_session(browser, base, ids["empty4"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    t0 = time.monotonic()
+    page.click("#shop-again")
+    wait_for_results(page)
+    took = time.monotonic() - t0
+    status = page.inner_text("#status")
+    check(took < 20, f"it still completes quickly ({took:.1f} s)")
+    check(len(title_texts(page)) == 24, "and shows a full batch")
+    check(
+        "Candidate tagging failed:" in status and "no text content" in status,
+        f"the reason shows: {status[:150]}",
+    )
+    check(status.count(". ") <= 2, "in one or two short sentences")
+    page.screenshot(path=str(shots / "32-replay4-tagging-empty.png"))
+    context.close()
+
+
 def run_checks(
-    base: str, shots: Path, replay_ids: dict[str, str], base3: str, ids3: dict[str, str]
+    base: str,
+    shots: Path,
+    replay_ids: dict[str, str],
+    base3: str,
+    ids3: dict[str, str],
+    base4: str,
+    ids4: dict[str, str],
 ) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
@@ -619,9 +766,7 @@ def run_checks(
             page.fill("#request", COFFEE)
             page.click("#search-btn")
             page.locator("#spinner").wait_for(state="visible")
-            check(
-                page.inner_text("#status") == "Searching, usually about 10 seconds", "loading text"
-            )
+            check(page.inner_text("#status") == "Searching", "loading text")
             page.screenshot(path=str(shots / "02-loading.png"))
             release()
             wait_for_results(page)
@@ -849,6 +994,7 @@ def run_checks(
 
             run_replay(browser, base, shots, replay_ids, console_errors)
             run_replay_3(browser, base3, shots, ids3, console_errors)
+            run_replay_4(browser, base4, shots, ids4, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -892,16 +1038,23 @@ def stop_server(server: Any) -> None:
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     servers: list[Any] = []
-    with tempfile.TemporaryDirectory() as data_dir, tempfile.TemporaryDirectory() as data_dir3:
+    with (
+        tempfile.TemporaryDirectory() as data_dir,
+        tempfile.TemporaryDirectory() as data_dir3,
+        tempfile.TemporaryDirectory() as data_dir4,
+    ):
         try:
             first, port = start_server(data_dir)
             servers.append(first)
             # the third replay's server serves its authored candidate pool (mock only)
             third, port3 = start_server(data_dir3, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_3})
             servers.append(third)
+            fourth, port4 = start_server(data_dir4, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_4})
+            servers.append(fourth)
             run_checks(
                 f"http://127.0.0.1:{port}/", OUT, seed_replays(data_dir),
                 f"http://127.0.0.1:{port3}/", seed_replays_3(data_dir3),
+                f"http://127.0.0.1:{port4}/", seed_replays_4(data_dir4),
             )  # fmt: skip
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

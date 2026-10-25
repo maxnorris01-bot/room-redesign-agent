@@ -44,16 +44,15 @@ from app.shop.server import STATIC_DIR, ShopApp
 from app.shop.service import ApiError, ShopService
 from app.shop.store import Session, SessionStore
 from app.thumbnails import ThumbResult
-from test_shop import (  # noqa: F401  (the autouse guard must be imported to apply here)
+from test_shop import (
     FakeLookup,
     FakeSearch,
     RouterClient,
-    _loopback_only,
     cand,
     config,
     make_service,
     query,
-    retailer,
+    rank_call,  # noqa: F401  (the autouse guard must be imported to apply here)
     use_client,
 )
 
@@ -503,7 +502,7 @@ def test_a_guess_never_reaches_the_ranker_as_a_like(
     svc.rate(sid, first["search"]["results"][0]["id"], "like")  # (a loved one would drop the guess)
     search.sequence = [[cand(f"n{i}", 50.0, title=f"Wood Table N{i}") for i in range(30)]]
     again = svc.shop_again(sid)
-    rank_text = client.calls[-1]["messages"][0]["content"]
+    rank_text = rank_call(client)["messages"][0]["content"]
     assert "Style: none" in rank_text  # the guess is not listed as a style
     guess_line = next(x for x in rank_text.splitlines() if x.startswith("Style guessed"))
     assert guess_line.endswith("industrial") and "do not treat as likes" in guess_line
@@ -784,7 +783,7 @@ def test_extra_pages_stop_once_the_pool_reaches_sixty(
     search.sequence = pages_of(20)
     again = svc.shop_again(sid)
     assert len(search.calls) - calls_before == 3  # three pages of 20: 60 candidates, then stop
-    rank_text = client.calls[-1]["messages"][0]["content"]
+    rank_text = rank_call(client)["messages"][0]["content"]
     pool_lines = [x for x in rank_text.splitlines() if x.startswith("- id: ")]
     assert len(pool_lines) == 60 and len(again["search"]["results"]) == 24
     assert again["search"]["serper_calls"] == 3 and again["search"]["serper_credits"] == 6
@@ -802,7 +801,7 @@ def test_a_thin_pool_uses_all_four_serper_calls_and_never_a_fifth(
     assert again["search"]["serper_credits"] == 8
     assert again["search"]["provider_usd"] == pytest.approx(0.008)
     assert len(search.sequence) == 3  # four of the seven pages were fetched
-    rank_text = client.calls[-1]["messages"][0]["content"]
+    rank_text = rank_call(client)["messages"][0]["content"]
     assert len([x for x in rank_text.splitlines() if x.startswith("- id: ")]) == 48
     assert len(again["search"]["results"]) == 24
 
@@ -821,7 +820,7 @@ def test_the_rank_pool_is_capped_at_eighty(tmp_path: Path, monkeypatch: pytest.M
         svc.rate(sid, r["id"], "love")
     search.sequence = pages_of(45, 4)  # more candidates than the ranker is shown
     svc.shop_again(sid)
-    rank_text = client.calls[-1]["messages"][0]["content"]
+    rank_text = rank_call(client)["messages"][0]["content"]
     assert len([x for x in rank_text.splitlines() if x.startswith("- id: ")]) == 80
 
 
@@ -1069,7 +1068,7 @@ def test_the_live_cost_text_says_only_open_looks_things_up() -> None:
     text = "\n".join(module.cost_lines(config()))
     assert "none when you love a result" in text and "Only Open runs one SerpApi lookup" in text
     assert "Or Love" not in text and "or Love" not in text
-    assert "Shop Again: up to 4 Serper calls (8 credits, $0.0080)" in text
+    assert "Shop Again: 4 Serper calls normally, up to 9 (18 credits, $0.0180)" in text
     assert "16 small product photos" in text and "up to 80 candidates" in text
     for doc in ("SPEC.md", "docs/adr/0012-two-modes-shop-first.md"):
         body = (ROOT / doc).read_text()
@@ -1127,8 +1126,8 @@ def test_cost_numbers_for_a_full_shop_again(tmp_path: Path) -> None:
     svc = mock_service(tmp_path)
     sid, first = brass_scenario(svc)
     found = svc.shop_again(sid)["search"]
-    # four calls for the phrasings, up to two more when an open dimension's minority value is thin
-    assert 4 <= found["serper_calls"] <= 6
+    # four calls for the phrasings, then peer searches, supply and refill, up to nine in all
+    assert 4 <= found["serper_calls"] <= 9
     assert found["serper_credits"] == 2 * found["serper_calls"]
     assert found["provider_usd"] == pytest.approx(0.002 * found["serper_calls"])
     assert 0 < found["anthropic_usd"] < 0.01  # a preference call (with images) plus a rank call

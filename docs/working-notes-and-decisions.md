@@ -126,6 +126,18 @@ this choice over the alternatives. Note what's still open or deferred within it,
   the table); a retailer-tier cap and the tier quota use the tier's like share; peers rotate and only a peer
   that found something is asked again; the mock serves a recorded pool for one replay through
   `APP_SHOP_MOCK_POOL`. See `docs/sessions/2026-10-24-shop-mode-stage-2f.md`.
+- **2026-10-24, stage 2g: bound the cost, speed and duplicates of a Shop Again (ADR 0012 amended).** The
+  fourth live session took 99 s: tagging calls failed 8 of 10 times and every failure retried in halves,
+  all 265 candidates were tagged for 24 shown, and duplicates reached the grid. Decisions: a forced tool
+  call in batches of 40 with one retry and no cascade; a tagging budget of 15 s, a target of 30 s and a hard
+  stop at 45 s; the model tags only the top 60 by rank (keywords for the rest); searches and the preference
+  call run concurrently; slow actions are background jobs the page polls; one de-duplication and one seller
+  canonicalization everywhere. My choices where the brief was silent: the rank call runs BEFORE tagging, so
+  supplied candidates are appended unranked; a job id is readable only with its session id and a new
+  session's first search by id alone; one job per session and 8 in all; the tool schema is `strict` and a
+  rejection falls back to the rows format on the one retry; a Shop Again gets its own step cap (40);
+  replay 4 has 8 positive items (2 loved, 6 liked) and 38 dislikes, not 36, so the shape numbers are 67/33.
+  See `docs/sessions/2026-10-24-shop-mode-stage-2g.md`.
 
 ## See also
 

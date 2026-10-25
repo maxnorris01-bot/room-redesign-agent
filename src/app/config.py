@@ -122,6 +122,17 @@ class Config:
     # stages 2e and 2f: the most Serper calls one Shop Again may make in all, counting its
     # phrasings (up to the cap above), peer retailer searches and targeted supply searches
     shop_again_max_serper_calls_total: int = 9
+    # stage 2g: latency and tagging budgets of a Shop Again (seconds), what is tagged, how
+    # searches run
+    shop_target_s: float = 30.0  # the time a Shop Again aims for (shown in the trace)
+    shop_hard_stop_s: float = 45.0  # past this, finish with what exists and say so
+    shop_tag_budget_s: float = (
+        15.0  # all candidate tagging together; what is tagged by then is used
+    )
+    shop_tag_call_timeout_s: float = 12.0  # one tagging request
+    shop_tag_top_n: int = 60  # candidates tagged by the model: the top N untagged by rank
+    shop_search_workers: int = 4  # concurrent Serper searches (4 to 5)
+    shop_max_steps: int = 40  # model calls one Shop Again may make (tagging batches add up)
     # Serper bills credits, not calls: a shopping call took 2 credits in the live test. USD per
     # credit is the owner's figure from the live test (about $0.001), not a documented price.
     # Shop Mode costs Serper from these two; the room pipeline still uses serper_usd_per_query.
@@ -172,6 +183,10 @@ class Config:
             raise ValueError("APP_SHOP_AGAINS_PER_SESSION must be >= 0")
         if self.shop_again_max_serper_calls < 1:
             raise ValueError("APP_SHOP_AGAIN_MAX_SERPER_CALLS must be >= 1")
+        if not 0 < self.shop_target_s <= self.shop_hard_stop_s:
+            raise ValueError("APP_SHOP_TARGET_S must be positive and at most the hard stop")
+        if self.shop_tag_top_n < 0 or not 1 <= self.shop_search_workers <= 8:
+            raise ValueError("APP_SHOP_TAG_TOP_N must be >= 0 and APP_SHOP_SEARCH_WORKERS 1 to 8")
         if self.shop_again_max_serper_calls_total < self.shop_again_max_serper_calls:
             raise ValueError("APP_SHOP_AGAIN_MAX_SERPER_CALLS_TOTAL must be >= the normal cap")
         if self.serper_credits_per_call < 0 or self.serper_usd_per_credit < 0:
@@ -260,6 +275,16 @@ class Config:
             ),
             shop_again_max_serper_calls=int(
                 os.environ.get("APP_SHOP_AGAIN_MAX_SERPER_CALLS", cls.shop_again_max_serper_calls)
+            ),
+            shop_target_s=float(os.environ.get("APP_SHOP_TARGET_S", cls.shop_target_s)),
+            shop_hard_stop_s=float(os.environ.get("APP_SHOP_HARD_STOP_S", cls.shop_hard_stop_s)),
+            shop_tag_budget_s=float(os.environ.get("APP_SHOP_TAG_BUDGET_S", cls.shop_tag_budget_s)),
+            shop_tag_call_timeout_s=float(
+                os.environ.get("APP_SHOP_TAG_CALL_TIMEOUT_S", cls.shop_tag_call_timeout_s)
+            ),
+            shop_tag_top_n=int(os.environ.get("APP_SHOP_TAG_TOP_N", cls.shop_tag_top_n)),
+            shop_search_workers=int(
+                os.environ.get("APP_SHOP_SEARCH_WORKERS", cls.shop_search_workers)
             ),
             shop_again_max_serper_calls_total=int(
                 os.environ.get(

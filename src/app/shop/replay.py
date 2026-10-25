@@ -19,6 +19,9 @@ REPLAY_DIR = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "shop"
 REPLAY_FILE = "owner_session_replay.json"  # the first real session (West Elm)
 REPLAY_FILE_2 = "owner_session_replay_2.json"  # the second (Home Depot, 91% rectangular batch)
 REPLAY_FILE_3 = "owner_session_replay_3.json"  # the third (West Elm, design retailer peers)
+REPLAY_FILE_4 = (
+    "owner_session_replay_4.json"  # the fourth (46 ratings, duplicates, tagging failures)
+)
 REPLAY_PATH = REPLAY_DIR / REPLAY_FILE
 
 

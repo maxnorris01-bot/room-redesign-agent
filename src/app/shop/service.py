@@ -6,11 +6,14 @@ a URL or a key (provider errors name the provider and the status only).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from app.config import BudgetExceededError, Config
 from app.shop import store as store_mod
 from app.shop.again import run_shop_again
+from app.shop.clock import Clock
+from app.shop.jobs import JobError, JobManager
 from app.shop.models import (
     MAX_COMMENT_CHARS,
     MAX_REQUEST_CHARS,
@@ -54,6 +57,29 @@ class ApiError(Exception):
         self.message = message
 
 
+def headline(record: SearchRecord) -> str:
+    """The one short sentence above the grid for a Shop Again (everything else stays in the trace):
+    how many results, why fewer than 24 if so, and the tagging failure reason only when it failed.
+    Empty for a typed search (its own short messages are shown as they are)."""
+    if record.kind != "shop_again":
+        return ""
+    n = len(record.result_ids)
+    batch = record.trace.get("batch", {}) if isinstance(record.trace, dict) else {}
+    why = str(batch.get("shortfall", {}).get("explanation", ""))
+    text = (
+        f"{n} new results." if n >= 24 else f"Only {n} new results" + (f" ({why})." if why else ".")
+    )
+    reason = str(record.tagging.get("tag_reason", ""))
+    if reason:
+        short = reason if len(reason) <= 80 else reason[:77].rstrip() + "..."
+        text += f" Candidate tagging failed: {short}"
+        text += "" if short.endswith(".") else "."
+    stopped = str(batch.get("timings", {}).get("stopped_before", ""))
+    if stopped:
+        text += f" Stopped early before {stopped}."
+    return text
+
+
 class ShopService:
     def __init__(
         self,
@@ -62,7 +88,11 @@ class ShopService:
         search: SearchProvider,
         lookup: ProductLookup,
         thumbnailer: Thumbnailer | None | _Default = DEFAULT,
+        clock: Clock | None = None,
+        jobs: JobManager | None = None,
     ) -> None:
+        self.clock = clock or Clock()
+        self.jobs = jobs or JobManager(self.clock)
         self.thumbnailer: Thumbnailer | None = (
             build_thumbnailer(config) if isinstance(thumbnailer, _Default) else thumbnailer
         )
@@ -137,6 +167,7 @@ class ShopService:
                 ),
                 "dropped_phrasings": last.dropped_phrasings,
                 "trace": last.trace,
+                "headline": headline(last),
                 "tagging": last.tagging,
                 "queries": last.queries,
                 "alignment": (
@@ -182,7 +213,8 @@ class ShopService:
 
     # ---- search ---------------------------------------------------------------------------
 
-    def search(self, session_id: Any, request: Any) -> dict[str, Any]:
+    def _prepare_search(self, session_id: Any, request: Any) -> tuple[str, str | None]:
+        """Validate a search request; returns (the cleaned request, the session id or None)."""
         if not isinstance(request, str):
             raise ApiError(400, "request must be text")
         text = request.strip()
@@ -194,15 +226,22 @@ class ShopService:
         if not cleaned:
             raise ApiError(400, "type what you are looking for")
         if session_id in (None, ""):
-            session_id = None  # created after the search succeeds, so a failure leaves no file
-        else:
-            session = self._load(session_id)
-            if len(session.searches) >= MAX_SEARCHES_PER_SESSION:
-                raise ApiError(
-                    429, f"search limit for this session reached ({MAX_SEARCHES_PER_SESSION})"
-                )
+            return cleaned, None  # created after the search succeeds, so a failure leaves no file
+        session = self._load(session_id)
+        if len(session.searches) >= MAX_SEARCHES_PER_SESSION:
+            raise ApiError(
+                429, f"search limit for this session reached ({MAX_SEARCHES_PER_SESSION})"
+            )
+        assert isinstance(session_id, str)
+        return cleaned, session_id
+
+    def _do_search(
+        self, cleaned: str, session_id: str | None, progress: Callable[[str], None] | None = None
+    ) -> dict[str, Any]:
         try:
-            outcome = run_search(cleaned, self.search_provider, self.config)
+            outcome = run_search(
+                cleaned, self.search_provider, self.config, progress=progress, clock=self.clock
+            )
         except ProviderError as exc:
             raise ApiError(502, str(exc)) from None
         except BudgetExceededError as exc:
@@ -215,6 +254,45 @@ class ShopService:
         with self.store.transaction(session_id) as session:
             self._record(session, cleaned, outcome)
             return self._view(session)
+
+    def search(self, session_id: Any, request: Any) -> dict[str, Any]:
+        cleaned, sid = self._prepare_search(session_id, request)
+        return self._do_search(cleaned, sid)
+
+    def start_search(self, session_id: Any, request: Any) -> dict[str, Any]:
+        """Start a search as a background job: `{"job_id": ...}` (poll `job_status`)."""
+        cleaned, sid = self._prepare_search(session_id, request)
+        return {
+            "job_id": self._start("search", sid, lambda say: self._do_search(cleaned, sid, say))
+        }
+
+    def _start(
+        self,
+        kind: str,
+        session_id: str | None,
+        work: Callable[[Callable[[str], None]], dict[str, Any]],
+    ) -> str:
+        try:
+            return self.jobs.start(session_id, kind, work, self._job_failure)
+        except JobError as exc:
+            raise ApiError(exc.status, exc.message) from None
+
+    @staticmethod
+    def _job_failure(exc: Exception) -> tuple[int, str]:
+        if isinstance(exc, ApiError):
+            return exc.status, exc.message
+        return 500, "Something went wrong; try again"
+
+    def job_status(self, job_id: Any, session_id: Any) -> dict[str, Any]:
+        """The state of a background job (see `app.shop.jobs`): 404 for an unknown job id or a
+        job that belongs to another session."""
+        if not isinstance(job_id, str):
+            raise ApiError(404, "unknown job")
+        sid = session_id if isinstance(session_id, str) and session_id else None
+        try:
+            return self.jobs.status(job_id, sid)
+        except JobError as exc:
+            raise ApiError(exc.status, exc.message) from None
 
     @staticmethod
     def _record(session: Session, request: str, outcome: SearchOutcome, note: str = "") -> None:
@@ -317,10 +395,9 @@ class ShopService:
 
     # ---- shop again and preferences -------------------------------------------------------
 
-    def shop_again(self, session_id: Any) -> dict[str, Any]:
-        """A fresh set of results shaped by the ratings (see `app.shop.again`)."""
+    def _prepare_again(self, session_id: Any) -> Session:
+        """Validate a Shop Again request and return the session it will run on."""
         session = self._load(session_id)
-        assert isinstance(session_id, str)
         if not any(rec.rating is not None for rec in session.ratings.values()):
             raise ApiError(400, "Rate a few results first")
         if not any(r.kind == "search" for r in session.searches):
@@ -330,9 +407,14 @@ class ShopService:
                 429,
                 f"Shop Again limit reached ({self.config.shop_agains_per_session} per session)",
             )
+        return session
+
+    def _do_again(
+        self, session_id: str, session: Session, progress: Callable[[str], None] | None = None
+    ) -> dict[str, Any]:
         try:
             outcome, profile, query = run_shop_again(
-                session, self.search_provider, self.config, self.thumbnailer
+                session, self.search_provider, self.config, self.thumbnailer, self.clock, progress
             )
         except ProviderError as exc:
             raise ApiError(502, str(exc)) from None
@@ -360,6 +442,22 @@ class ShopService:
             self._record(live, live.searches[-1].request if live.searches else "", outcome,
                          note=profile_summary(profile))  # fmt: skip
             return self._view(live)
+
+    def shop_again(self, session_id: Any) -> dict[str, Any]:
+        """A fresh set of results shaped by the ratings (see `app.shop.again`)."""
+        session = self._prepare_again(session_id)
+        assert isinstance(session_id, str)
+        return self._do_again(session_id, session)
+
+    def start_shop_again(self, session_id: Any) -> dict[str, Any]:
+        """Start a Shop Again as a background job: `{"job_id": ...}` (poll `job_status`)."""
+        session = self._prepare_again(session_id)
+        assert isinstance(session_id, str)
+        return {
+            "job_id": self._start(
+                "shop_again", session_id, lambda say: self._do_again(session_id, session, say)
+            )
+        }
 
     def remove_preference(self, session_id: Any, kind: Any, phrase: Any) -> dict[str, Any]:
         """Delete one preference chip; its phrase is never added back by a later merge."""

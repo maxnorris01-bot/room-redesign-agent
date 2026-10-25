@@ -423,6 +423,7 @@ _STATUS_HELP = {
 
 class _HttpProvider:
     name = "provider"
+    thread_safe = True  # one shared httpx client: calls may run concurrently
 
     def __init__(self, api_key: str, client: httpx.Client | None = None) -> None:
         if not api_key:

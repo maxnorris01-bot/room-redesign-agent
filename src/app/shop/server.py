@@ -3,7 +3,8 @@
 `ShopApp.handle` is pure (method, path, headers, body in; status, headers, body out) so it is
 tested without sockets; `make_server` wraps it in `ThreadingHTTPServer`.
 
-Routes: GET /, GET /static/<file>, GET /api/session, POST /api/search, /api/rate, /api/resolve.
+Routes: GET /, GET /static/<file>, GET /api/session, GET /api/job/<id>, POST /api/search and
+/api/shop-again (each starts a background job and answers 202 with its id), /api/rate, /api/resolve.
 
 Defences (the server only listens locally, but any web page in the visitor's browser could still
 try to reach it): the Host header must name this server (DNS rebinding), a present Origin must be
@@ -36,6 +37,7 @@ API_PATHS = {
     "/api/preference/remove", "/api/preference/pin",
 }  # fmt: skip
 POST_PATHS = API_PATHS - {"/api/session"}
+JOB_PREFIX = "/api/job/"  # GET /api/job/<id>?session=<session id>
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src https:; "
     "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -99,6 +101,13 @@ class ShopApp:
             if path == "/api/session":
                 ids = parse_qs(parts.query).get("id", [])
                 return json_response(200, self.service.session_view(ids[0] if ids else None))
+            if path.startswith(JOB_PREFIX):
+                owner = parse_qs(parts.query).get("session", [""])[0]
+                try:
+                    status = self.service.job_status(path[len(JOB_PREFIX) :], owner)
+                except ApiError as exc:
+                    return error_response(exc.status, exc.message)
+                return json_response(200, status)
             if path in POST_PATHS:
                 return Response(405, b'{"error": "method not allowed"}', headers={"Allow": "POST"})
             return error_response(404, "not found")
@@ -122,7 +131,7 @@ class ShopApp:
             return error_response(400, "body must be a JSON object")
         try:
             if path == "/api/search":
-                result = self.service.search(data.get("session_id"), data.get("request"))
+                result = self.service.start_search(data.get("session_id"), data.get("request"))
             elif path == "/api/rate":
                 result = self.service.rate(
                     data.get("session_id"),
@@ -131,7 +140,7 @@ class ShopApp:
                     data["comment"] if "comment" in data else UNSET,
                 )
             elif path == "/api/shop-again":
-                result = self.service.shop_again(data.get("session_id"))
+                result = self.service.start_shop_again(data.get("session_id"))
             elif path == "/api/preference/remove":
                 result = self.service.remove_preference(
                     data.get("session_id"), data.get("kind"), data.get("phrase")
@@ -142,6 +151,8 @@ class ShopApp:
                 result = self.service.resolve(data.get("session_id"), data.get("result_id"))
         except ApiError as exc:
             return error_response(exc.status, exc.message)
+        if path in ("/api/search", "/api/shop-again"):
+            return json_response(202, result)  # a job was started: poll /api/job/<id>
         return json_response(200, result)
 
 

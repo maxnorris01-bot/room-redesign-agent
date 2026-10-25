@@ -55,7 +55,24 @@ REQUEST_TIMEOUT_S = 120.0
 
 
 class LLMOutputError(RuntimeError):
-    """The model's response was unusable (refusal, truncation, or malformed JSON)."""
+    """The model's response was unusable (refusal, truncation, or malformed JSON).
+
+    Carries what is known about the response, so a caller can log it: `stop_reason`, the content
+    `block_types` and the `cost_usd` of the request (a failed call still bills).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stop_reason: str = "",
+        block_types: tuple[str, ...] = (),
+        cost_usd: float = 0.0,
+    ) -> None:
+        super().__init__(message)
+        self.stop_reason = stop_reason
+        self.block_types = block_types
+        self.cost_usd = cost_usd
 
 
 class Budget:
@@ -112,6 +129,8 @@ class Completion:
     cost_usd: float = 0.0
     steps: int = 0
     stop_reason: str = ""  # the last request's stop reason (set on every return)
+    block_types: tuple[str, ...] = ()  # content block types of the last response
+    tool_input: dict[str, Any] | None = None  # the forced tool's input, when a tool was used
     # Seconds from sending the first request to its first streamed content delta; None when the
     # call was not streamed. First request only (a pause_turn resume does not reset it).
     time_to_first_token_s: float | None = None
@@ -153,7 +172,11 @@ def _inspect_tool_blocks(content: list[Any]) -> tuple[list[dict[str, Any]], set[
 
 
 def _create_message(
-    client: _MessagesClient, config: Config, params: dict[str, Any], stream: bool
+    client: _MessagesClient,
+    config: Config,
+    params: dict[str, Any],
+    stream: bool,
+    timeout_s: float | None = None,
 ) -> tuple[Message, float | None]:
     """Issue one request, streaming it on the live client when `stream` is set.
 
@@ -167,6 +190,9 @@ def _create_message(
     "First token" is the first `content_block_delta` event of any kind: with thinking on, the
     visible text may start later, so this is a lower bound on when the user could see output.
     """
+    if timeout_s is not None and config.llm_mode == "live":
+        # one request, one deadline, no hidden SDK retries: the caller owns the retry decision
+        client = cast(_MessagesClient, client.with_options(timeout=timeout_s, max_retries=0))  # type: ignore[attr-defined]
     if stream and config.llm_mode == "live":
         started = time.perf_counter()
         first: float | None = None
@@ -194,11 +220,18 @@ def complete(
     effort: str | None = None,
     stream: bool = False,
     keep_truncated: bool = False,
+    tool_choice: dict[str, Any] | None = None,
+    temperature: float | None = None,
+    timeout_s: float | None = None,
 ) -> Completion:
     """Run one logical model call (resuming `pause_turn`) and return the final text.
 
     `keep_truncated=True` returns whatever text a call that ended with `max_tokens` produced (with
     `stop_reason` set) instead of raising, for callers that can use a partial answer.
+
+    `tool_choice` forces a tool call (`{"type": "tool", "name": ...}`; `tools` lists the tool): the
+    tool's input comes back in `Completion.tool_input` and `text` is its JSON. `temperature` is sent
+    only when given. `timeout_s` is a per-request deadline on the live client (no SDK retries).
 
     Pass `stream=True` for calls that can run long (research/tool-heavy calls) - see
     `_create_message`. Leave it `False` (default) for short calls with nothing to fix.
@@ -230,6 +263,10 @@ def complete(
         }
         if tools:
             params["tools"] = tools
+        if tool_choice is not None:
+            params["tool_choice"] = tool_choice
+        if temperature is not None:
+            params["temperature"] = temperature
         if output_config:
             params["output_config"] = output_config
 
@@ -242,7 +279,7 @@ def complete(
         ) as rec:
             step = budget.start_step()
             rec["step"] = step
-            response, ttft = _create_message(client, config, params, stream)
+            response, ttft = _create_message(client, config, params, stream, timeout_s)
             if done.steps == 0:
                 done.time_to_first_token_s = ttft
             searches, urls = _inspect_tool_blocks(list(response.content))
@@ -274,17 +311,44 @@ def complete(
             messages.append({"role": "assistant", "content": response.content})
             continue
         done.stop_reason = str(response.stop_reason)
+        done.block_types = tuple(str(getattr(b, "type", "?")) for b in response.content)
         if response.stop_reason == "refusal" or (
             response.stop_reason == "max_tokens" and not keep_truncated
         ):
-            raise LLMOutputError(f"{span_name}: response ended with {response.stop_reason}")
+            raise LLMOutputError(
+                f"{span_name}: response ended with {response.stop_reason}",
+                stop_reason=done.stop_reason,
+                block_types=done.block_types,
+                cost_usd=done.cost_usd,
+            )
+        if tool_choice is not None:
+            blocks: list[Any] = list(response.content)
+            used = next(
+                (
+                    b
+                    for b in blocks
+                    if getattr(b, "type", "") == "tool_use"
+                    and getattr(b, "name", "") == tool_choice.get("name")
+                ),
+                None,
+            )
+            if used is not None and isinstance(getattr(used, "input", None), dict):
+                done.tool_input = dict(used.input)
+                done.text = json.dumps(done.tool_input)
+                done.retrieved_urls = retrieved
+                return done
         # If every call here passes a schema, structured output guarantees the *first* text block
         # is the valid JSON - take only that one. Joining every text block together can silently
         # concatenate two separate JSON objects back-to-back into one unparseable string on a call
         # that happens to emit more than one text block.
         text_blocks = [b.text for b in response.content if b.type == "text"]
         if not text_blocks:
-            raise LLMOutputError(f"{span_name}: response has no text content")
+            raise LLMOutputError(
+                f"{span_name}: response has no text content",
+                stop_reason=done.stop_reason,
+                block_types=done.block_types,
+                cost_usd=done.cost_usd,
+            )
         done.text = text_blocks[0]
         done.retrieved_urls = retrieved
         return done

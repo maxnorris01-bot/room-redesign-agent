@@ -48,3 +48,13 @@ The pool is served by `app.shop.providers.ReplayPoolSearch` (set `APP_SHOP_MOCK_
 for a mock server, as `make shop-check` does for its second server); a query that begins with a retailer
 name gets that retailer's synthetic catalogue, which is what the peer step finds.
 
+Stage 2g: `owner_session_replay_4.json` is the owner's fourth real session in miniature, AUTHORED (the real
+lists were not recorded): 46 rated items (2 loved, 6 liked, 38 disliked spread over CB2, Crate & Barrel,
+Lowe's, Wayfair, Target and IKEA), 45 shown extras, and a 265-candidate `pool` that contains repeated
+product ids, shared thumbnails, the same title at another seller's price, the same title from the same
+seller under another id, seller spellings ("west elm", "Room&Board", "Joybird Furniture", "Walmart -
+JerFit Life") and copies of shown and rated items, so the de-duplication has real work. Ids are `F1` to
+`F46`, `E1` to `E45` and `P1` onwards. Serve its pool with `APP_SHOP_MOCK_POOL=owner_session_replay_4.json`
+(a mock server only). Pool titles are as authored, with no "[FIXTURE]" prefix, so a copy of a shown item
+has the same title.
+

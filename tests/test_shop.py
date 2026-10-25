@@ -26,6 +26,7 @@ from app.llm import Budget
 from app.mock_llm import (
     MOCK_SHOP_PARSES,
     mock_candidate_tags_payload,
+    mock_candidate_tool_input,
     mock_prefs_payload,
     mock_prefs_v2_payload,
     mock_prefs_v3_payload,
@@ -46,7 +47,7 @@ from app.shop.search import (
     plausible,
     run_search,
 )
-from app.shop.server import CSP, MAX_BODY_BYTES, STATIC_DIR, ShopApp, make_server
+from app.shop.server import CSP, MAX_BODY_BYTES, STATIC_DIR, Response, ShopApp, make_server
 from app.shop.service import ApiError, ShopService
 from app.shop.store import (
     Session,
@@ -179,7 +180,24 @@ class RouterClient:
         self.messages = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs: Any) -> SimpleNamespace:
-        self.calls.append(kwargs)
+        is_tagging_tool = (kwargs.get("tool_choice") or {}).get("name") == "record_tags"
+        # a forced tool call has no output_config: record it as a "CandidateTags" call, so the
+        # tests that look calls up by schema title find it (the request itself is kept intact)
+        self.calls.append(
+            {**kwargs, "output_config": {"format": {"schema": {"title": "CandidateTags"}}}}
+            if is_tagging_tool
+            else kwargs
+        )
+        if is_tagging_tool:  # candidate tagging
+            content = kwargs["messages"][0]["content"]
+            text = content if isinstance(content, str) else str(content)
+            if isinstance(self.tags, str):
+                return response([text_block(self.tags)])
+            if isinstance(self.tags, dict) and "items" not in self.tags:
+                return response([text_block(self.tags)])
+            data = self.tags or mock_candidate_tool_input(text)
+            block = SimpleNamespace(type="tool_use", id="toolu_x", name="record_tags", input=data)
+            return response([block], stop_reason="tool_use")
         title = kwargs["output_config"]["format"]["schema"]["title"]
         content = kwargs["messages"][0]["content"]
         text = (
@@ -216,6 +234,16 @@ class RouterClient:
             return response([text_block(ids)])
         finalists = [{"id": i, "reason": f"because {i}"} for i in ids]
         return response([text_block({"finalists": finalists})])
+
+
+def rank_call(client: Any) -> Any:
+    """The last rank call a client received (tagging calls now come after it)."""
+    return [
+        c
+        for c in client.calls
+        if c.get("output_config", {}).get("format", {}).get("schema", {}).get("title")
+        == "RankedFinalists"
+    ][-1]
 
 
 def use_client(monkeypatch: pytest.MonkeyPatch, client: Any) -> None:
@@ -412,12 +440,13 @@ def test_dedupe_by_product_id_and_by_title_and_seller() -> None:
     items = [
         cand("a", title='Oak Desk 48"', seller="Wayfair"),
         cand("a", title="Different title", seller="Other"),  # same product id
-        cand("b", title="OAK DESK 48", seller="wayfair.com"),  # same normalized title + seller
-        cand("c", title='Oak Desk 48"', seller="Target"),  # same title, other seller: kept
+        cand("b", title='OAK DESK 48"', price=150.0, seller="wayfair.com"),  # title + seller
+        cand("c", title='Oak Desk 48"', price=150.0, seller="Target"),  # other seller and price
+        cand("d", title='Oak Desk 48"', price=150.5, seller="IKEA"),  # same title, price within 1%
     ]
     kept, counts = apply_filters(items, query())
-    assert [c.product_id for c in kept] == ["a", "c"]
-    assert counts.duplicates == 2
+    assert [c.product_id for c in kept] == ["a", "c"]  # the full rules: tests/test_shop_stage2g.py
+    assert counts.duplicates == 3 and counts.dedupe["by_rule"]["same_product_id"] == 1
 
 
 def test_result_ids_are_safe() -> None:
@@ -948,9 +977,26 @@ def hdr(**extra: str) -> dict[str, str]:
     return base
 
 
+def settle(app: ShopApp, response: Any, payload: Any = None) -> Any:
+    """A search or a Shop Again is a background job (POST answers 202 with a job id): wait for it
+    and answer as the old synchronous endpoint did (200 and the view, or the job's error)."""
+    if response.status != 202:
+        return response
+    job_id = json.loads(response.body)["job_id"]
+    app.service.jobs.wait(job_id, timeout=30)
+    owner = payload.get("session_id", "") if isinstance(payload, dict) else ""
+    done = app.handle(
+        "GET", f"/api/job/{job_id}?session={owner}", {"Host": sorted(app.allowed_hosts)[0]}
+    )
+    state = json.loads(done.body)
+    if state["state"] == "done":
+        return Response(200, json.dumps(state["result"]).encode())
+    return Response(state["status"], json.dumps({"error": state["error"]}).encode())
+
+
 def post(app: ShopApp, path: str, payload: Any, headers: dict[str, str] | None = None) -> Any:
     body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
-    return app.handle("POST", path, headers or hdr(), body)
+    return settle(app, app.handle("POST", path, headers or hdr(), body), payload)
 
 
 def test_every_response_carries_the_strict_csp(app: ShopApp) -> None:
@@ -1094,8 +1140,15 @@ def test_a_real_server_binds_loopback_and_enforces_limits(tmp_path: Path) -> Non
         body = json.dumps({"request": "boho curtains"})
         conn.request("POST", "/api/search", body, {"Content-Type": "application/json"})
         r4 = conn.getresponse()
-        data = json.loads(r4.read())
-        assert r4.status == 200 and data["search"]["results"]
+        job = json.loads(r4.read())
+        assert r4.status == 202 and len(job["job_id"]) >= 16  # a background job was started
+        conn.close()
+        app.service.jobs.wait(job["job_id"], timeout=30)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", f"/api/job/{job['job_id']}")
+        r5 = conn.getresponse()
+        data = json.loads(r5.read())
+        assert r5.status == 200 and data["state"] == "done" and data["result"]["search"]["results"]
         conn.close()
     finally:
         server.shutdown()
@@ -1159,5 +1212,5 @@ def test_live_cost_lines_state_the_expected_cost_per_search() -> None:
     text = "\n".join(script.cost_lines(config()))
     assert "$0.01" in text and "at most 12" in text
     assert "2 credits per call" in text and "4 credits, $0.0040" in text
-    assert "Shop Again: up to 4 Serper calls (8 credits, $0.0080)" in text
+    assert "Shop Again: 4 Serper calls normally, up to 9 (18 credits, $0.0180)" in text
     assert "none when you love a result" in text and "Only Open runs one SerpApi lookup" in text
