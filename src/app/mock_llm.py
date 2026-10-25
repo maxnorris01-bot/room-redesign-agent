@@ -666,6 +666,7 @@ _REPLAY_FILES = (
     "owner_session_replay.json",
     "owner_session_replay_2.json",
     "owner_session_replay_3.json",
+    "owner_session_replay_4.json",
 )
 
 
@@ -681,6 +682,33 @@ def _replay_attrs() -> dict[str, dict[str, Any]]:
 
 _CAND_ROW = re.compile(r"^(\d+) \| (.*) \| (\$[\d,]+|no price) \| (.*)$")
 MOCK_TAGS_FAIL = "MOCK_TAGS_FAIL"  # a title containing this makes the candidate tagging call fail
+
+
+MOCK_TAGS_EMPTY = "MOCK_TAGS_EMPTY"  # a title containing this makes the call return no content
+
+
+def mock_candidate_tool_input(request_text: str) -> dict[str, Any]:
+    """The `record_tags` tool input for a candidate tagging request: one object per numbered result,
+    each value what the title's keywords say (the mock reads nothing a title leaves out)."""
+    from app.shop.vocab import DIMENSIONS, title_value
+
+    items: list[dict[str, Any]] = []
+    for line in request_text.splitlines():
+        m = _CAND_ROW.match(line)
+        if not m:
+            continue
+        values = {dim: title_value(dim, m.group(2)) for dim in DIMENSIONS}
+        items.append(
+            {
+                "index": int(m.group(1)),
+                "shape": values["shape"],
+                "material": values["material"],
+                "finish": values["color_finish"],
+                "frame_color": values["frame_color"],
+                "style": [values["style"]] if values["style"] else [],
+            }
+        )
+    return {"items": items}
 
 
 def mock_candidate_tags_payload(request_text: str) -> dict[str, Any]:
@@ -794,6 +822,24 @@ class MockAnthropicClient:
     def _create(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
         schema = kwargs.get("output_config", {}).get("format", {}).get("schema")
+        choice = kwargs.get("tool_choice") or {}
+        if choice.get("name") == "record_tags":  # the forced candidate tagging tool call
+            ask = _request_text(kwargs)
+            if MOCK_TAGS_EMPTY in ask:
+                return response([], input_tokens=300, output_tokens=0)
+            if MOCK_TAGS_FAIL in ask:
+                return response([], stop_reason="max_tokens", input_tokens=300, output_tokens=900)
+            n_rows = len(re.findall(r"^\d+ \| ", ask, flags=re.MULTILINE))
+            block = SimpleNamespace(
+                type="tool_use", id="toolu_mock", name="record_tags",
+                input=mock_candidate_tool_input(ask),
+            )  # fmt: skip
+            return response(
+                [block],
+                stop_reason="tool_use",
+                input_tokens=300 + 40 * n_rows,
+                output_tokens=60 + 40 * n_rows,
+            )
         if schema is None:
             # No structured-output schema on this request - just echo something schema-free.
             return response([text_block("mock response")], input_tokens=100, output_tokens=20)
@@ -847,6 +893,8 @@ class MockAnthropicClient:
             )
         if title == "CandidateTags":
             ask = _request_text(kwargs)
+            if MOCK_TAGS_EMPTY in ask:
+                return response([], input_tokens=300, output_tokens=0)
             if MOCK_TAGS_FAIL in ask:
                 return response(
                     [text_block('{"rows": ["1|')], stop_reason="max_tokens", output_tokens=1000

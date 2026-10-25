@@ -35,14 +35,13 @@ from app.shop.store import Session, SessionStore
 from app.shop.textutil import Rated
 from app.shop.vocab import DIMENSIONS, VOCAB, normalize, vocab_text
 from app.shopping import SearchCandidate
-from test_shop import (  # noqa: F401  (the autouse guard must be imported to apply here)
-    FakeLookup,
+from test_shop import (
     FakeSearch,
     RouterClient,
-    _loopback_only,
     cand,
     config,
     query,
+    rank_call,  # noqa: F401  (the autouse guard must be imported to apply here)
     use_client,
 )
 from test_shop_decide import make_session, tagged
@@ -182,15 +181,15 @@ def test_candidate_tags_are_cached_by_result_id_and_never_repeated(
     assert len(tag_calls(client)) == 2 and third.calls == 0  # nothing new: no call at all
 
 
-def test_a_big_pool_is_split_into_calls_of_a_hundred_titles(
+def test_a_big_pool_is_split_into_calls_of_forty_titles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = RouterClient()
     use_client(monkeypatch, client)
     book = TagBook()
     tag_results(taggables(230), book, Budget(config()))
-    assert [len(rows_in(c)) for c in tag_calls(client)] == [100, 100, 30]
-    assert book.calls == 3 and book.tagged == 230 and not book.failed
+    assert sorted(len(rows_in(c)) for c in tag_calls(client)) == [30, 40, 40, 40, 40, 40]
+    assert book.calls == 6 and book.tagged == 230 and not book.failed
 
 
 def test_a_titles_only_call_sends_no_image_and_no_link(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -276,7 +275,12 @@ def test_replay_two_batch_has_both_shapes_within_the_caps_and_a_composition(tmp_
     assert batch["strata"]["dimension"] == "shape"
     assert sum(batch["strata"]["quota"].values()) == RESULT_COUNT
     tagging = view["search"]["tagging"]
-    assert tagging["candidates_tagged"] == tagging["candidates_total"] > 0
+    assert (
+        tagging["candidates_tagged"] + tagging["candidates_keyword"]
+        == tagging["candidates_total"]
+        > 0
+    )
+    assert tagging["candidates_tagged"] >= 60  # the top 60 by rank
     assert tagging["shown_tagged"] == tagging["shown_total"] == 35
     assert view["search"]["trace"]["shown_tags"]["source"] == "model"
 
@@ -520,8 +524,11 @@ def test_no_supply_when_the_minority_value_is_forty_percent_or_more(
     outcome, search, _ = run_open(
         monkeypatch, [pool_page("a", "Rectangular", 12) + pool_page("b", "Round", 8)]
     )
-    assert len(search.calls) == 1 and outcome.serper_calls == 1  # 8 of 20 is exactly 40%
+    # 8 of 20 is exactly 40%: no supply. Only 20 results (under 24) means one refill search.
     assert outcome.composition["supply"] == []
+    assert len(search.calls) == 2 and outcome.serper_calls == 2
+    assert [q for q, _ in search.calls] == ["coffee table", "rectangular coffee table"]
+    assert outcome.composition["refill"][0]["value"] == "rectangular"
 
 
 def test_supply_stops_at_the_open_cap_of_six_calls_and_the_warning_has_real_counts(
@@ -576,9 +583,11 @@ def test_supply_does_not_run_for_a_typed_search_or_a_converged_dimension(
     assert len(search2.calls) == 1 and out.composition["supply"] == []
 
 
-def test_the_supplied_candidates_survive_the_pool_cut(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 90 rectangular candidates fill the 80-candidate pool; the round ones fetched for the open
-    # dimension must not be cut off the end of it
+def test_supplied_candidates_arrive_after_the_rank_and_still_reach_the_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 90 rectangular candidates fill the 80-candidate pool and are ranked; the round ones fetched
+    # for the open dimension afterwards are appended, tagged, and take their planned slots
     outcome, _, client = run_open(
         monkeypatch,
         [
@@ -588,14 +597,9 @@ def test_the_supplied_candidates_survive_the_pool_cut(monkeypatch: pytest.Monkey
         ],
         max_calls=2,
     )
-    rank_calls = [
-        c
-        for c in client.calls
-        if c["output_config"]["format"]["schema"]["title"] == "RankedFinalists"
-    ]
-    ranked_text = rank_calls[0]["messages"][0]["content"]
-    assert ranked_text.count("Round Wood Coffee Table") >= 10
-    assert outcome.composition["batch"]["shape"].get("round", 0) >= 6
+    ranked_text = rank_call(client)["messages"][0]["content"]
+    assert ranked_text.count("Round Wood Coffee Table") == 0  # not in the pool when it was ranked
+    assert outcome.composition["supply"] and outcome.composition["batch"]["shape"]["round"] >= 6
 
 
 # ---- stratified selection -------------------------------------------------------------------------------------
@@ -783,7 +787,8 @@ def test_the_prompts_are_versioned_and_the_old_ones_kept() -> None:
     for v in ("1", "2", "3", "4", "5"):
         assert load_prompt("shop_prefs", v).version == v
     tags = load_prompt("shop_candidate_tags")
-    assert tags.version == "2" and "Allowed values" in tags.text and "no photo" in tags.text
+    assert tags.version == "3" and "Allowed values" in tags.text and "no photo" in tags.text
+    assert load_prompt("shop_candidate_tags", "2").version == "2"
     assert "frame_or_legs" not in load_prompt("shop_prefs").text
     assert "size_class" not in load_prompt("shop_prefs").text
     assert "frame_or_legs" in load_prompt("shop_prefs", "4").text  # v4 is untouched
@@ -809,6 +814,6 @@ def test_input_validation_and_the_csp_are_unchanged(tmp_path: Path) -> None:
     bad = app.handle("POST", "/api/shop-again", hdrs, json.dumps({"session_id": "../etc"}).encode())
     assert bad.status in (400, 404)
     ok = app.handle("POST", "/api/shop-again", hdrs, json.dumps({"session_id": sid}).encode())
-    assert ok.status == 200 and ok.all_headers()["Content-Security-Policy"] == CSP
+    assert ok.status == 202 and ok.all_headers()["Content-Security-Policy"] == CSP  # a job
     evil = app.handle("POST", "/api/shop-again", {"Host": "evil.example"}, b"{}")
     assert evil.status == 403

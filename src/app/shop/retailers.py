@@ -91,15 +91,25 @@ RETAILERS: tuple[Retailer, ...] = (
 )  # fmt: skip
 
 
+_SUFFIXES = re.compile(
+    r"\s+(furniture|official store|official|store|inc|llc)\.?$", flags=re.IGNORECASE
+)
+
+
 def seller_key(name: str) -> str:
-    """A seller name folded for grouping: case, punctuation, a leading "the", ".com" and a
-    marketplace sub-seller suffix are ignored ("Walmart - JerFit Life" is "walmart", "Crate and
-    Barrel" and "Crate & Barrel" are one)."""
+    """The one seller canonicalization (used by the retailer table, pins, caps and de-duplication).
+
+    Case, punctuation, "&" against "and", a leading "the", ".com", a marketplace sub-seller suffix
+    (" - JerFit Life") and a trailing " Furniture" or " Official Store" are ignored: "west elm",
+    "Room&Board", "Joybird Furniture", "Walmart - JerFit Life" and "crateandbarrel.com" are
+    "westelm", "roomandboard", "joybird", "walmart" and "crateandbarrel".
+    """
     lowered = name.lower().strip()
-    lowered = re.split(r"\s+[-–—|]\s+", lowered, maxsplit=1)[0]
+    lowered = re.split(r"\s+[-\u2013\u2014|]\s+", lowered, maxsplit=1)[0]
     lowered = lowered.replace("&", " and ")
     lowered = re.sub(r"\.(com|net|org|co)\b", "", lowered)
     lowered = re.sub(r"^the\s+", "", lowered.strip())
+    lowered = _SUFFIXES.sub("", lowered.strip())
     return re.sub(r"[^a-z0-9]+", "", lowered) or "?"
 
 
@@ -120,6 +130,7 @@ def canonical_name(name: str) -> str:
     if found is not None:
         return found.name
     head = re.split(r"\s+[-–—|]\s+", " ".join(name.split()), maxsplit=1)[0]
+    head = _SUFFIXES.sub("", head)
     return head[:40] or name[:40]
 
 

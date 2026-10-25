@@ -12,8 +12,9 @@
   var KEY_SESSION = 'shop.session';
   var KEY_SAVED_OPEN = 'shop.savedOpen';
   var KEY_WHY_OPEN = 'shop.whyOpen';
-  var SEARCH_MSG = 'Searching, usually about 10 seconds';
-  var AGAIN_MSG = 'Finding new results, usually about 10 seconds';
+  var SEARCH_MSG = 'Searching';
+  var AGAIN_MSG = 'Finding new results';
+  var POLL_MS = 1000;
   var LOOKUP_MSG = 'Looking up the retailer link';
 
   var state = {
@@ -73,6 +74,10 @@
 
   function renderStatus(text, isError) {
     var el = $('status');
+    var link = $('status-details');
+    // the details link opens "How I decided", which holds every warning and number
+    link.hidden = !(state.busy === 0 && !isError && state.search && state.search.kind === 'shop_again' &&
+      state.profile && state.profile.trace && state.profile.trace.dimensions);
     el.textContent = text || '';
     el.className = isError ? 'status error' : 'status';
     $('retry').hidden = !(isError && retryAction);
@@ -111,6 +116,7 @@
   function defaultStatus() {
     var s = state.search;
     if (!s) return '';
+    if (s.kind === 'shop_again' && s.headline) return s.headline;
     var msg = s.warnings.join(' ');
     if (msg) return msg;
     return s.results.length ? s.results.length + (s.kind === 'shop_again' ? ' new results' : ' results') : 'No results.';
@@ -358,6 +364,43 @@
         ' in ' + (tg.tag_calls || 0) + ' call(s)');
     }
     box.appendChild(h('p', { class: 'why-line' }, [lines.join('; ') + '.']));
+    var tm = b.timings || {};
+    var sec = function (v) { return (v === undefined ? 0 : Number(v)).toFixed(1) + ' s'; };
+    box.appendChild(h('p', { class: 'why-line' }, [
+      'Time: searches ' + sec(tm.searches) + ', preferences ' + sec(tm.preferences) +
+      ', tagging what was shown ' + sec(tm.tagging_shown) + ', rank ' + sec(tm.rank) +
+      ', tagging candidates ' + sec(tm.tagging) + ', total ' + sec(tm.total) +
+      ' (aim ' + sec(tm.target_s) + ', hard stop ' + sec(tm.hard_stop_s) + ')' +
+      (tm.stopped_before ? '; stopped before ' + tm.stopped_before : '') + '.'
+    ]));
+    var dd = b.dedupe;
+    if (dd) {
+      var rules = Object.keys(dd.by_rule || {}).map(function (k) {
+        return k.replace(/_/g, ' ') + ' ' + dd.by_rule[k];
+      }).join(', ');
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Candidates ' + dd.candidates + ': kept ' + dd.kept + '; seen before: ' + dd.shown_before +
+        ' shown, ' + dd.rated_before + ' rated; duplicates ' + dd.duplicates + ' (' + rules + ').'
+      ]));
+    }
+    if (b.shortfall && b.shortfall.got < b.shortfall.wanted) {
+      box.appendChild(h('p', { class: 'why-line why-warn' }, [
+        'Only ' + b.shortfall.got + ' of ' + b.shortfall.wanted + ' new results: ' + b.shortfall.explanation +
+        '; ' + b.shortfall.seller_capped + ' held back by seller caps, ' + b.shortfall.guarded + ' by guards.'
+      ]));
+    }
+    (b.refill || []).forEach(function (x) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Refill search for ' + x.value + ': "' + x.search + '" page ' + x.page + ', found ' + x.found + ', ' +
+        x.new_candidates + ' new; ' + x.before + ' results became ' + x.after + '.'
+      ]));
+    });
+    if (b.batch.tag_sources) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Tags behind the batch: ' + b.batch.tag_sources.model + ' from the model, ' +
+        b.batch.tag_sources.keyword + ' from title keywords (a guard only acts on a candidate that carries a tag).'
+      ]));
+    }
     (b.supply || []).forEach(function (x) {
       box.appendChild(h('p', { class: 'why-line' }, [
         'Looked for more ' + x.value + ' (' + x.dimension.replace(/_/g, ' ') + '): searched "' + x.search + '" page ' + x.page +
@@ -409,6 +452,9 @@
     panel.textContent = '';
     if (!has || !state.whyOpen) return;
     var tg = state.profile.tagging || {};
+    (state.search && state.search.warnings || []).forEach(function (w) {
+      panel.appendChild(h('p', { class: 'why-line why-warn' }, ['Warning: ' + w]));
+    });
     panel.appendChild(h('p', { class: 'why-line' }, [
       'Mode: ' + trace.mode + '. Item details read for ' + (tg.items_tagged || 0) + ' of ' + (tg.items_total || 0) +
       ' rated items; photos used ' + (tg.images_used || 0) + ' of ' + (tg.images_offered || 0) +
@@ -484,6 +530,17 @@
     return 'matches your preferences: ' + s.alignment.matches + ' of ' + s.alignment.total;
   }
 
+  function timingText(s) {
+    var tm = s.trace && s.trace.batch && s.trace.batch.timings;
+    if (s.kind !== 'shop_again' || !tm) return '';
+    var f = function (v) { return Number(v || 0).toFixed(1); };
+    var bits = ['searches ' + f(tm.searches) + ' s', 'preferences ' + f(tm.preferences) + ' s',
+      'tagging ' + f(Number(tm.tagging || 0) + Number(tm.tagging_shown || 0)) + ' s', 'rank ' + f(tm.rank) + ' s'];
+    var tg = s.tagging || {};
+    if (tg.tag_failed_usd) bits.push('failed tagging calls ' + usd(tg.tag_failed_usd));
+    return bits.join(', ');
+  }
+
   function tierText(s) {
     var b = s.trace && s.trace.batch;
     if (s.kind !== 'shop_again' || !b || !b.batch) return '';
@@ -524,6 +581,7 @@
       alignmentText(s),
       diversityText(s),
       tierText(s),
+      timingText(s),
       taggingText(s),
       'session ' + usd(state.sessionUsd),
       lookups
@@ -803,12 +861,37 @@
     }
   }
 
+  /* A search or a Shop Again is a background job: POST answers with a job id, then the page polls
+     for the phase ("Tagging results") and, at the end, the same view a direct call would give. */
+  function runJob(path, body) {
+    return api('POST', path, body).then(function (job) {
+      return new Promise(function (resolve, reject) {
+        function poll() {
+          var owner = state.sessionId ? '?session=' + encodeURIComponent(state.sessionId) : '';
+          api('GET', '/api/job/' + encodeURIComponent(job.job_id) + owner).then(function (st) {
+            if (st.state === 'running') {
+              renderStatus((st.phase || state.busyMessage) + '\u2026', false);
+              window.setTimeout(poll, POLL_MS);
+            } else if (st.state === 'done') {
+              resolve(st.result);
+            } else {
+              var err = new Error(st.error || 'Request failed');
+              err.status = st.status || 500;
+              reject(err);
+            }
+          }).catch(reject);
+        }
+        poll();
+      });
+    });
+  }
+
   function search(text) {
     var request = text.trim();
     if (!request || state.busy > 0) return;
     begin(SEARCH_MSG);
     showSkeleton();
-    api('POST', '/api/search', { session_id: state.sessionId, request: request })
+    runJob('/api/search', { session_id: state.sessionId, request: request })
       .then(function (data) {
         adopt(data);
         renderResults();
@@ -826,7 +909,7 @@
     if (state.busy > 0 || $('shop-again').disabled) return;
     begin(AGAIN_MSG);
     showSkeleton();
-    api('POST', '/api/shop-again', { session_id: state.sessionId })
+    runJob('/api/shop-again', { session_id: state.sessionId })
       .then(function (data) {
         adopt(data);
         renderResults();
@@ -852,7 +935,17 @@
     renderStatus('', false);
   }
 
+  function openDetails(ev) {
+    ev.preventDefault();
+    state.whyOpen = true;
+    storeSet(KEY_WHY_OPEN, '1');
+    renderWhy();
+    var panel = $('why');
+    if (panel.scrollIntoView) panel.scrollIntoView({ block: 'start' });
+  }
+
   function init() {
+    $('status-details').addEventListener('click', openDetails);
     var ex = $('examples');
     EXAMPLES.forEach(function (text) {
       var b = h('button', { type: 'button' }, [text]);

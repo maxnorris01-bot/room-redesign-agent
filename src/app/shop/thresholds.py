@@ -61,7 +61,7 @@ SELLER_DEFAULT_CAP = 4  # results from any other seller (as in a typed search)
 # stage 2e: supply and selection for open dimensions
 MINORITY_POOL_SHARE = 0.40  # an open value under this share of the pool triggers targeted searches
 OPEN_STRATUM_FLOOR = 0.25  # a value with a loved item gets at least this share of the batch slots
-CANDIDATE_TAG_BATCH = 100  # titles per candidate tagging call (more: split into calls this big)
+CANDIDATE_TAG_BATCH = 40  # titles per candidate tagging call (stage 2g: was 100)
 
 
 def all_thresholds() -> dict[str, float | int]:

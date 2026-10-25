@@ -42,15 +42,15 @@ from app.shop.store import RatingRecord, Session
 from app.shop.textutil import Rated
 from app.shop.vocab import normalize, title_tags, title_value
 from app.shopping import SearchCandidate
-from test_shop import (  # noqa: F401  (the autouse guard must be imported to apply here)
+from test_shop import (
     FakeLookup,
     FakeSearch,
     RouterClient,
-    _loopback_only,
     cand,
     config,
     make_service,
     query,
+    rank_call,  # noqa: F401  (the autouse guard must be imported to apply here)
     use_client,
 )
 
@@ -825,16 +825,16 @@ def test_the_ranker_is_told_what_converged_what_is_open_and_how_to_treat_guesses
         ]
     ]
     svc.shop_again(sid)
-    text = client.calls[-1]["messages"][0]["content"]
+    text = rank_call(client)["messages"][0]["content"]
     assert (
         "Open dimensions (the shopper likes several values; keep them mixed, no pressure): shape: rectangular, round"
         in text
     )
     assert "Converged preferences (learned from the rated items; apply them): none" in text
-    assert client.calls[-1]["system"].startswith("You order real shopping results")
+    assert rank_call(client)["system"].startswith("You order real shopping results")
     assert (
-        "keep them mixed" in client.calls[-1]["system"]
-        or "open dimensions" in client.calls[-1]["system"]
+        "keep them mixed" in rank_call(client)["system"]
+        or "open dimensions" in rank_call(client)["system"]
     )
 
 

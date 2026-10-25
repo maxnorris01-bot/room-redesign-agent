@@ -1,5 +1,5 @@
 .PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-standard-live \
-	eval-nightly eval-nightly-live spike spike-live report reports render render-live shop shop-live shop-check
+	eval-nightly eval-nightly-live spike spike-live report reports render render-live shop shop-live shop-check shop-diagnose
  
 install:
 	uv sync
@@ -87,3 +87,9 @@ shop-live:
 # it needs a Chromium headless shell already installed.
 shop-check:
 	APP_LLM_MODE=mock uv run --with playwright python scripts/shop_browser_check.py
+
+# LIVE, owner-run, about $0.003: sends the candidate tagging call three ways against the real API and
+# prints only model, max_tokens, latency, outcome, block types, stop reason, usage, rows parsed and the
+# first 300 characters of any text. Never prints keys or the environment.
+shop-diagnose:
+	APP_LLM_MODE=live uv run python scripts/shop_diagnose_tagging.py $(ARGS)

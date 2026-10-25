@@ -32,15 +32,16 @@ from app.shop.server import ShopApp
 from app.shop.service import ApiError, ShopService
 from app.shop.store import SearchRecord, saved_ids, sellers_to_deprioritize
 from app.shopping import ProviderError
-from test_shop import (  # noqa: F401  (the autouse guard must be imported to apply here)
+from test_shop import (
     FakeLookup,
     FakeSearch,
     RouterClient,
-    _loopback_only,
     cand,
     config,
     make_service,
     query,
+    rank_call,
+    settle,  # noqa: F401  (the autouse guard must be imported to apply here)
     use_client,
 )
 
@@ -389,7 +390,10 @@ def test_fewer_than_24_unseen_results_stop_at_four_calls_with_a_message(
     assert len(search.sequence) == 1  # the fifth page was not fetched
     again_pages = [p for _, p in search.calls][-4:]
     assert again_pages == [typed_pages + 1, typed_pages + 2, typed_pages + 3, typed_pages + 4]
-    assert "Only 19 new results found. Try changing the request." in found["warnings"]
+    assert (
+        "Only 19 new results found: 0 seen or rated, 0 duplicates, 0 filtered out. Try changing the request."
+        in found["warnings"]
+    )
     assert found["serper_credits"] == 8 and found["provider_usd"] == pytest.approx(0.008)
 
 
@@ -402,11 +406,17 @@ def test_an_empty_page_stops_the_paging_and_zero_results_say_so(
     search.sequence = [items("p", 4), [], items("never", 9)]
     again = svc.shop_again(sid)
     assert again["search"]["serper_calls"] == 2  # an empty page ends that phrasing
-    assert "Only 4 new results found. Try changing the request." in again["search"]["warnings"]
+    assert (
+        "Only 4 new results found: 0 seen or rated, 0 duplicates, 0 filtered out. Try changing the request."
+        in again["search"]["warnings"]
+    )
     search.sequence = [items("a", 6), []]  # nothing but what was already shown
     nothing = svc.shop_again(sid)
     assert nothing["search"]["results"] == []
-    assert "No new results found. Try changing the request." in nothing["search"]["warnings"]
+    assert (
+        "No new results found: 6 seen or rated, 0 duplicates, 0 filtered out. Try changing the request."
+        in nothing["search"]["warnings"]
+    )
 
 
 def test_a_later_page_failing_keeps_what_was_found(
@@ -471,7 +481,7 @@ def test_rank_v4_is_used_for_shop_again_and_v1_for_a_typed_search(
     titles = [c["output_config"]["format"]["schema"]["title"] for c in client.calls]
     assert [t for t in titles if t != "CandidateTags"][-2:] == ["PreferenceTags", "RankedFinalists"]
     assert "CandidateTags" in titles[-6:]  # the shown and pool results are tagged first
-    rank = client.calls[-1]
+    rank = rank_call(client)
     assert "repeat search" in rank["system"]
     text = rank["messages"][0]["content"]
     assert "More like these" in text and "Less like these" in text
@@ -678,7 +688,7 @@ def hdr() -> dict[str, str]:
 
 def post(app: ShopApp, path: str, payload: Any, headers: dict[str, str] | None = None) -> Any:
     body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
-    return app.handle("POST", path, headers or hdr(), body)
+    return settle(app, app.handle("POST", path, headers or hdr(), body), payload)
 
 
 def searched(app: ShopApp) -> tuple[str, list[dict[str, Any]]]:

@@ -1140,7 +1140,7 @@ def build_profile(
     budget: Budget,
     thumbnailer: Thumbnailer | None = None,
     fetcher: Callable[..., tuple[dict[str, PreparedImage], ImageReport]] = fetch_images,
-    exposure: Exposure | None = None,
+    exposure: Exposure | Callable[[], Exposure] | None = None,
 ) -> tuple[StoredProfile, str]:
     """Update the session's profile from its ratings (prompt v4). Returns (profile, warning).
 
@@ -1202,7 +1202,14 @@ def build_profile(
         "failures": failures,
     }
     profile = merge_profile_v3(
-        session.profile, proposed, session, base, report, set(images), tagging, exposure
+        session.profile,
+        proposed,
+        session,
+        base,
+        report,
+        set(images),
+        tagging,
+        exposure() if callable(exposure) else exposure,
     )
     warning = ""
     if profile.tagging.get("fallback"):

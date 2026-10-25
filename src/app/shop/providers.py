@@ -79,6 +79,7 @@ class ShopFixtureSearch:
     """
 
     name = "serper"
+    thread_safe = True  # stateless apart from the call log
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
@@ -114,6 +115,11 @@ class ShopFixtureSearch:
                     title=f"{FIXTURE_TITLE_PREFIX}{retailer.name} {c.title}",
                     seller=retailer.name,
                     product_id=f"{tag}-{c.product_id}",
+                    thumbnail_url=(
+                        f"https://mock.example/{tag}/{c.product_id}.jpg"
+                        if c.thumbnail_url
+                        else None
+                    ),  # a re-sellered copy is its own listing: its own image
                 )
                 for c in everything[start : start + PEER_PAGE_SIZE]
             ]
@@ -134,14 +140,14 @@ class ReplayPoolSearch(ShopFixtureSearch):
         self.pool: list[SearchCandidate] = [
             SearchCandidate(
                 product_id=x["id"],
-                title=FIXTURE_TITLE_PREFIX + x["title"],
+                title=x["title"],  # as authored: the shown and rated results carry the same title
                 seller=x["seller"],
                 price=float(x["price"]),
                 currency="USD",
                 rating=4.4,
                 rating_count=120,
                 google_panel_url=f"https://www.google.com/shopping/product/{x['id']}",
-                thumbnail_url=None,
+                thumbnail_url=x.get("thumbnail"),
             )
             for x in data["pool"]
         ]

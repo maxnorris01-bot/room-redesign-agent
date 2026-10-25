@@ -93,8 +93,14 @@ class TagClient(RouterClient):
         self.tag_n = 0
 
     def _create(self, **kwargs: Any) -> Any:
-        if kwargs["output_config"]["format"]["schema"]["title"] == "CandidateTags":
-            self.calls.append(kwargs)
+        if (
+            "output_config" in kwargs
+            and kwargs["output_config"]["format"]["schema"]["title"] == "CandidateTags"
+            or (kwargs.get("tool_choice") or {}).get("name") == "record_tags"
+        ):
+            self.calls.append(
+                {**kwargs, "output_config": {"format": {"schema": {"title": "CandidateTags"}}}}
+            )
             self.tag_n += 1
             content = kwargs["messages"][0]["content"]
             text = content if isinstance(content, str) else str(content)
@@ -176,8 +182,9 @@ def test_short_extra_and_out_of_range_rows_are_handled() -> None:
 
 
 def test_the_token_limit_is_twice_the_estimate_and_bounded() -> None:
-    assert tag_max_tokens(100) == 2 * (80 + 16 * 100) == 3360
-    assert tag_max_tokens(10) == 2 * (80 + 160)
+    assert tag_max_tokens(100) == 2 * (100 + 16 * 100) == 3400  # text rows: about 14 tokens each
+    assert tag_max_tokens(40, "tool") == 2 * (100 + 40 * 40) == 3400  # a tool-call object
+    assert tag_max_tokens(10) == 2 * (100 + 160)
     assert tag_max_tokens(10_000) == 6000
 
 
@@ -192,14 +199,17 @@ def test_every_call_is_logged_with_items_limit_stop_parse_and_the_start_of_the_a
     tag_results(titles(12), book, Budget(config()))
     assert len(book.log) == 1
     entry = book.log[0]
-    assert entry["items"] == 12 and entry["max_tokens"] == tag_max_tokens(12)
+    assert entry["items"] == 12 and entry["max_tokens"] == tag_max_tokens(12, "tool")
+    assert entry["mode"] == "tool"
     assert entry["stop_reason"] == "end_turn" and entry["json_ok"] is True
     assert entry["rows_parsed"] == 12 and entry["retry"] is False and entry["error"] == ""
     assert entry["raw"].startswith('{"rows": ["1|round|wood|warm wood') and len(entry["raw"]) <= 200
     assert not book.failed and book.reason == ""
 
 
-def test_a_cut_off_answer_is_retried_once_in_halves(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_cut_off_answer_is_retried_once_for_what_is_still_untagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def script(n: int, text: str) -> tuple[str, str]:
         if n == 1:  # the first call is cut off after 4 of 10 rows
             rows = [r for r in json.loads(good_answer(text))["rows"][:4]]
@@ -210,11 +220,11 @@ def test_a_cut_off_answer_is_retried_once_in_halves(monkeypatch: pytest.MonkeyPa
     use_client(monkeypatch, client)
     book = TagBook()
     tag_results(titles(10), book, Budget(config()))
-    assert book.calls == 3 and book.tagged == 10 and not book.failed  # one call, then two halves
-    assert [e["retry"] for e in book.log] == [False, True, True]
-    assert [e["items"] for e in book.log] == [10, 4, 3]  # only the 7 still untagged, in two halves
+    assert book.calls == 2 and book.tagged == 10 and not book.failed  # one call, one retry
+    assert [e["retry"] for e in book.log] == [False, True]
+    assert [e["items"] for e in book.log] == [10, 7]  # only the 7 still untagged: no halving
     assert book.log[0]["stop_reason"] == "max_tokens" and book.log[0]["rows_parsed"] == 3
-    assert [len(rows_in(c)) for c in tag_calls(client)] == [10, 4, 3]
+    assert [len(rows_in(c)) for c in tag_calls(client)] == [10, 7]
 
 
 def test_fewer_than_eighty_percent_of_rows_also_triggers_the_retry(
@@ -227,7 +237,7 @@ def test_fewer_than_eighty_percent_of_rows_also_triggers_the_retry(
     use_client(monkeypatch, TagClient(script))
     book = TagBook()
     tag_results(titles(10), book, Budget(config()))
-    assert book.calls == 3 and book.tagged == 10  # 7 of 10 is under 80%: retried in halves
+    assert book.calls == 2 and book.tagged == 10  # 7 of 10 is under 80%: one retry
     use_client(
         monkeypatch,
         TagClient(
@@ -243,7 +253,7 @@ def test_a_failure_after_the_retry_keeps_the_reason(monkeypatch: pytest.MonkeyPa
     use_client(monkeypatch, TagClient(lambda n, t: ("Sorry, I cannot do that.", "end_turn")))
     book = TagBook()
     tag_results(titles(10), book, Budget(config()))
-    assert book.failed and book.tagged == 0 and book.calls == 3
+    assert book.failed and book.tagged == 0 and book.calls == 2  # one call and ONE retry
     assert "not valid JSON and had no readable rows" in book.reason
     assert "Sorry, I cannot do that." in book.reason
     use_client(monkeypatch, TagClient(lambda n, t: ('{"rows": ["1|rou', "max_tokens")))
@@ -1062,11 +1072,12 @@ def test_replay_three_decisions(tmp_path: Path) -> None:
             and "under 60%" in trace["dimensions"][dim]["reason"]
         )
     assert "pieces from West Elm and similar retailers" in view["profile_summary"]
+    tagging = view["search"]["tagging"]
+    assert tagging["candidates_tagged"] >= 60  # the top 60 by rank are tagged by the model
     assert (
-        view["search"]["tagging"]["candidates_tagged"]
-        == view["search"]["tagging"]["candidates_total"]
-        > 70
+        tagging["candidates_tagged"] + tagging["candidates_keyword"] == tagging["candidates_total"]
     )
+    assert tagging["candidates_total"] > 70
     assert (
         view["search"]["tagging"]["shown_tagged"] == view["search"]["tagging"]["shown_total"] == 48
     )
@@ -1139,10 +1150,11 @@ def test_prompts_are_versioned_and_the_old_ones_kept() -> None:
     assert load_prompt("shop_prefs").version == "6"
     for v in ("1", "2", "3", "4", "5"):
         assert load_prompt("shop_prefs", v).version == v
-    assert load_prompt("shop_candidate_tags").version == "2"
+    assert load_prompt("shop_candidate_tags").version == "3"
+    assert load_prompt("shop_candidate_tags", "2").version == "2"
     assert load_prompt("shop_candidate_tags", "1").version == "1"
     assert "LIST of up to" in load_prompt("shop_prefs").text
-    assert "modern+glam" in load_prompt("shop_candidate_tags").text
+    assert "modern+glam" in load_prompt("shop_candidate_tags", "2").text
     assert "(the style the item itself shows" in load_prompt("shop_prefs", "5").text
 
 

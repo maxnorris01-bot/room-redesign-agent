@@ -280,7 +280,7 @@ eval to tune):
 | SELLER_DEFAULT_CAP | 4 | results from any other seller |
 | MINORITY_POOL_SHARE | 0.40 | an open dimension's value under this share of the pool triggers targeted searches for it (stage 2e) |
 | OPEN_STRATUM_FLOOR | 0.25 | share of the batch slots a value with a loved item gets when shape is open (stage 2e) |
-| CANDIDATE_TAG_BATCH | 100 | titles per candidate tagging call (stage 2e) |
+| CANDIDATE_TAG_BATCH | 40 | titles per candidate tagging call (stage 2e: 100; stage 2g: 40, run concurrently) |
 
 Other constants that shape a Shop Again (2b, unchanged): 4 Serper calls, a pool target of 60 and a ranker
 pool of 80, 16 thumbnails (6 loved, 6 liked, 4 disliked), 10 Shop Agains per session.
@@ -490,4 +490,99 @@ rectangular, 10 round, 12 design premium.
 title keywords and the mock peer catalogues are synthetic, so how many new candidates real peer searches find,
 and whether a real model's tags reach 60% coverage, are not measured. A worst-case Shop Again is 9 Serper
 calls (18 credits, $0.018) plus about $0.002 to $0.004 of Anthropic calls including tagging.
+
+## Amendment, stage 2g (2026-10-24): bounded, reliable, fast, and no duplicates
+
+**What failed (observed live with 2f, the owner's fourth session).**
+- Shop Again took 98.9 seconds. 10 candidate-tagging calls ran in 3 rounds; 8 failed with "response has no
+  text content" (stop reason none, 0 rows) and one (50 items, limit 1760 tokens) hit max_tokens after 18
+  rows that were mostly "-". Every failure triggered a half-size retry, so failures cascaded. 33 of 265
+  candidates were tagged; the failed calls still cost money (Anthropic $0.0156 against about $0.004).
+- All 265 candidates, from 7 sequential Serper searches, were sent for tagging though 24 are shown.
+- Duplicated results were seen (the same product twice in a batch, or something already shown or rated
+  coming back), under differing product ids, seller spellings ("west elm", "Room&Board", "Joybird Furniture",
+  marketplace sub-sellers) and several listings of one product.
+- A long paragraph of diagnostics above the grid, and only 17 of 24 results with no explanation.
+
+**Budgets (all in `Config`, all `APP_*` variables).**
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `APP_SHOP_TARGET_S` | 30 | what a Shop Again aims for (shown in the trace) |
+| `APP_SHOP_HARD_STOP_S` | 45 | past this every remaining optional step is skipped and the response says so |
+| `APP_SHOP_TAG_BUDGET_S` | 15 | all candidate tagging together; what is tagged by then is used, the rest stays unknown |
+| `APP_SHOP_TAG_CALL_TIMEOUT_S` | 12 | one tagging request (shortened to the time left; no SDK retries) |
+| `APP_SHOP_TAG_TOP_N` | 60 | candidates tagged by the model: the top N untagged by rank |
+| `APP_SHOP_SEARCH_WORKERS` | 4 | concurrent Serper searches (1 to 8) |
+| `APP_SHOP_AGAIN_MAX_SERPER_CALLS_TOTAL` | 9 | unchanged (phrasings, peers, supply and refill) |
+| (code) `shop_max_steps` | 40 | model calls one Shop Again may make (the global default of 12 is too few for tagging batches) |
+
+**Changes.**
+- *Candidate tagging is a forced tool call.* `record_tags` with a strict JSON schema (an array of objects:
+  index, shape, material, finish, frame_color, style as a list of up to two values), through the existing
+  `llm.complete` helper (new: `tool_choice`, `temperature`, a per-request `timeout_s`, and `stop_reason`,
+  `block_types` and the tool input on the result; an error now carries its stop reason, block types and
+  cost). Prompt `shop_candidate_tags` v3 (v1 and v2 kept: v2 is the text-rows format). Temperature 0, no
+  `effort`, no thinking. The text-rows parser stays as the fallback for an older or text answer and as the
+  one retry format. Batches of at most 40 titles run concurrently (a thread pool; results are discarded if
+  the budget has ended). At most ONE retry per batch (for what is still untagged; the rows format when the
+  tool call errored or had no text), none for a call with no text content in under 2 seconds, none past
+  the deadline. Every call's outcome is logged, with the block types and stop reason when there is no text.
+  Failed calls are counted in the cost (`failed_usd`).
+- *Tag only what matters.* Order of a Shop Again: searches, hard filters and de-duplication, the pool cut to
+  80, ONE rank call, then the model tags the top 60 untagged candidates by rank. The title keyword reader
+  stands in for the rest. The diversity guard, the supply step and the stratified selection act on any
+  candidate that carries a tag, model or keyword (they cannot act on a candidate with none); the trace says
+  how many of the pool and of the batch came from each. Supplied candidates are appended in search order (no
+  second rank call) and tagged.
+- *Speed.* The Serper searches of a Shop Again run concurrently (first pages of every phrasing and every peer
+  at once, then further pages and the supply search one after another), only when the provider says it is
+  thread safe. The preference call, the tagging of what was shown and the typed query's first page run at the
+  same time. Phase timings (searches, preferences, tagging, rank, total) are in the footer and the trace.
+- *Jobs.* `POST /api/search` and `POST /api/shop-again` validate, start a background job and answer 202 with
+  `{"job_id"}`; `GET /api/job/<id>?session=<session id>` returns `{state, phase}` and, when done, the same
+  view as before (or `{status, error}`). The page polls every second and shows the phase under the spinner.
+  Ids are 128 random bits; a job started for a session is readable only with that session id (otherwise 404,
+  as for an unknown id); one job runs per session and 8 in all; a finished job is forgotten after 10 minutes.
+  Validation, the CSP, the rate and session limits are unchanged (checked before the job starts).
+- *One de-duplication* (`app.shop.dedupe`), used for typed searches, Shop Again candidates, the seen check and
+  the final batch. Duplicate = same product id, or same thumbnail, or same normalized title (lowercase,
+  punctuation, sizes and plain colour words removed; the brand and a finish such as walnut stay) with a price
+  within 1% whatever the seller, or same normalized title from the same seller. The best listing is kept (one
+  with a retailer link, then the lowest price). Anything shown or rated earlier always wins, counted apart
+  (shown before, rated before); the trace has the count each rule removed. Seller names have one
+  canonicalization (`retailers.seller_key`: case, punctuation, "&" and "and", ".com", " - Seller" and
+  " Furniture" suffixes), used by the retailer table, pins, caps and the rules. A pin stored with the old key
+  of a name containing "&" no longer matches.
+- *Fewer than 24.* One sentence says why ("81 seen or rated, 63 duplicates, 22 filtered out") and the trace
+  adds the seller-cap and guard counts. One refill search (the converged value, else the first open value,
+  with its search words) runs before giving up, inside the call cap and the time budget.
+- *Banner.* The line above the grid is one short sentence ("24 new results."; why fewer; the tagging failure
+  reason only when tagging failed; "Stopped early before ..." after a hard stop) and a "details" link that
+  opens "How I decided". Every warning is listed in that panel.
+
+**How to read the diagnostic.** `make shop-diagnose` (live, about $0.003) sends the candidate tagging call
+three ways on the newest session's titles: A text rows with 100 titles (the old call), B text rows with 40,
+C the forced tool call with 40. For each: the model id, `max_tokens`, latency, the outcome (ok or the
+exception class), the content block types, the stop reason, usage, rows parsed and the first 300
+characters. Read it like this: A and B failing with `block types: (none)` and `stop reason: end_turn` or
+nothing is the "no text content" failure and says it is not the batch size; B fine and A failing says the
+batch size is the problem (stay at 40); C fine with `block types: tool_use` and `stop reason: tool_use`
+says the tool call is the reliable form; C failing with an HTTP 400 class means the tool schema or
+`strict` was rejected (the call falls back to the rows format on its one retry, and tagging is then as
+reliable as B); `max_tokens` as the stop reason says the limit is too low for that format; a latency near the
+12 second timeout says the model is slow, not broken. Nothing in the output is a key or an environment
+value.
+
+**Replay 4.** `owner_session_replay_4.json` (46 ratings, a 265-candidate pool with repeated ids, shared
+thumbnails, a title at another seller's price, lowercase and "&" and ".com" seller spellings, and copies of
+shown and rated items): West Elm seller chip (5 of 12 like mass, no West Elm dislike), no tier chip (22
+dislikes in the design premium tier against liked mass 10: under 3 to 1), shape open (round 8 of 12, 67%,
+rectangular 33%), warm wood finish converged (83%, lift 1.417), modern-leaning style converged. With tagging
+answers forced empty it finishes in about 15 fake seconds with the failure reason in one sentence.
+
+**Limits.** The cause of the live failure ("no text content") is still not known: the tool call and the
+diagnostic are the answer to find out. Concurrency is only exercised with fakes; the real Serper and
+Anthropic latencies are unmeasured. Where tagging fails the lift tests cannot run, as before. The top-60
+rule means candidates ranked below 60 are guarded only by keywords.
 

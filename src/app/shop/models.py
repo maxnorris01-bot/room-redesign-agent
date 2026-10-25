@@ -81,6 +81,8 @@ class FilterCounts(BaseModel):
     kept: int = 0  # pool size after the filters and dedupe
     seller_capped: int = 0  # removed from the ranked list by the per-seller cap
     seen_excluded: int = 0  # Shop Again: already shown earlier in the session
+    rated_excluded: int = 0  # of those, how many were rated (stage 2g; seen_excluded counts both)
+    dedupe: dict[str, Any] = {}  # stage 2g: what each de-duplication rule removed
 
 
 def result_id(product_id: str) -> str:

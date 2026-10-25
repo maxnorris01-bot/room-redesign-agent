@@ -11,12 +11,15 @@ limits in `search.build_results`.
 
 from __future__ import annotations
 
-import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 from app.config import Config
 from app.llm import Budget
 from app.shop.candidates import TagBook, Taggable, tag_results
-from app.shop.decide import build_exposure, typed_dimensions
+from app.shop.clock import Clock
+from app.shop.decide import Exposure, build_exposure, typed_dimensions
 from app.shop.models import MAX_SEARCH_TEXT_CHARS, ShopQuery, StoredProfile
 from app.shop.prefs import (
     alignment_counts,
@@ -37,14 +40,16 @@ from app.shop.retailers import (
 from app.shop.search import (
     AgainContext,
     SearchOutcome,
+    _search_page,
     normalized_title_key,
     query_key,
     run_query,
+    seen_listing,
 )
 from app.shop.store import Session, rated_results, sellers_to_deprioritize
 from app.shop.thresholds import CONVERGED_MAX_SHARE, DIVERSITY_MAX_SHARE, MAX_PEER_SEARCHES
 from app.shop.vocab import DIMENSIONS
-from app.shopping import SearchProvider
+from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.thumbnails import Thumbnailer
 
 
@@ -217,6 +222,14 @@ def again_context(
         max_calls=config.shop_again_max_serper_calls,
         skip_pages=pages_fetched(session),
         tag_book=book,
+        seen=[
+            seen_listing(
+                r,
+                rated=session.ratings.get(rid) is not None
+                and session.ratings[rid].rating is not None,
+            )
+            for rid, r in session.results.items()
+        ],
         open_mass=open_mass,
         open_loved=open_loved,
         max_calls_total=config.shop_again_max_serper_calls_total,
@@ -232,36 +245,89 @@ def run_shop_again(
     search: SearchProvider,
     config: Config,
     thumbnailer: Thumbnailer | None = None,
+    clock: Clock | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[SearchOutcome, StoredProfile, ShopQuery]:
     """Build the profile and search again. Returns (outcome, new profile, the query used).
 
-    One preference call (with the rated items' thumbnails when they can be fetched), up to three
-    search phrasings within `shop_again_max_serper_calls` Serper calls, one rank call. Does not
-    change `session`; the caller records the outcome and the profile. Raises `ProviderError` when
-    the first Serper call fails and `BudgetExceededError` past a cap.
+    Stage 2g: the preference call, the model's tagging of everything already shown, and the typed
+    query's first Serper page all run at the same time (the page only when the provider is thread
+    safe); the rest of the searches then run concurrently inside `run_query`. A Shop Again aims for
+    `config.shop_target_s` seconds and stops optional work at `config.shop_hard_stop_s`. Phase
+    names go to `progress` ("Reading your ratings", then the search phases) so a page can show them.
+    Does not change `session`; the caller records the outcome and the profile. Raises
+    `ProviderError` when the first Serper call fails and `BudgetExceededError` past a cap.
     """
-    started = time.perf_counter()
+    clock = clock or Clock()
+    say = progress or (lambda _text: None)
+    started = clock.now()
     base = base_query(session)
     if base is None:
         raise LookupError("no typed search in this session")
-    budget = Budget(config)
+    # a Shop Again makes many small model calls (tagging batches, retries): its own step cap
+    budget = Budget(replace(config, max_steps=max(config.max_steps, config.shop_max_steps)))
     warnings: list[str] = []
-    # the model tags everything shown (once per result: cached in the session), so the lift test
-    # compares a like share with what the shopper really saw, not with what titles happen to say
     book = TagBook(cache=session.tag_cache)
     shown = list(session.results.values())
-    tag_results([Taggable(r.id, r.title, r.price, r.seller) for r in shown], book, budget)
+    skip_pages = pages_fetched(session)
+    prefetched: dict[tuple[str, int], list[SearchCandidate] | Exception] = {}
+    concurrent = getattr(search, "thread_safe", False) and search.name == "serper"
+
+    def tag_shown() -> float:
+        # the model tags everything shown (once per result: cached in the session), so the lift
+        # test compares a like share with what the shopper really saw, not what titles say
+        t0 = clock.now()
+        tag_results(
+            [Taggable(r.id, r.title, r.price, r.seller) for r in shown],
+            book,
+            budget,
+            clock,
+            workers=config.shop_search_workers,
+            until=started + config.shop_hard_stop_s,
+        )
+        return clock.now() - t0
+
+    def prefetch_typed() -> None:
+        text, page = base.search_text, skip_pages.get(query_key(base.search_text), 0) + 1
+        try:
+            prefetched[(text, page)] = _search_page(search, text, page, budget, clock)
+        except ProviderError as exc:
+            prefetched[(text, page)] = exc
+
+    say("Reading your ratings")
+    t_prefs = clock.now()
+    if concurrent:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_tag = ex.submit(tag_shown)
+            f_search = ex.submit(prefetch_typed)
+
+            def exposure() -> Exposure:
+                f_tag.result()
+                untagged = sum(1 for r in shown if book.get(r.id) is None)
+                return build_exposure(
+                    shown, book.merged(), keywords=bool(book.failures) and untagged > 0
+                )
+
+            profile, warning = build_profile(session, base, budget, thumbnailer, exposure=exposure)
+            tag_shown_s = f_tag.result()
+            f_search.result()
+    else:
+        tag_shown_s = tag_shown()
+        untagged_now = sum(1 for r in shown if book.get(r.id) is None)
+        exposure_now = build_exposure(
+            shown, book.merged(), keywords=bool(book.failures) and untagged_now > 0
+        )
+        profile, warning = build_profile(session, base, budget, thumbnailer, exposure=exposure_now)
+    t_prefs_done = clock.now()
     untagged = sum(1 for r in shown if book.get(r.id) is None)
-    exposure = build_exposure(shown, book.merged(), keywords=bool(book.failures) and untagged > 0)
-    profile, warning = build_profile(session, base, budget, thumbnailer, exposure=exposure)
     if warning:
         warnings.append(warning)
     query = apply_adjustments(base, profile)
     queries, dropped = build_phrasings(base, profile, query, config.shop_again_max_serper_calls)
-    outcome = run_query(
-        query, search, config, budget, warnings, started,
-        again_context(session, profile, config, queries, dropped, book, query),
-    )  # fmt: skip
+    ctx = again_context(session, profile, config, queries, dropped, book, query)
+    ctx.clock, ctx.progress, ctx.hard_stop_at = clock, progress, started + config.shop_hard_stop_s
+    ctx.prefetched = prefetched
+    outcome = run_query(query, search, config, budget, warnings, started, ctx, clock, progress)
     outcome.display_query = base  # the request chips keep showing only what the parser read
     if book.failed:
         outcome.warnings.append(
@@ -269,16 +335,30 @@ def run_shop_again(
             "(only seller, retailer, price and what you said)."
         )
     pool = outcome.composition.get("pool_after") or outcome.composition.get("pool_before") or {}
+    timings = outcome.composition.setdefault("timings", {})
+    timings["preferences"] = round(t_prefs_done - t_prefs, 3)
+    timings["tagging_shown"] = round(tag_shown_s, 3)
+    timings["total"] = round(clock.now() - started, 3)
+    outcome.seconds = {
+        **outcome.seconds,
+        "preferences": timings["preferences"],
+        "total": timings["total"],
+    }
     outcome.trace = {**profile.trace, "batch": outcome.composition, "tag_calls": book.log}
     outcome.tagging = {
         **profile.tagging,
         "candidates_total": pool.get("size", 0),
         "candidates_tagged": pool.get("tagged", 0),
+        "candidates_keyword": pool.get("keyword_tagged", 0),
+        "tag_top_n": config.shop_tag_top_n,
         "shown_total": len(shown),
         "shown_tagged": len(shown) - untagged,
         "tag_calls": book.calls,
         "tag_usd": round(book.usd, 6),
+        "tag_failed_usd": round(book.failed_usd, 6),
+        "tag_skipped": book.skipped,
         "tag_failures": book.failures[:3],
+        "tag_reason": book.reason if book.failed else "",
         "tag_call_log": book.log,
     }
     outcome.alignment = alignment_counts(outcome.results, profile, book.merged())
