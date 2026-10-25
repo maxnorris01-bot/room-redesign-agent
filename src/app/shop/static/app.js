@@ -222,10 +222,10 @@
       opts = { cls: 'neutral', detail: e.detail };
       tip = ['Mixed: your loved and liked items cost different amounts, so price does not steer.']
         .concat(e.evidence_titles);
-    } else if (e.attr_kind === 'seller') {
+    } else if (e.attr_kind === 'seller' || e.attr_kind === 'tier') {
       opts = { pin: true, pinned: !!e.pinned };
       tip = ['Learned from what you rated. Click the name to pin it:']
-        .concat(e.evidence_titles);
+        .concat(e.detail ? [e.detail] : [], e.evidence_titles);
     } else {
       tip = ['Learned from what you rated:'].concat(e.evidence_titles);
     }
@@ -309,6 +309,11 @@
         (d.lift !== undefined && d.lift !== null ? '; lift ' + d.lift : '')
       ]));
     }
+    if (d.leaves) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'labels: ' + Object.keys(d.leaves).map(function (k) { return k + ' ' + d.leaves[k]; }).join(', ')
+      ]));
+    }
     box.appendChild(h('p', { class: 'why-reason' }, [d.reason || '']));
     return box;
   }
@@ -359,6 +364,28 @@
         ', found ' + x.found + ', ' + x.new_candidates + ' new; ' + x.value + ' was ' + x.value_before + ' of the pool, now ' + x.value_after + '.'
       ]));
     });
+    (b.peers || []).forEach(function (x) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Peer retailer ' + x.peer + ': searched "' + x.search + '" page ' + x.page + ', found ' + x.found + ', ' +
+        x.new_candidates + ' new candidates' + (x.error ? ' (' + x.error + ')' : '') + '.'
+      ]));
+    });
+    if (b.tier) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Affinity tier ' + b.tier.tier.replace(/_/g, ' ') + ': up to ' + b.tier.cap + ' of ' + b.batch.size +
+        ' results' + (b.tier.pinned ? ' (pinned)' : '') + ', ' + b.tier.quota + ' reserved.'
+      ]));
+    }
+    var tierRows = countKeys([b.batch.tier]).map(function (k) { return [k.replace(/_/g, ' '), b.batch.tier[k]]; });
+    if (tierRows.length) box.appendChild(whyTable(['retailer tier', 'final batch'], tierRows));
+    (trace.tag_calls || []).forEach(function (c, i) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Tagging call ' + (i + 1) + (c.retry ? ' (retry)' : '') + ': ' + c.items + ' items, limit ' + c.max_tokens +
+        ' tokens, stop ' + (c.stop_reason || 'none') + ', ' + (c.json_ok ? 'valid JSON' : 'not valid JSON') +
+        ', ' + c.rows_parsed + ' rows read' + (c.error ? ', error: ' + c.error : '') +
+        (c.rows_parsed < c.items ? '; began: ' + c.raw : '') + '.'
+      ]));
+    });
     var quota = b.strata ? b.strata.quota : null;
     [['shape', 'shape'], ['color_finish', 'finish']].forEach(function (pair) {
       var t = compTable(pair[1], b.pool_before && b.pool_before[pair[0]], b.pool_after && b.pool_after[pair[0]],
@@ -402,6 +429,16 @@
     }
     seller.appendChild(h('p', { class: 'why-reason' }, [sel.reason || '']));
     panel.appendChild(seller);
+    var tr = trace.tier || {};
+    if (tr.candidates && tr.candidates.length) {
+      var tierBox = h('div', { class: 'why-dim' }, [h('h4', {}, ['retailer tier: ' + (tr.decision || 'none')])]);
+      tierBox.appendChild(whyTable(['tier', 'items', 'like share', 'sellers', 'verdict'],
+        tr.candidates.map(function (c) {
+          return [c.label, c.items, pct(c.like_share),
+            Object.keys(c.sellers).map(function (k) { return k + ' ' + c.sellers[k]; }).join(', '), c.verdict];
+        })));
+      panel.appendChild(tierBox);
+    }
     var pr = trace.price || {};
     var batch = batchBlock(state.search && state.search.trace, state.search && state.search.tagging);
     if (batch) panel.appendChild(batch);
@@ -441,6 +478,23 @@
     return parts.length ? 'largest share: ' + parts.join(', ') : '';
   }
 
+  function alignmentText(s) {
+    if (!s.alignment) return '';
+    if (s.alignment.signals === 0) return 'matches your preferences: n/a (nothing decided yet)';
+    return 'matches your preferences: ' + s.alignment.matches + ' of ' + s.alignment.total;
+  }
+
+  function tierText(s) {
+    var b = s.trace && s.trace.batch;
+    if (s.kind !== 'shop_again' || !b || !b.batch) return '';
+    var bits = [];
+    if (b.tier && b.batch.tier && b.batch.size) {
+      bits.push('affinity tier ' + Math.round(100 * (b.batch.tier[b.tier.tier] || 0) / b.batch.size) + '%');
+    }
+    if (b.batch.distinct_sellers) bits.push(b.batch.distinct_sellers + ' sellers');
+    return bits.join(', ');
+  }
+
   function taggingText(s) {
     var tg = s.tagging;
     if (s.kind !== 'shop_again' || !tg || tg.items_total === undefined) return '';
@@ -467,8 +521,9 @@
         ' = ' + s.serper_credits + ' credits (' + usd(s.provider_usd) + ')',
       'Anthropic ' + usd(s.anthropic_usd),
       'est. total ' + usd(s.total_usd),
-      s.alignment ? 'matches your preferences: ' + s.alignment.matches + ' of ' + s.alignment.total : '',
+      alignmentText(s),
       diversityText(s),
+      tierText(s),
       taggingText(s),
       'session ' + usd(state.sessionUsd),
       lookups

@@ -1,5 +1,5 @@
 ---
-version: 5
+version: 6
 ---
 You describe the products a shopper rated while shopping for one kind of product. You are given their
 original request and how it was understood, every result they rated (love, like or dislike) with its
@@ -17,9 +17,11 @@ one item to the next. Describe each item on its own, exactly as you see it.
 - `items`: one entry for EVERY rated result, with its `id` copied exactly, and for each field below a
   value, or null when the title, the photo and the price do not show it. Never guess a field
   from the other items.
-  - `shape`, `material`, `color_finish` (the finish of the main surface), `frame_color` (the colour of
-    the frame or legs) and `style` (the style the item itself shows, not the shopper's): each MUST be
-    one of the allowed values listed under "Allowed values" in the request, or null. Use `other` only
+  - `shape`, `material`, `color_finish` (the finish of the main surface) and `frame_color` (the colour of
+    the frame or legs): each MUST be one of the allowed values listed under "Allowed values" in the
+    request, or null. `style` (the style the item itself shows, not the shopper's) is a LIST of up to
+    two values from the allowed style values (an industrial table with brass accents may be
+    ["industrial", "glam"]); an empty list when the item shows no style. Use `other` only
     when the item clearly shows the dimension but none of the values fit. A leg or base type, a size
     and anything else is not tagged;
   - `quality_cues`: short phrases (one to three words) for build or finish you can see in the title,

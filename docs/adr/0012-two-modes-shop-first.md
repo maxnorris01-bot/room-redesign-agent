@@ -263,6 +263,10 @@ eval to tune):
 | SELLER_DISLIKES_TO_DEPRIORITIZE | 2 | dislikes (and no love or like) before a seller is ranked last |
 | MIN_AFFINITY_ITEMS | 2 | loved or liked items (and no dislike) for a seller affinity |
 | SELLER_MIN_LIKE_SHARE | 0.40 | and the seller holds at least this share of the like mass (stage 2e) |
+| SELLER_NET_DISLIKE_RATIO | 3 | a seller's (or tier's) liked mass must be at least this many times its disliked items (stage 2f; replaces "no dislike from that seller") |
+| TIER_MIN_LIKE_SHARE | 0.50 | share of the like mass a retailer tier needs for a "retailers like X" chip, with 2 items (stage 2f) |
+| TIER_BATCH_SHARE | 0.50 | most of a batch the affinity tier may take, 0.80 when pinned (stage 2f) |
+| MAX_PEER_SEARCHES | 3 | peer retailer searches per Shop Again (stage 2f) |
 | QUALITY_CUE_MIN_SHARE | 0.50 | share of loved and liked items showing a quality cue |
 | QUALITY_CUE_MIN_ITEMS | 2 | items showing a quality cue |
 | PRICE_UPPER_PERCENTILE | 0.67 | loved prices at or above this position: an upper cluster |
@@ -405,3 +409,85 @@ each Shop Again, plus one small call per supply step. At about 14 output tokens 
 on the default model (Haiku 5.5, $0.10 and $0.50 per million tokens) that is about $0.001 to $0.002 per 100
 titles, inside the target of $0.001 to $0.003 per Shop Again; on Haiku 4.5 prices ($1 and $5) it would be
 ten times that. The mock's token counts are assumed, not measured. Not verified live.
+
+## Amendment, stage 2f (2026-10-24): diagnose tagging, nets for dislikes, retailers as a signal, style families
+
+**What failed (observed live with 2e, the owner's third session; 9 of 9 rated items tagged with photos,
+48 of 48 shown results tagged).**
+- *Candidate tagging failed* ("candidates tagged 0 of 72 in 2 calls") and the trace did not say why. With no
+  pool tags, 44 of 72 candidates had an unknown shape, the lift tests could not run, the supply step could not
+  act and "matches your preferences" read 0 of 24.
+- *The wrong kinds of retailers.* The owner loved or liked West Elm (4 items, 67% of the like mass, lift 3.6),
+  World Market and Lowe's. The pool was Lowe's (12), Walmart sellers (about 20), Wayfair (10), Home Depot (3);
+  nothing from Article, CB2, Crate and Barrel or Pottery Barn. Only 2 searches ran.
+- *The West Elm chip was blocked* by "no dislike from that seller" (4 likes, 1 dislike), so no seller-targeted
+  search ran.
+- *Style split* across industrial, mid-century, glam and modern, which are one modern family, because a style
+  was a single value per item.
+- *"0 of 24"* counted only inferred likes and showed 0 when nothing was decided.
+
+**Changes.**
+- *Diagnosable, tolerant candidate tagging.* Each call is logged (items, token limit, stop reason, whether the
+  answer was valid JSON, rows read, the first 200 characters of the raw answer) in the response, the session
+  file and the trace. The parser reads a JSON answer, a truncated one, a code fence, an introduction plus a
+  list, list markers, quotes, any case, "key: value" values, fewer or more than five values and rows in any
+  order (matched by their leading number). A call that ends with `max_tokens` (its partial last row dropped)
+  or reads under 80% of its rows is retried once as two calls of half the size, only for what is still
+  untagged. The token limit is twice the estimate (16 tokens a row). A failure shows its reason on the page:
+  "Candidate tagging failed: the answer was cut off at the 928-token limit after 0 of 24 rows." `llm.complete`
+  gained `keep_truncated` (returns a partial answer with its stop reason). The cause of the live failure is
+  not known; the log will show it.
+- *Net dislike rule.* A seller (or tier) needs liked weighted mass (loved 3, liked 1) at least
+  `SELLER_NET_DISLIKE_RATIO` (3) times its disliked items; the other conditions stay. 4 likes against 1
+  dislike passes, 3 to 1 passes exactly, 2 to 2 and 5 to 2 do not. The dislike count is on the chip tooltip.
+  Seller names are canonicalized ("Walmart - JerFit Life" is Walmart; "Crate and Barrel" is "Crate & Barrel").
+- *Retailer tiers and peers* (`src/app/shop/retailers.py`, see "The retailer table" below). A tier with at
+  least 50% of the like mass, 2 loved or liked items and the net rule gets a "retailers like West Elm" chip
+  (deletable, pinnable). **My decision:** only design tiers can earn it (design premium and design
+  mainstream); a marketplace and budget tier never does, because liking a Lowe's table is about the table, and
+  the owner's own second session would otherwise have produced "retailers like Home Depot". When a seller or
+  tier affinity exists a Shop Again searches up to 3 peers (one page each, "Article wood and metal coffee
+  table with storage"), taken in order from peers not yet searched in this session (kept in the session
+  file); later Shop Agains rotate on; a peer that found nothing new is never searched again, and once every
+  peer has been searched one that found something is asked for its next page. The total Serper cap is 9
+  (`APP_SHOP_AGAIN_MAX_SERPER_CALLS_TOTAL`, default 9; it replaces the 2e `..._OPEN` cap): up to 4 phrasings,
+  3 peers, then the supply step. New candidates are tagged like the rest.
+- *Batch allocation.* Results from the affinity tier may take up to 50% of a batch (80% if the tier chip is
+  pinned; reserved up to the tier's like share). The seller caps still apply (4, 50% for an affinity seller,
+  80% pinned). The tier pass runs first and respects the open shape plan, then the shape strata and the rest
+  fill in ranked order; the batch is returned in ranked order.
+- *Style as a family.* Per-item style is up to two values (prompts `shop_prefs` v6 and `shop_candidate_tags`
+  v2, older versions kept). Decisions use two families: modern-leaning (modern, mid-century, industrial, glam,
+  scandinavian) and traditional-leaning (traditional, farmhouse, boho, rustic). Converged at the soft 60%
+  share on a family, open needs two families at 30%; leaves appear only in the trace and tooltips, and an
+  item naming both families counts in both.
+- *Alignment.* "Matches your preferences" is measured against every decided signal (converged likes, seller
+  and tier affinity, a price band, the shopper's own stated likes) and reads "n/a (nothing decided yet)" when
+  there are none. The footer also shows the affinity tier's share of the batch and the number of distinct
+  sellers.
+
+**The retailer table.** `src/app/shop/retailers.py` holds `RETAILERS`, rows of `Retailer(name, tier,
+search_name, peers, aliases)`. It is owner-editable configuration and it is judgment, not data: check it and
+change it. To add a retailer add a row (a canonical name, a tier from `TIERS`, the words to search with, peers
+by canonical name, most similar first, and other spellings as aliases); to change a peer order edit the
+`peers` tuple; a retailer not in the table has no tier and no peers. Design premium: West Elm, CB2, Crate &
+Barrel, Pottery Barn, Article, Room & Board, Design Within Reach, Anthropologie, Rejuvenation, Joybird,
+Burrow, Blu Dot, Herman Miller, RH, Williams Sonoma Home. Design mainstream: AllModern, World Market, Target,
+Wayfair, IKEA. Marketplace and budget: Walmart, Amazon, Lowe's, Home Depot, Overstock, Temu, AliExpress,
+Wish. `AFFINITY_TIERS` (the two design tiers) says which tiers can earn a chip and peer searches.
+
+**Replays.** Replay 1 (West Elm) keeps shape open, price mixed and the West Elm chip, and gains the tier chip
+and 3 peer searches (its summary now says "from West Elm and similar retailers"). Replay 2 (Home Depot) keeps
+no seller or tier chip (the budget tier never earns one) and its warm wood finish. Replay 3
+(`owner_session_replay_3.json`, an authored 48-title shown list and 72-candidate pool): West Elm seller chip
+(8 of 12 like mass, 8 against 1 dislike, lift 3.56), tier chip "retailers like West Elm", style one converged
+modern-leaning family (leaves industrial, glam, mid-century, modern), shape open (67/33), price mixed,
+material and frame color not decided (coverage), warm wood finish just under the lift test (1.295); peers
+Article, CB2 and Crate & Barrel found 8 new candidates each; the supply step ran for round; the batch holds 14
+rectangular, 10 round, 12 design premium.
+
+**Limits.** The retailer table and the 50% and 3:1 numbers are judgment. The mock candidate tagger reads only
+title keywords and the mock peer catalogues are synthetic, so how many new candidates real peer searches find,
+and whether a real model's tags reach 60% coverage, are not measured. A worst-case Shop Again is 9 Serper
+calls (18 credits, $0.018) plus about $0.002 to $0.004 of Anthropic calls including tagging.
+

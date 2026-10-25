@@ -89,7 +89,7 @@ def model_tags(sess: Session) -> dict[str, ItemTags]:
         tags[rid] = ItemTags(
             id=rid, shape=got.get("shape"), material=got.get("material"),
             color_finish=got.get("color_finish"), frame_color=got.get("frame_color"),
-            style=got.get("style"), quality_cues=[],
+            style=[got["style"]] if got.get("style") else [], quality_cues=[],
         )  # fmt: skip
     return tags
 
@@ -240,7 +240,7 @@ def test_tagging_uses_the_model_only_and_unknowns_stay_unknown() -> None:
     r = Rated("a", "love", "", "Round Walnut Table", 100.0, "S", "")
     model = ItemTags(
         id="a", shape=None, material="steel", color_finish=None, frame_color="brass",
-        style="modern", quality_cues=["Solid Wood", "storage"],
+        style=["modern"], quality_cues=["Solid Wood", "storage"],
     )  # fmt: skip
     item = tag_item(r, model)
     assert item.values["material"] == "metal"  # the model's reading, folded into the vocabulary
@@ -493,7 +493,7 @@ def test_quality_cues_need_half_the_positives_visible_evidence_and_are_never_fea
     )
     tags = {
         rid: ItemTags(
-            id=rid, shape=None, material=None, color_finish=None, frame_color=None, style=None,
+            id=rid, shape=None, material=None, color_finish=None, frame_color=None, style=[],
             quality_cues=["solid walnut", "storage", "lift-top storage"],
         )
         for rid in rated
@@ -651,7 +651,7 @@ def test_seller_affinity_also_needs_a_lift_over_what_was_shown() -> None:
     got = seller_affinity_entry(rated, spread + others[:1] + mostly_one[:1])
     assert (
         got is not None
-        and got.text == "seller: WestElm"
+        and got.text == "seller: West Elm"
         and got.lift is not None
         and got.lift >= 1.3
     )
@@ -773,7 +773,7 @@ def test_an_open_dimension_without_search_words_adds_no_phrasing() -> None:
 def test_the_service_records_dropped_phrasings_and_warns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg = config(shop_again_max_serper_calls=2)
+    cfg = config(shop_again_max_serper_calls=2, shop_again_max_serper_calls_total=2)
     use_client(monkeypatch, RouterClient())
     shown = [
         cand(
@@ -1016,15 +1016,15 @@ def test_deleted_chips_stay_deleted_across_recomputes() -> None:
     base = query(request="tables")
     prof = merged(None, sess, base)
     texts = [e.text for e in prof.inferred]
-    assert "round" in texts and "seller: WestElm" in texts
+    assert "round" in texts and "seller: West Elm" in texts
     gone = remove_entry(prof, "inferred", "round")
     assert gone is not None
     again = merged(gone, sess, base)
     assert "round" not in [e.text for e in again.inferred] and "round" in again.removed
-    gone2 = remove_entry(again, "inferred", "seller: WestElm")
+    gone2 = remove_entry(again, "inferred", "seller: West Elm")
     assert gone2 is not None
     final = merged(gone2, sess, base)
-    assert "seller: WestElm" not in [e.text for e in final.inferred]
+    assert "seller: West Elm" not in [e.text for e in final.inferred]
     open_chip = ProfileEntry(
         text="shape: open",
         attr_kind="open",
@@ -1147,4 +1147,4 @@ def test_the_pin_endpoint_validates_pins_and_keeps_the_security_behaviour(tmp_pa
     )
     assert ok.all_headers()["Content-Security-Policy"] == CSP
     view2 = json.loads(app.handle("GET", f"/api/session?id={sid}", hdrs).body)
-    assert view2["profile"]["pinned_sellers"] == ["hartwellco"]
+    assert view2["profile"]["pinned_sellers"] == ["hartwellandco"]

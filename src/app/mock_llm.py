@@ -662,7 +662,11 @@ def mock_prefs_v2_payload(request_text: str) -> dict[str, Any]:
 
 
 _REPLAY_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "shop"
-_REPLAY_FILES = ("owner_session_replay.json", "owner_session_replay_2.json")
+_REPLAY_FILES = (
+    "owner_session_replay.json",
+    "owner_session_replay_2.json",
+    "owner_session_replay_3.json",
+)
 
 
 def _replay_attrs() -> dict[str, dict[str, Any]]:
@@ -716,7 +720,7 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
                 {
                     "id": rid, "shape": a.get("shape"), "material": a.get("material"),
                     "color_finish": a.get("color_finish"), "frame_color": a.get("frame_color"),
-                    "style": a.get("style"), "quality_cues": [],
+                    "style": [a["style"]] if a.get("style") else [], "quality_cues": [],
                 }
             )  # fmt: skip
             continue
@@ -737,7 +741,7 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
                 "material": title_value("material", title),
                 "color_finish": title_value("color_finish", title),
                 "frame_color": title_value("frame_color", title),
-                "style": title_value("style", title),
+                "style": [x for x in [title_value("style", title)] if x],
                 "quality_cues": cues,
             }
         )

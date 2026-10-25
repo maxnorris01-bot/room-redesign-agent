@@ -17,13 +17,22 @@ from app.config import Config
 from app.llm import Budget
 from app.shop.candidates import TagBook, Taggable, tag_results
 from app.shop.decide import build_exposure, typed_dimensions
-from app.shop.models import ShopQuery, StoredProfile
+from app.shop.models import MAX_SEARCH_TEXT_CHARS, ShopQuery, StoredProfile
 from app.shop.prefs import (
     alignment_counts,
+    alignment_signals,
     apply_adjustments,
     build_phrasings,
     build_profile,
     seller_name,
+)
+from app.shop.retailers import (
+    AFFINITY_TIERS,
+    Retailer,
+    peers_of,
+    retailer_of,
+    seller_key,
+    tier_members,
 )
 from app.shop.search import (
     AgainContext,
@@ -33,10 +42,9 @@ from app.shop.search import (
     run_query,
 )
 from app.shop.store import Session, rated_results, sellers_to_deprioritize
-from app.shop.thresholds import CONVERGED_MAX_SHARE, DIVERSITY_MAX_SHARE
+from app.shop.thresholds import CONVERGED_MAX_SHARE, DIVERSITY_MAX_SHARE, MAX_PEER_SEARCHES
 from app.shop.vocab import DIMENSIONS
 from app.shopping import SearchProvider
-from app.shopping_retrieval import seller_key
 from app.thumbnails import Thumbnailer
 
 
@@ -60,6 +68,74 @@ def pages_fetched(session: Session) -> dict[str, int]:
     return out
 
 
+def peer_plan(
+    session: Session, profile: StoredProfile, adjusted: ShopQuery
+) -> list[tuple[str, str, str]]:
+    """The peer retailer searches for this Shop Again: (seller key, name, search text).
+
+    Only when a seller affinity or a tier affinity was decided. Candidates are the peers of the
+    liked seller and of the liked sellers of the tier (most similar first), then the rest of the
+    tier, never a retailer the shopper already rated, never one the session deprioritizes. Peers
+    not searched yet in this session come first (up to `MAX_PEER_SEARCHES`, so later Shop Agains
+    rotate on); if fewer than that remain, a peer that returned something new before is searched
+    again (its next page); a peer that returned nothing new is never searched again.
+    """
+    seller = next((e for e in profile.inferred if e.attr_kind == "seller"), None)
+    tier = next((e for e in profile.inferred if e.attr_kind == "tier"), None)
+    if seller is None and tier is None:
+        return []
+    rows = rated_results(session)
+    rated_keys = {seller_key(r["result"].seller) for r in rows if r["result"].seller}
+    mass: dict[str, int] = {}
+    for r in rows:
+        if r["rating"] in ("love", "like") and r["result"].seller:
+            weight = 3 if r["rating"] == "love" else 1
+            mass[r["result"].seller] = mass.get(r["result"].seller, 0) + weight
+    sources: list[str] = []
+    if seller is not None:
+        found_seller = retailer_of(seller_name(seller))
+        if found_seller is not None and found_seller.tier in AFFINITY_TIERS:
+            sources.append(seller_name(seller))  # a marketplace seller has no peers to search
+    if tier is not None and tier.values:
+        in_tier = [
+            name
+            for name, _ in sorted(mass.items(), key=lambda kv: (-kv[1], kv[0]))
+            if (found := retailer_of(name)) is not None and found.tier == tier.values[0]
+        ]
+        sources += [n for n in in_tier if seller_key(n) not in {seller_key(x) for x in sources}]
+    ordered: list[Retailer] = []
+    skip = sellers_to_deprioritize(session)
+    for src in sources:
+        ordered += peers_of(src)
+    if tier is not None and tier.values:
+        ordered += tier_members(tier.values[0])
+    if not ordered:
+        return []
+    seen_keys: set[str] = set()
+    peers: list[Retailer] = []
+    for cand in ordered:
+        key = seller_key(cand.name)
+        if key in seen_keys or key in rated_keys or key in skip:
+            continue
+        seen_keys.add(key)
+        peers.append(cand)
+    done = session.searched_peers
+    fresh = [p for p in peers if seller_key(p.name) not in done][:MAX_PEER_SEARCHES]
+    again_ok = [
+        p
+        for p in peers
+        if seller_key(p.name) in done
+        and done[seller_key(p.name)].get("new", 0) > 0
+        and not done[seller_key(p.name)].get("empty")
+    ]
+    chosen = [*fresh, *again_ok][:MAX_PEER_SEARCHES]
+    out: list[tuple[str, str, str]] = []
+    for p in chosen:
+        text = " ".join(f"{p.search_name} {adjusted.search_text}".split())[:MAX_SEARCH_TEXT_CHARS]
+        out.append((seller_key(p.name), p.name, text))
+    return out
+
+
 def again_context(
     session: Session,
     profile: StoredProfile,
@@ -67,6 +143,7 @@ def again_context(
     queries: list[str],
     dropped: list[str] | None = None,
     book: TagBook | None = None,
+    adjusted: ShopQuery | None = None,
 ) -> AgainContext:
     """Exclusions, seller rules, the profile (stated, converged, open, guesses), the phrasings.
 
@@ -109,6 +186,7 @@ def again_context(
     for dim in converged:
         caps[dim] = CONVERGED_MAX_SHARE
     caps = {d: c for d, c in caps.items() if d not in typed_dims and d in DIMENSIONS}
+    tier = next((e for e in inferred if e.attr_kind == "tier"), None)
     price_line = ""
     if price is not None:
         price_line = f"mixed ({price.detail})" if price.status == "mixed" else price.text
@@ -141,7 +219,11 @@ def again_context(
         tag_book=book,
         open_mass=open_mass,
         open_loved=open_loved,
-        max_calls_open=config.shop_again_max_serper_calls_open,
+        max_calls_total=config.shop_again_max_serper_calls_total,
+        affinity_tier=tier.values[0] if tier is not None and tier.values else "",
+        tier_share=(tier.share or 0.0) if tier is not None else 0.0,
+        tier_pinned=bool(tier is not None and tier.pinned),
+        peer_queries=peer_plan(session, profile, adjusted) if adjusted is not None else [],
     )
 
 
@@ -178,16 +260,16 @@ def run_shop_again(
     queries, dropped = build_phrasings(base, profile, query, config.shop_again_max_serper_calls)
     outcome = run_query(
         query, search, config, budget, warnings, started,
-        again_context(session, profile, config, queries, dropped, book),
+        again_context(session, profile, config, queries, dropped, book, query),
     )  # fmt: skip
     outcome.display_query = base  # the request chips keep showing only what the parser read
     if book.failed:
         outcome.warnings.append(
-            "The shown and candidate results could not be tagged, so no attribute preference was "
-            "applied (only seller, price and what you said)."
+            f"Candidate tagging failed: {book.reason}. No attribute preference was applied "
+            "(only seller, retailer, price and what you said)."
         )
     pool = outcome.composition.get("pool_after") or outcome.composition.get("pool_before") or {}
-    outcome.trace = {**profile.trace, "batch": outcome.composition}
+    outcome.trace = {**profile.trace, "batch": outcome.composition, "tag_calls": book.log}
     outcome.tagging = {
         **profile.tagging,
         "candidates_total": pool.get("size", 0),
@@ -197,6 +279,8 @@ def run_shop_again(
         "tag_calls": book.calls,
         "tag_usd": round(book.usd, 6),
         "tag_failures": book.failures[:3],
+        "tag_call_log": book.log,
     }
     outcome.alignment = alignment_counts(outcome.results, profile, book.merged())
+    outcome.alignment_signals = alignment_signals(profile)
     return outcome, profile, query

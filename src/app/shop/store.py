@@ -34,7 +34,7 @@ from app.shop.models import (
     ShopResult,
     StoredProfile,
 )
-from app.shopping_retrieval import seller_key
+from app.shop.retailers import seller_key
 
 SESSION_SCHEMA_VERSION = 1
 DEFAULT_ROOT = Path("shop-data")
@@ -86,6 +86,7 @@ class SearchRecord(_Model):
     tagging: dict[str, Any] = {}  # a Shop Again: items tagged, images, retry, fallback
     alignment_matches: int | None = None  # Shop Again: results matching the inferred preferences
     alignment_total: int | None = None
+    alignment_signals: int | None = None  # decided signals the match was measured against (2f)
 
 
 class RatingRecord(_Model):
@@ -128,6 +129,8 @@ class Session(_Model):
     # stage 2e: the model's tags of shown and candidate results by result id (a dimension the title
     # does not show is null); a result in here is never tagged again
     tag_cache: dict[str, dict[str, str | None]] = Field(default_factory=dict)
+    # stage 2f: peer retailers already searched: key -> {name, searches, new, empty}
+    searched_peers: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 def valid_session_id(session_id: str) -> bool:

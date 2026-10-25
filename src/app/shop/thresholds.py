@@ -33,6 +33,11 @@ SELLER_DISLIKES_TO_DEPRIORITIZE = 2  # unchanged from stage 2
 # seller affinity
 MIN_AFFINITY_ITEMS = 2  # loved or liked items from one seller, and no dislike of it
 SELLER_MIN_LIKE_SHARE = 0.40  # and the seller holds at least this share of the like mass (2e)
+SELLER_NET_DISLIKE_RATIO = 3  # liked mass must be at least this times the disliked mass (2f)
+TIER_MIN_LIKE_SHARE = 0.50  # a retailer tier needs this share of the like mass (2f)
+TIER_BATCH_SHARE = 0.50  # most of a batch the affinity tier may take (0.80 when pinned) (2f)
+MAX_PEER_SEARCHES = 3  # peer retailers searched per Shop Again (2f)
+ALIGNMENT_NOTE = "n/a (nothing decided yet)"
 
 # quality cues (non-exclusive phrases such as "solid wood"): share of the positive items showing it
 QUALITY_CUE_MIN_SHARE = 0.50
@@ -74,6 +79,10 @@ def all_thresholds() -> dict[str, float | int]:
         "SELLER_DISLIKES_TO_DEPRIORITIZE": SELLER_DISLIKES_TO_DEPRIORITIZE,
         "MIN_AFFINITY_ITEMS": MIN_AFFINITY_ITEMS,
         "SELLER_MIN_LIKE_SHARE": SELLER_MIN_LIKE_SHARE,
+        "SELLER_NET_DISLIKE_RATIO": SELLER_NET_DISLIKE_RATIO,
+        "TIER_MIN_LIKE_SHARE": TIER_MIN_LIKE_SHARE,
+        "TIER_BATCH_SHARE": TIER_BATCH_SHARE,
+        "MAX_PEER_SEARCHES": MAX_PEER_SEARCHES,
         "QUALITY_CUE_MIN_SHARE": QUALITY_CUE_MIN_SHARE,
         "QUALITY_CUE_MIN_ITEMS": QUALITY_CUE_MIN_ITEMS,
         "PRICE_BAND_MIN_MASS": PRICE_BAND_MIN_MASS,

@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import BrowserContext, Page, Route, sync_playwright
 
-from app.shop.replay import REPLAY_FILE_2, seed_session
+from app.shop.replay import REPLAY_FILE_2, REPLAY_FILE_3, seed_session
 from app.shop.store import SessionStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -200,6 +200,17 @@ def wait_pref_chip(page: Page, text: str) -> Any:
     return chip.first
 
 
+PREMIUM_NAMES = (
+    "West Elm",
+    "Article",
+    "CB2",
+    "Crate & Barrel",
+    "Pottery Barn",
+    "Room & Board",
+    "Joybird",
+)
+
+
 def seed_replays(data_dir: str) -> dict[str, str]:
     """Put the owner's recorded session (and a copy whose preference call is forced to fail) in the
     server's session folder; the page opens them by id."""
@@ -222,6 +233,22 @@ def seed_replays(data_dir: str) -> dict[str, str]:
         "replay2": second.session_id,
         "untagged": untagged.session_id,
     }
+
+
+def seed_replays_3(data_dir: str) -> dict[str, str]:
+    """The owner's third session, and a copy where the candidate tagging call fails (the mock-only
+    marker sits in a title in each half of the shown results, so the retry in halves fails too)."""
+    store = SessionStore(Path(data_dir))
+    clean = seed_session(store, replay=REPLAY_FILE_3)
+    broken = seed_session(
+        store,
+        replay=REPLAY_FILE_3,
+        shown_titles={
+            "S1": "Rectangular Walnut Coffee Table MOCK_TAGS_FAIL",
+            "S41": "Round Oak Coffee Table MOCK_TAGS_FAIL",
+        },
+    )
+    return {"replay3": clean.session_id, "tagfail3": broken.session_id}
 
 
 def open_session(browser: Any, base: str, session_id: str, width: int = 1280) -> tuple[Any, Page]:
@@ -439,8 +466,8 @@ def run_replay_2(
     page.click("#shop-again")
     wait_for_results(page)
     check(
-        "could not be tagged" in page.inner_text("#status"),
-        "the page says the results could not be tagged",
+        "Candidate tagging failed:" in page.inner_text("#status"),
+        "the page says candidate tagging failed, with the reason",
     )
     chip_text = page.inner_text("#pref-chips")
     check("warm wood" not in chip_text, "no finish chip without the model's tags of what was shown")
@@ -454,7 +481,114 @@ def run_replay_2(
     context.close()
 
 
-def run_checks(base: str, shots: Path, replay_ids: dict[str, str]) -> None:
+def run_replay_3(
+    browser: Any, base: str, shots: Path, ids: dict[str, str], console_errors: list[str]
+) -> None:
+    print("the owner's third session (West Elm, design retailer peers), replayed through the page")
+    context, page = open_session(browser, base, ids["replay3"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    request_chips = chips(page)
+    before = title_texts(page)
+    page.click("#shop-again")
+    wait_for_results(page)
+    page.locator("#prefs").wait_for(state="visible")
+    seller_chip = wait_pref_chip(page, "seller: West Elm")
+    check(
+        "inferred" in seller_chip.get_attribute("class"),
+        "the West Elm seller chip appears despite one dislike (net rule)",
+    )
+    tier_chip = wait_pref_chip(page, "retailers like West Elm")
+    check("inferred" in tier_chip.get_attribute("class"), "the retailer tier chip appears")
+    wait_pref_chip(page, "modern-leaning style")
+    check("converged" not in page.inner_text("#pref-chips"), "no raw status words in the chips")
+    check(
+        "style: open" not in page.inner_text("#pref-chips"),
+        "style is a converged modern family, not open",
+    )
+    wait_pref_chip(page, "shape: open")
+    wait_pref_chip(page, "price: mixed")
+    check(chips(page) == request_chips, "the request chips are unchanged")
+    summary = page.inner_text("#prefs-summary")
+    check(
+        "West Elm and similar retailers" in summary and "modern-leaning" in summary,
+        f"summary: {summary}",
+    )
+    batch = title_texts(page)
+    check(not set(batch) & set(before), "the Shop Again batch shows nothing seen before")
+    sellers = page.locator("#grid .card .seller").all_inner_texts()
+    peers_in = {s for s in sellers if s in ("Article", "CB2", "Crate & Barrel")}
+    check(len(peers_in) == 3, f"the batch includes peer retailers {sorted(peers_in)}")
+    check(
+        sum(1 for s in sellers if s in PREMIUM_NAMES) <= 12,
+        "design premium retailers hold at most half of the batch",
+    )
+    check(max(sellers.count(s) for s in set(sellers)) <= 12, "no seller above half the batch")
+    check(
+        max_shape_share(page) <= 0.6,
+        f"no shape above 60% of the batch ({max_shape_share(page):.0%})",
+    )
+    foot = lookups_text(page)
+    print("   footer:", foot)
+    check("candidates tagged" in foot, "footer shows candidates tagged N of M")
+    check("affinity tier" in foot and " sellers" in foot, "footer shows the tier share and sellers")
+    check("matches your preferences:" in foot and "n/a" not in foot, "alignment is a real count")
+    import re as _re
+
+    m = _re.search(r"candidates tagged (\d+) of (\d+)", foot)
+    check(m is not None and m.group(1) == m.group(2), "tag coverage is complete")
+    page.screenshot(path=str(shots / "22-replay3-chips.png"))
+
+    page.locator("#why-toggle").click()
+    why = page.locator("#why")
+    text = why.inner_text()
+    check(
+        "Peer retailer Article" in text and "Peer retailer CB2" in text,
+        "the peers are in the trace",
+    )
+    check(
+        _re.search(r"Peer retailer Article: searched .* found 8, 8 new", text) is not None,
+        "with their new candidates",
+    )
+    check("Affinity tier design premium: up to 12" in text, "the tier cap is in the trace")
+    check("retailer tier" in text and "final batch" in text, "the tier makeup table is shown")
+    check("labels: " in text and "industrial" in text, "the style leaves are in the trace")
+    check(
+        "tagging call" in text.lower() or "candidates tagged" in text, "tagging coverage is shown"
+    )
+    page.screenshot(path=str(shots / "23-replay3-trace.png"), full_page=True)
+    page.set_viewport_size({"width": 390, "height": 844})
+    check(
+        page.evaluate("document.documentElement.scrollWidth - window.innerWidth") <= 1,
+        "no sideways scroll at 390 px with the panel open",
+    )
+    page.screenshot(path=str(shots / "25-replay3-mobile.png"), full_page=True)
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.locator("#why-toggle").click()
+    page.screenshot(path=str(shots / "24-replay3-grid.png"))
+    context.close()
+
+    print("the same session with candidate tagging failing in both halves")
+    context, page = open_session(browser, base, ids["tagfail3"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    page.click("#shop-again")
+    wait_for_results(page)
+    status = page.inner_text("#status")
+    check("Candidate tagging failed:" in status, f"the page shows the real reason: {status[:140]}")
+    check("cut off at the" in status and "token limit" in status, "the reason names the cut-off")
+    check("warm wood" not in page.inner_text("#pref-chips"), "no attribute chip without tags")
+    page.locator("#why-toggle").click()
+    why = page.locator("#why").inner_text()
+    check(
+        "stop max_tokens" in why and "not valid JSON" in why, "the tagging calls are in the trace"
+    )
+    check("(retry)" in why, "the retry in halves is shown")
+    page.screenshot(path=str(shots / "26-replay3-tagging-failed.png"), full_page=True)
+    context.close()
+
+
+def run_checks(
+    base: str, shots: Path, replay_ids: dict[str, str], base3: str, ids3: dict[str, str]
+) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -714,6 +848,7 @@ def run_checks(base: str, shots: Path, replay_ids: dict[str, str]) -> None:
             page.screenshot(path=str(shots / "11-scenario-b-grid-after.png"))
 
             run_replay(browser, base, shots, replay_ids, console_errors)
+            run_replay_3(browser, base3, shots, ids3, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -725,32 +860,56 @@ def _clip(page: Page, chip: Any) -> dict[str, float]:
     return {"x": 0, "y": top, "width": 1280, "height": min(900 - top, 260)}
 
 
+def start_server(data_dir: str, extra_env: dict[str, str] | None = None) -> tuple[Any, int]:
+    """Start `scripts/shop.py` on a free port in mock mode; returns (process, port)."""
+    port = free_port()
+    env: dict[str, Any] = {
+        **os.environ, "APP_LLM_MODE": "mock", "APP_TRACING_DISABLED": "1", **(extra_env or {}),
+    }  # fmt: skip
+    server = subprocess.Popen(
+        [sys.executable, str(ROOT / "scripts" / "shop.py"), "--port", str(port),
+         "--data-dir", data_dir],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )  # fmt: skip
+    assert server.stdout is not None
+    first = server.stdout.readline()  # printed once the socket is bound
+    print(first.strip())
+    if "127.0.0.1" not in first:
+        server.kill()
+        raise RuntimeError("the server did not start")
+    return server, port
+
+
+def stop_server(server: Any) -> None:
+    server.terminate()
+    try:
+        server.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        server.wait()
+
+
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
-    port = free_port()
-    env: dict[str, Any] = {**os.environ, "APP_LLM_MODE": "mock", "APP_TRACING_DISABLED": "1"}
-    with tempfile.TemporaryDirectory() as data_dir:
-        server = subprocess.Popen(
-            [sys.executable, str(ROOT / "scripts" / "shop.py"), "--port", str(port),
-             "--data-dir", data_dir],
-            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )  # fmt: skip
+    servers: list[Any] = []
+    with tempfile.TemporaryDirectory() as data_dir, tempfile.TemporaryDirectory() as data_dir3:
         try:
-            assert server.stdout is not None
-            first = server.stdout.readline()  # printed once the socket is bound
-            print(first.strip())
-            if "127.0.0.1" not in first:
-                print("ERROR: the server did not start", file=sys.stderr)
-                return 1
-            run_checks(f"http://127.0.0.1:{port}/", OUT, seed_replays(data_dir))
+            first, port = start_server(data_dir)
+            servers.append(first)
+            # the third replay's server serves its authored candidate pool (mock only)
+            third, port3 = start_server(data_dir3, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_3})
+            servers.append(third)
+            run_checks(
+                f"http://127.0.0.1:{port}/", OUT, seed_replays(data_dir),
+                f"http://127.0.0.1:{port3}/", seed_replays_3(data_dir3),
+            )  # fmt: skip
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
         finally:
-            server.terminate()
-            try:
-                server.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                server.kill()
-                server.wait()
-            print("server stopped")
+            for server in servers:
+                stop_server(server)
+            print("servers stopped")
     print(f"screenshots: {OUT}")
     if FAILS:
         print(f"{len(FAILS)} check(s) failed")

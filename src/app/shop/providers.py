@@ -9,10 +9,14 @@ mock title carries the "[FIXTURE]" prefix.
 
 from __future__ import annotations
 
+import json
+import os
+import re
 from dataclasses import replace
 from pathlib import Path
 
 from app.config import Config
+from app.shop.retailers import RETAILERS, Retailer, seller_key
 from app.shopping import (
     FIXTURE_TITLE_PREFIX,
     ProductDetails,
@@ -48,13 +52,30 @@ BOOST_WORDS = ("hartwell", "brass", "brushed", "walnut", "solid")
 SHAPE_WORDS = ("round", "oval", "rectangular", "square")
 
 
+PEER_PAGE_SIZE = 8  # a mock retailer catalogue is small: this many results a page
+
+
+def _retailer_in(query: str) -> Retailer | None:
+    """The table retailer a query begins with ("Article wood coffee table ..."), if any."""
+    flat = re.sub(r"[^a-z0-9]+", "", query.lower())
+    best: Retailer | None = None
+    for r in RETAILERS:
+        words = re.sub(r"[^a-z0-9]+", "", r.search_name.lower())
+        if flat.startswith(words) and (best is None or len(words) > len(best.search_name)):
+            best = r
+    return best
+
+
 class ShopFixtureSearch:
     """Fake Serper for Shop Mode: pages of 20 synthetic results per topic.
 
     A query that names the invented premium seller or one of its materials (`BOOST_WORDS`) gets that
     seller's results first, and a query that names a shape gets the products with that shape first,
-    the way a more specific real query surfaces more specific products; any other query sees the
-    fixture in its own order. Results are never fetched or real.
+    the way a more specific real query surfaces more specific products; a query that begins
+    with the name of a retailer in `app.shop.retailers` gets that retailer's (small, synthetic)
+    catalogue, which is what a peer retailer search finds; any other query sees the fixture in its
+    own order.
+    Results are never fetched or real.
     """
 
     name = "serper"
@@ -83,8 +104,59 @@ class ShopFixtureSearch:
                     )
                 ),
             )
+        retailer = _retailer_in(query)
+        if retailer is not None:  # a query that begins with a retailer: that retailer's catalogue
+            start = (page - 1) * PEER_PAGE_SIZE
+            tag = seller_key(retailer.name)
+            return [
+                replace(
+                    c,
+                    title=f"{FIXTURE_TITLE_PREFIX}{retailer.name} {c.title}",
+                    seller=retailer.name,
+                    product_id=f"{tag}-{c.product_id}",
+                )
+                for c in everything[start : start + PEER_PAGE_SIZE]
+            ]
         window = everything[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
         return [replace(c, title=FIXTURE_TITLE_PREFIX + c.title) for c in window]
+
+
+class ReplayPoolSearch(ShopFixtureSearch):
+    """Mock Serper that serves a recorded session's authored candidate pool (`"pool"` in a replay
+    file under `tests/fixtures/shop/`) for ordinary queries, so a Shop Again sees a pool that looks
+    like the real one. Each distinct query text gets its own slice of the pool (pages of 20), and a
+    query that begins with a retailer's name still gets that retailer's catalogue (the peer step).
+    """
+
+    def __init__(self, replay_file: str) -> None:
+        super().__init__()
+        data = json.loads((SHOP_FIXTURE_DIR / replay_file).read_text())
+        self.pool: list[SearchCandidate] = [
+            SearchCandidate(
+                product_id=x["id"],
+                title=FIXTURE_TITLE_PREFIX + x["title"],
+                seller=x["seller"],
+                price=float(x["price"]),
+                currency="USD",
+                rating=4.4,
+                rating_count=120,
+                google_panel_url=f"https://www.google.com/shopping/product/{x['id']}",
+                thumbnail_url=None,
+            )
+            for x in data["pool"]
+        ]
+        self._starts: dict[str, int] = {}
+
+    def search(
+        self, query: str, gl: str = "us", hl: str = "en", page: int = 1
+    ) -> list[SearchCandidate]:
+        if _retailer_in(query) is not None:
+            return super().search(query, gl, hl, page)
+        self.calls.append((query, page))
+        key = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
+        start = self._starts.setdefault(key, (len(self._starts) * 17) % len(self.pool))
+        rotated = self.pool[start:] + self.pool[:start]
+        return rotated[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
 
 
 class ShopFixtureLookup:
@@ -104,5 +176,9 @@ class ShopFixtureLookup:
 
 def build_shop_providers(config: Config) -> tuple[SearchProvider, ProductLookup]:
     if config.llm_mode == "mock":
-        return ShopFixtureSearch(), ShopFixtureLookup()
+        pool_file = os.environ.get("APP_SHOP_MOCK_POOL")  # mock only: a replay file's pool
+        search: ShopFixtureSearch = (
+            ReplayPoolSearch(pool_file) if pool_file else ShopFixtureSearch()
+        )
+        return search, ShopFixtureLookup()
     return build_providers(config)

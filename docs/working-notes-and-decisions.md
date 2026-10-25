@@ -116,6 +116,16 @@ this choice over the alternatives. Note what's still open or deferred within it,
   candidate tags come back as text rows, not JSON objects (4x fewer tokens); "other" can never converge or
   be open; tagging failure means no attribute converges (open can still show); the rank model does the
   tagging. See `docs/sessions/2026-10-24-shop-mode-stage-2e.md`.
+- **2026-10-24, stage 2f: retailers are a signal, dislikes net out, style is a family (ADR 0012
+  amended).** The third session showed candidate tagging failing with no visible cause, a pool of the
+  wrong retailers for someone who likes West Elm, a seller chip blocked by 1 dislike in 5, and one style
+  split four ways. Decisions: log every tagging call and show its reason; a seller needs 3 times its
+  dislikes in liked mass; a retailer table (owner-editable judgment) drives a tier chip and up to 3 peer
+  searches per Shop Again, inside a 9-call cap; style is decided on two families. My choices where the
+  brief was silent: marketplace and budget tiers never earn a chip or peer searches (a Lowe's table is about
+  the table); a retailer-tier cap and the tier quota use the tier's like share; peers rotate and only a peer
+  that found something is asked again; the mock serves a recorded pool for one replay through
+  `APP_SHOP_MOCK_POOL`. See `docs/sessions/2026-10-24-shop-mode-stage-2f.md`.
 
 ## See also
 

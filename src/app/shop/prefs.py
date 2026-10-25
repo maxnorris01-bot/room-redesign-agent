@@ -42,9 +42,6 @@ from app.shop.decide import (
     decide,
     typed_terms_of,
 )
-from app.shop.decide import (
-    seller_key as decide_seller_key,
-)
 from app.shop.models import (
     MAX_SEARCH_TEXT_CHARS,
     MAX_TERMS,
@@ -61,6 +58,8 @@ from app.shop.models import (
     StoredProfile,
 )
 from app.shop.parse import strip_price_words
+from app.shop.retailers import seller_key, tier_of
+from app.shop.retailers import seller_key as decide_seller_key
 from app.shop.store import Session, now_iso, rated_results
 from app.shop.textutil import (
     Rated,
@@ -70,8 +69,7 @@ from app.shop.textutil import (
     sig_words,
     text_matches,
 )
-from app.shop.vocab import PHRASE_DIMS, phrase_word, title_value, vocab_text
-from app.shopping_retrieval import seller_key
+from app.shop.vocab import PHRASE_DIMS, phrase_word, tag_values, title_value, vocab_text
 from app.thumbnails import Thumbnailer, fetch_traced
 
 MAX_PROFILE_TERMS = 12
@@ -533,8 +531,8 @@ def merge_profile_v3(
     info["mode"] = "fallback" if fallback else "model"
     pinned = list(previous.pinned_sellers)
     entries = [
-        e.model_copy(update={"pinned": decide_seller_key(seller_name(e)) in pinned})
-        if e.attr_kind == "seller"
+        e.model_copy(update={"pinned": pin_key(e) in pinned})
+        if e.attr_kind in ("seller", "tier")
         else e
         for e in decisions.entries
         if not (e.polarity == "like" and e.text in stated.likes and e.status == "converged")
@@ -555,11 +553,18 @@ def merge_profile_v3(
     )
 
 
+def pin_key(entry: ProfileEntry) -> str:
+    """What a pin stores for a seller chip (its seller key) or a tier chip ("tier:<tier>")."""
+    if entry.attr_kind == "tier":
+        return f"tier:{entry.values[0]}" if entry.values else "tier:?"
+    return decide_seller_key(seller_name(entry))
+
+
 def with_pins(profile: StoredProfile, pinned: list[str]) -> StoredProfile:
     """The profile with `pinned` (seller keys) as its pins and the seller chip flagged to match."""
     entries = [
-        e.model_copy(update={"pinned": decide_seller_key(seller_name(e)) in pinned})
-        if e.attr_kind == "seller"
+        e.model_copy(update={"pinned": pin_key(e) in pinned})
+        if e.attr_kind in ("seller", "tier")
         else e
         for e in profile.inferred
     ]
@@ -567,15 +572,21 @@ def with_pins(profile: StoredProfile, pinned: list[str]) -> StoredProfile:
 
 
 def pin_seller(profile: StoredProfile, phrase: str) -> StoredProfile | None:
-    """Toggle the pin on the seller chip named by `phrase` (None: no such chip). A pinned seller
-    may take up to `SELLER_PINNED_SHARE` of a batch instead of `SELLER_MAX_SHARE`."""
+    """Toggle the pin on the seller or tier chip named by `phrase` (None: no such chip). A pinned
+    seller may take up to `SELLER_PINNED_SHARE` of a batch instead of `SELLER_MAX_SHARE`; a pinned
+    tier up to 80% instead of `TIER_BATCH_SHARE`."""
     key = _short(phrase)
     chip = next(
-        (e for e in profile.inferred if e.attr_kind == "seller" and _short(e.text) == key), None
+        (
+            e
+            for e in profile.inferred
+            if e.attr_kind in ("seller", "tier") and _short(e.text) == key
+        ),
+        None,
     )
     if chip is None:
         return None
-    seller = decide_seller_key(seller_name(chip))
+    seller = pin_key(chip)
     pinned = (
         [k for k in profile.pinned_sellers if k != seller]
         if seller in profile.pinned_sellers
@@ -832,7 +843,7 @@ def profile_summary(profile: StoredProfile | None) -> str:
         for e in profile.inferred
         if e.polarity == "like"
         and e.status == "converged"
-        and e.attr_kind not in ("seller", "price_band", "price_mixed")
+        and e.attr_kind not in ("seller", "tier", "price_band", "price_mixed")
     ]
     likes = list(dict.fromkeys([*profile.likes, *[e.text for e in inferred_likes]]))[:4]
     dislikes = list(
@@ -841,14 +852,19 @@ def profile_summary(profile: StoredProfile | None) -> str:
         )
     )[:4]
     seller = next((e for e in profile.inferred if e.attr_kind == "seller"), None)
+    tier = next((e for e in profile.inferred if e.attr_kind == "tier"), None)
     band = next((e for e in profile.inferred if e.attr_kind == "price_band"), None)
     parts: list[str] = []
-    if likes or seller or band:
+    if likes or seller or tier or band:
         text = f"more {_join(likes)}" if likes else "more pieces"
-        if likes and (seller or band):
+        if likes and (seller or tier or band):
             text += " pieces"
-        if seller:
+        if seller and tier:
+            text += f" from {seller_name(seller)} and similar retailers"
+        elif seller:
             text += f" from {seller_name(seller)}"
+        elif tier:
+            text += f" from retailers like {tier.text.removeprefix('retailers like ')}"
         if band:
             text += f" in the {band.band} price range"
         parts.append(text)
@@ -866,44 +882,61 @@ def profile_summary(profile: StoredProfile | None) -> str:
     return text.strip()
 
 
+def alignment_signals(profile: StoredProfile | None) -> int:
+    """How many decided signals a result can be matched against: converged inferred likes (an
+    attribute, a seller, a retailer tier), a price band (a mixed price is no signal) and the
+    shopper's own stated likes. Zero means nothing has been decided yet."""
+    if profile is None:
+        return 0
+    converged = [e for e in profile.inferred if e.polarity == "like" and e.status == "converged"]
+    return len(converged) + len(profile.likes)
+
+
 def alignment_counts(
     results: list[ShopResult], profile: StoredProfile | None, tags: TagMap | None = None
 ) -> tuple[int, int]:
-    """(results that match, results): a match is a converged inferred like and no dislike.
+    """(results that match, results): a match is any decided like and no dislike.
 
-    A result matches a converged like when its tags (the model's, when `tags` has the result; else
-    the title's keywords) show the value for a dimension such as shape or material, or the words of
-    the phrase otherwise; it comes from the
-    affinity seller, or its price is inside the price band. It matches a dislike when its title
-    shows an inferred or stated dislike. Guess, open and mixed chips and stated likes do not
-    count. A profile with no converged like matches nothing.
+    A result matches a decided like when its tags (the model's, when `tags` has the result; else
+    the title's keywords) show the value for a dimension such as shape or material (a style by its
+    family), or the words of the phrase otherwise; it comes from the affinity seller or a retailer
+    in the affinity tier; its price is inside a price band; or its title shows one of the
+    shopper's own stated likes. It matches a dislike when its title shows an inferred or stated
+    dislike. Guess, open and mixed chips do not count. With no decided signal (see
+    `alignment_signals`) nothing matches; callers show "n/a" then, not 0.
     """
     if not results or profile is None:
         return 0, len(results)
     likes = [e for e in profile.inferred if e.polarity == "like" and e.status == "converged"]
-    if not likes:
+    if not likes and not profile.likes:
         return 0, len(results)
     dislike_entries = [e for e in profile.inferred if e.polarity == "dislike"]
 
     def shows(e: ProfileEntry, r: ShopResult) -> bool:
-        if e.dimension and e.values and e.attr_kind not in ("seller", "price_band"):
+        if e.dimension and e.values and e.attr_kind not in ("seller", "price_band", "tier"):
             tagged = (tags or {}).get(r.id)
-            got = (
-                tagged.get(e.dimension) if tagged is not None else title_value(e.dimension, r.title)
-            )
+            if tagged is not None:
+                got = tagged.get(e.dimension)
+            else:
+                got = title_value(e.dimension, r.title)
             if got is not None or e.dimension in (
                 "shape",
                 "material",
                 "color_finish",
                 "frame_color",
             ):
-                return got == e.values[0]
+                return e.values[0] in tag_values(e.dimension, got)
         return text_matches(e.text, r.title)
 
     def matches_like(r: ShopResult) -> bool:
+        if any(text_matches(t, r.title) for t in profile.likes):
+            return True
         for e in likes:
             if e.attr_kind == "seller":
                 if seller_key(r.seller) == seller_key(seller_name(e)):
+                    return True
+            elif e.attr_kind == "tier":
+                if e.values and tier_of(r.seller) == e.values[0]:
                     return True
             elif e.attr_kind == "price_band":
                 if r.price is not None and e.low is not None and e.high is not None:
@@ -1046,7 +1079,7 @@ def estimate_item_tokens() -> int:
     with a long value, three cues, a long id) as compact JSON, at about 3 characters a token."""
     sample = ItemTags(
         id="5100000000001004736", shape="rectangular", material="stone",
-        color_finish="warm wood", frame_color="brass or gold", style="mid-century",
+        color_finish="warm wood", frame_color="brass or gold", style=["mid-century", "industrial"],
         quality_cues=["solid wood construction", "brushed brass finish", "natural stone top"],
     )  # fmt: skip
     return int(len(sample.model_dump_json()) / 3) + 1

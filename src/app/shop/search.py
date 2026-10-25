@@ -40,16 +40,19 @@ from app.shop.models import (
     result_id,
 )
 from app.shop.parse import parse_request
+from app.shop.retailers import seller_key, tier_of
 from app.shop.thresholds import (
     DIVERSITY_MAX_SHARE,
+    MAX_PEER_SEARCHES,
     MINORITY_POOL_SHARE,
     OPEN_STRATUM_FLOOR,
     SELLER_MAX_SHARE,
     SELLER_PINNED_SHARE,
+    TIER_BATCH_SHARE,
 )
-from app.shop.vocab import OTHER, PHRASE_DIMS, phrase_word, title_tags
+from app.shop.vocab import OTHER, PHRASE_DIMS, phrase_word, tag_values, title_tags
 from app.shopping import ProviderError, SearchCandidate, SearchProvider
-from app.shopping_retrieval import _record_provider_call, cap_per_seller, seller_key
+from app.shopping_retrieval import _record_provider_call, cap_per_seller
 from app.sizes import IN_M, resolve_size
 
 MAX_EXAMPLES = 8  # loved/liked and disliked titles shown to the ranker, each
@@ -106,7 +109,13 @@ class AgainContext:
     tag_book: TagBook | None = None
     open_mass: dict[str, dict[str, int]] = field(default_factory=dict)
     open_loved: dict[str, set[str]] = field(default_factory=dict)
-    max_calls_open: int = 6
+    max_calls_total: int = 9
+    # stage 2f: the retailer tier the shopper likes (a tier chip), its share of the like mass,
+    # whether it is pinned, and the peer retailer searches to run: (seller key, name, search text)
+    affinity_tier: str = ""
+    tier_share: float = 0.0
+    tier_pinned: bool = False
+    peer_queries: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -135,6 +144,8 @@ class SearchOutcome:
     new_tags: dict[str, dict[str, str | None]] = field(
         default_factory=dict
     )  # for the session cache
+    peer_log: list[dict[str, Any]] = field(default_factory=list)  # peer searches and their yield
+    alignment_signals: int = 0  # decided signals the match was measured against
     alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
 
     @property
@@ -378,6 +389,7 @@ def build_results(
     guard_caps: dict[str, float] | None = None,
     tags: Callable[[SearchCandidate], Mapping[str, str | None]] | None = None,
     strata: tuple[str, dict[str, int]] | None = None,
+    tier_limit: tuple[str, int, int] | None = None,
 ) -> tuple[list[ShopResult], int, int]:
     """Walk the ranked order, up to `RESULT_COUNT`, keeping:
 
@@ -392,7 +404,9 @@ def build_results(
     `tags` gives a candidate's values by dimension (the model's tags in a Shop Again; title
     keywords when omitted). With `strata=(dimension, quota per value)` the batch is selected
     stratified: first each value's best ranked items up to its quota, then the rest in ranked
-    order, and the batch is returned in ranked order. Every cap holds in both passes. Returns
+    order, and the batch is returned in ranked order. Every cap holds in both passes. With
+    `tier_limit=(tier, cap, quota)` (stage 2f) the best ranked results from that retailer tier go
+    first, up to `quota`, and the tier never takes more than `cap` of the batch. Returns
     (results, skipped by the seller cap, skipped by the diversity guard).
     """
     affinity = affinity_sellers or set()
@@ -412,32 +426,57 @@ def build_results(
     def tag_of(candidate: SearchCandidate) -> Mapping[str, str | None]:
         return tags(candidate) if tags is not None else title_tags(candidate.title)
 
+    tier_count = 0
+
     def try_take(index: int, candidate: SearchCandidate) -> bool:
+        nonlocal tier_count
+        in_tier = tier_limit is not None and tier_of(candidate.seller) == tier_limit[0]
+        if in_tier and tier_limit is not None and tier_count >= tier_limit[1]:
+            seller_skipped.add(index)
+            return False
         key = seller_key(candidate.seller)
         cap = pinned_cap if key in pinned else affinity_cap if key in affinity else SELLER_CAP
         if per_seller.get(key, 0) >= cap:
             seller_skipped.add(index)
             return False
         got = tag_of(candidate) if guard else {}
+        held = {dim: [v for v in tag_values(dim, got.get(dim)) if v != OTHER] for dim in guard}
         if any(
-            (v := got.get(dim)) is not None
-            and v != OTHER
-            and value_counts.get((dim, v), 0) >= value_caps[dim]
-            for dim in guard
+            value_counts.get((dim, v), 0) >= value_caps[dim] for dim in guard for v in held[dim]
         ):
             diversity_skipped.add(index)
             return False
         for dim in guard:
-            if (v := got.get(dim)) is not None and v != OTHER:
+            for v in held[dim]:
                 value_counts[(dim, v)] = value_counts.get((dim, v), 0) + 1
         per_seller[key] = per_seller.get(key, 0) + 1
+        if in_tier:
+            tier_count += 1
         accepted.append(index)
         taken.add(index)
         return True
 
+    if tier_limit is not None:
+        for index, (candidate, _) in enumerate(ordered):
+            if tier_count >= min(tier_limit[2], tier_limit[1]) or len(accepted) >= RESULT_COUNT:
+                break
+            if tier_of(candidate.seller) == tier_limit[0]:
+                if strata is not None:  # the tier pass leaves each shape its planned slots
+                    shape_value = tag_of(candidate).get(strata[0])
+                    planned = strata[1].get(shape_value) if shape_value else None
+                    taken_shape = sum(
+                        1 for i in accepted if tag_of(ordered[i][0]).get(strata[0]) == shape_value
+                    )
+                    if planned is None or taken_shape >= planned:
+                        continue  # a shape outside the plan waits for the later passes
+                try_take(index, candidate)
     if strata is not None:
         dim, quota = strata
         remaining = dict(quota)
+        for index in accepted:  # slots the tier pass already used count toward each value
+            used_value = tag_of(ordered[index][0]).get(dim)
+            if used_value in remaining:
+                remaining[used_value] = max(0, remaining[used_value] - 1)
         for index, (candidate, _) in enumerate(ordered):
             if len(accepted) >= RESULT_COUNT or not any(remaining.values()):
                 break
@@ -603,11 +642,43 @@ def run_query(
                 budget,
             )
 
+        cap = max(max_calls, again.max_calls_total) if search.name == "serper" else max_calls
+        # peer retailers: when the shopper likes a seller or a tier, search similar retailers too
+        # (one page each, at most `MAX_PEER_SEARCHES`, inside the total call cap)
+        peer_log: list[dict[str, Any]] = []
+        if search.name == "serper":
+            for peer_key, peer_name, peer_text in again.peer_queries[:MAX_PEER_SEARCHES]:
+                if calls >= cap:
+                    break
+                qkey = query_key(peer_text)
+                peer_page = max(again.skip_pages.get(qkey, 0), pages.get(qkey, 0)) + 1
+                calls += 1
+                entry: dict[str, Any] = {
+                    "peer": peer_name, "key": peer_key, "search": peer_text, "page": peer_page,
+                    "found": 0, "new_candidates": 0, "error": "",
+                }  # fmt: skip
+                try:
+                    more = _search_page(search, peer_text, peer_page, budget)
+                except ProviderError as exc:
+                    warnings.append(f"Search for {peer_name} unavailable ({exc}).")
+                    entry["error"] = "search failed"
+                    peer_log.append(entry)
+                    continue
+                if peer_text not in used:
+                    used.append(peer_text)
+                pages[qkey] = max(pages.get(qkey, 0), peer_page)
+                before_ids = {c.product_id for c in pool}
+                raw = raw + more
+                pool, counts = filtered(raw)
+                added_peer = [c for c in pool if c.product_id not in before_ids]
+                supplied.update(c.product_id for c in added_peer)
+                entry["found"], entry["new_candidates"] = len(more), len(added_peer)
+                peer_log.append(entry)
+        composition_info["peers"] = peer_log
         tag_pool()
         composition_info["pool_before"] = pool_composition(pool, again)
         supply_log: list[dict[str, Any]] = []
         extra_done: set[str] = set()
-        cap = max(max_calls, again.max_calls_open) if search.name == "serper" else max_calls
         while calls < cap:
             need = minority_values(pool, again)
             step = next(((d, v, c, k) for d, v, c, k in need if f"{d}:{v}" not in extra_done), None)
@@ -703,6 +774,19 @@ def run_query(
                 ),
             )
             composition_info["strata"] = {"dimension": "shape", "quota": strata[1]}
+    tier_limit: tuple[str, int, int] | None = None
+    if again is not None and again.affinity_tier:
+        share = 0.80 if again.tier_pinned else TIER_BATCH_SHARE
+        cap_n = int(share * RESULT_COUNT)
+        tier_limit = (
+            again.affinity_tier,
+            cap_n,
+            min(cap_n, round(again.tier_share * RESULT_COUNT)),
+        )
+        composition_info["tier"] = {
+            "tier": again.affinity_tier, "cap": cap_n, "quota": tier_limit[2],
+            "pinned": again.tier_pinned,
+        }  # fmt: skip
     results, capped, diversity_skipped = build_results(
         ordered,
         query,
@@ -713,6 +797,7 @@ def run_query(
         again.guard_caps if again is not None else None,
         tag_of,
         strata,
+        tier_limit,
     )
     counts.seller_capped = capped
     diversity: dict[str, tuple[str, float]] = {}
@@ -734,8 +819,14 @@ def run_query(
             by_seller[r.seller] = by_seller.get(r.seller, 0) + 1
         name = max(sorted(by_seller), key=lambda k: by_seller[k])
         seller_share = (name, round(by_seller[name] / len(results), 4))
+        tier_counts: dict[str, int] = {}
+        for r in results:
+            label = tier_of(r.seller) or "(none)"
+            tier_counts[label] = tier_counts.get(label, 0) + 1
         composition_info["batch"] = {
             "size": len(results),
+            "distinct_sellers": len(by_seller),
+            "tier": dict(sorted(tier_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
             **batch_comp,
             "seller": dict(sorted(by_seller.items(), key=lambda kv: (-kv[1], kv[0]))[:8]),
         }
@@ -802,6 +893,7 @@ def run_query(
         seller_share=seller_share,
         composition=composition_info,
         new_tags=dict(book.new) if book is not None else {},
+        peer_log=list(composition_info.get("peers", [])),
     )
 
 

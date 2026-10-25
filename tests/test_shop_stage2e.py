@@ -132,10 +132,10 @@ def test_candidate_rows_are_parsed_and_folded_and_bad_rows_are_dropped() -> None
         "oops",
         "9|round|wood|warm wood|black|modern",  # outside the batch
         "1|square|-|-|-|-",  # a repeated number
-        "4|round|wood",  # too few values
+        "4|round|wood",  # too few values: the rest are unknown (tolerant, see the 2f tests)
     ]
     got = parse_rows(rows, 4)
-    assert sorted(got) == [1, 2, 3]
+    assert sorted(got) == [1, 2, 3, 4] and got[4]["material"] == "wood" and got[4]["style"] is None
     assert got[1] == {
         "shape": "round", "material": "wood", "color_finish": "warm wood",
         "frame_color": "black", "style": "modern",
@@ -145,6 +145,7 @@ def test_candidate_rows_are_parsed_and_folded_and_bad_rows_are_dropped() -> None
         "shape": "other", "material": "wood", "color_finish": "warm wood",
         "frame_color": "other", "style": "other",
     }  # fmt: skip
+    assert 9 not in got
 
 
 # ---- candidate tagging: cached, batched, falling back ----------------------------------------------------------
@@ -211,7 +212,7 @@ def test_a_failed_tagging_call_is_recorded_and_leaves_the_results_untagged(
     use_client(monkeypatch, RouterClient(tags={"rows": ["garbage"]}))
     unusable = TagBook()
     tag_results(taggables(5), unusable, Budget(config()))
-    assert unusable.failed and "no usable row" in unusable.failures[0]
+    assert unusable.failed and "0 of" in unusable.failures[0]
 
 
 # ---- the second real session, replayed -------------------------------------------------------------------------
@@ -322,7 +323,7 @@ def test_replay_two_tagging_failure_falls_back_conservatively(
     ]
     tagging = view["search"]["tagging"]
     assert tagging["candidates_tagged"] == 0 and tagging["tag_failures"]
-    assert any("could not be tagged" in w for w in view["search"]["warnings"])
+    assert any("Candidate tagging failed:" in w for w in view["search"]["warnings"])
     assert not json.loads((tmp_path / "shop-data" / f"{sid}.json").read_text())["tag_cache"]
 
 
@@ -336,7 +337,7 @@ def test_the_first_replay_still_decides_what_it_did(tmp_path: Path) -> None:
     assert ("open", "shape: open") in chips and ("price_mixed", "price: mixed") in chips
     assert ("seller", "seller: West Elm") in chips
     assert not [e for e in view["profile"]["inferred"] if e["attr_kind"] in ("style", "shape")]
-    assert "Looking for more pieces from West Elm." in view["profile_summary"]
+    assert "Looking for more pieces from West Elm and similar retailers." in view["profile_summary"]
     dims = view["profile"]["trace"]["dimensions"]
     assert all(d["decision"] in ("open", "none") for d in dims.values())  # nothing guessed
 
@@ -405,13 +406,13 @@ def test_a_seller_needs_two_items_and_forty_percent_of_the_like_mass() -> None:
     assert (
         entry is None and "1 loved or liked item(s), needs 2" in trace["candidates"][0]["verdict"]
     )
-    # a dislike from the seller still blocks it, and every failed rule is listed
+    # two likes against one dislike (net 2 against 1, under 3 to 1) still blocks it
     both = rated_sellers(
         [("like", "A", "1"), ("like", "A", "2"), ("dislike", "A", "3"), ("like", "B", "4")]
     )
     entry, trace = seller_decision(both, shown)
     verdict = next(c for c in trace["candidates"] if c["seller"] == "A")["verdict"]
-    assert entry is None and "1 disliked item(s) from this seller" in verdict
+    assert entry is None and "1 disliked item(s) against liked mass 2" in verdict
     # the lift test is unchanged: 40% of the like mass but 70% of what was shown is no signal
     flooded = shown_sellers({"A": 70, "B": 10, "C": 10, "D": 10})
     entry, trace = seller_decision(ok, flooded)
@@ -441,14 +442,14 @@ def test_the_trace_lists_every_sellers_like_share_and_the_failed_rule() -> None:
 # ---- the pool: supply for the minority value of an open dimension ------------------------------------------------
 
 
-def make_again(book: TagBook, max_calls: int = 1, max_open: int = 6, **kw: Any) -> AgainContext:
+def make_again(book: TagBook, max_calls: int = 1, max_total: int = 6, **kw: Any) -> AgainContext:
     return AgainContext(
         open_dims={"shape": ["rectangular", "round"]},
         open_mass={"shape": {"rectangular": 11, "round": 5}},
         open_loved={"shape": {"rectangular", "round"}},
         guard_caps={"shape": 0.6},
         max_calls=max_calls,
-        max_calls_open=max_open,
+        max_calls_total=max_total,
         tag_book=book,
         **kw,
     )
@@ -532,7 +533,7 @@ def test_supply_stops_at_the_open_cap_of_six_calls_and_the_warning_has_real_coun
     outcome, search, _ = run_open(monkeypatch, sequence)
     assert (
         len(search.calls) == 6 and outcome.serper_calls == 6
-    )  # APP_SHOP_AGAIN_MAX_SERPER_CALLS_OPEN
+    )  # APP_SHOP_AGAIN_MAX_SERPER_CALLS_TOTAL
     assert outcome.serper_credits == 12  # the extra credits are reported
     warning = next(w for w in outcome.warnings if "Could not keep shape mixed" in w)
     assert "mostly rectangular" in warning and "6 searches were run" in warning
@@ -543,15 +544,15 @@ def test_supply_stops_at_the_open_cap_of_six_calls_and_the_warning_has_real_coun
 def test_the_open_call_cap_is_configurable_and_never_below_the_normal_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = config(shop_again_max_serper_calls_open=4)
+    cfg = config(shop_again_max_serper_calls_total=4)
     sequence: list[Any] = [pool_page("a", "Rectangular", 30)] + [
         pool_page(f"z{n}", "Rectangular", 10) for n in range(10)
     ]
-    outcome, search, _ = run_open(monkeypatch, sequence, cfg=cfg, max_open=4)
+    outcome, search, _ = run_open(monkeypatch, sequence, cfg=cfg, max_total=4)
     assert len(search.calls) == 4 and outcome.serper_calls == 4
     with pytest.raises(ValueError):
-        config(shop_again_max_serper_calls=4, shop_again_max_serper_calls_open=3)
-    assert Config().shop_again_max_serper_calls_open == 6
+        config(shop_again_max_serper_calls=4, shop_again_max_serper_calls_total=3)
+    assert Config().shop_again_max_serper_calls_total == 9
 
 
 def test_supply_does_not_run_for_a_typed_search_or_a_converged_dimension(
@@ -747,7 +748,7 @@ def test_size_class_and_legs_no_longer_decide_anything() -> None:
     tags = {
         rid: ItemTags.model_validate(
             {"id": rid, "shape": None, "material": None, "color_finish": None, "frame_color": None,
-             "style": None, "quality_cues": []}
+             "style": [], "quality_cues": []}
         )
         for rid in rated
     }  # fmt: skip
@@ -757,7 +758,7 @@ def test_size_class_and_legs_no_longer_decide_anything() -> None:
     with pytest.raises(ValueError):  # the schema the model fills no longer has them
         ItemTags.model_validate(
             {"id": "a", "shape": None, "material": None, "color_finish": None, "frame_color": None,
-             "style": None, "quality_cues": [], "size_class": "large", "frame_or_legs": None}
+             "style": [], "quality_cues": [], "size_class": "large", "frame_or_legs": None}
         )  # fmt: skip
 
 
@@ -778,11 +779,11 @@ def test_candidate_tagging_cost_is_in_the_shop_again_total_and_under_a_cent(tmp_
 def test_the_prompts_are_versioned_and_the_old_ones_kept() -> None:
     from app.prompts import load_prompt
 
-    assert load_prompt("shop_prefs").version == "5"
-    for v in ("1", "2", "3", "4"):
+    assert load_prompt("shop_prefs").version == "6"
+    for v in ("1", "2", "3", "4", "5"):
         assert load_prompt("shop_prefs", v).version == v
     tags = load_prompt("shop_candidate_tags")
-    assert tags.version == "1" and "Allowed values" in tags.text and "no photo" in tags.text
+    assert tags.version == "2" and "Allowed values" in tags.text and "no photo" in tags.text
     assert "frame_or_legs" not in load_prompt("shop_prefs").text
     assert "size_class" not in load_prompt("shop_prefs").text
     assert "frame_or_legs" in load_prompt("shop_prefs", "4").text  # v4 is untouched

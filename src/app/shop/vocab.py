@@ -213,6 +213,57 @@ def title_tags(title: str) -> dict[str, str]:
     return out
 
 
+MODERN_LEANING = "modern_leaning"
+TRADITIONAL_LEANING = "traditional_leaning"
+STYLE_FAMILY = {
+    "modern": MODERN_LEANING, "mid-century": MODERN_LEANING, "industrial": MODERN_LEANING,
+    "glam": MODERN_LEANING, "scandinavian": MODERN_LEANING,
+    "traditional": TRADITIONAL_LEANING, "farmhouse": TRADITIONAL_LEANING,
+    "boho": TRADITIONAL_LEANING, "rustic": TRADITIONAL_LEANING,
+}  # fmt: skip
+FAMILY_LABELS = {MODERN_LEANING: "modern-leaning", TRADITIONAL_LEANING: "traditional-leaning"}
+MAX_STYLE_LABELS = 2
+
+
+def normalize_style(raw: str | list[str] | None) -> str | None:
+    """A multi-label style (up to two vocabulary values) as one comma-joined string, or None. The
+    model may give a list or one string such as "modern+glam"; each part is folded through the
+    vocabulary and `other` is dropped when a real value is present."""
+    if raw is None:
+        return None
+    parts = raw if isinstance(raw, list) else re.split(r"\s*(?:[+,/;&]|\band\b)\s*", raw)
+    leaves: list[str] = []
+    for part in parts:
+        value = normalize("style", part)
+        if value is not None and value not in leaves:
+            leaves.append(value)
+    real = [v for v in leaves if v != OTHER]
+    leaves = real or leaves
+    return ",".join(leaves[:MAX_STYLE_LABELS]) or None
+
+
+def style_leaves(value: str | None) -> list[str]:
+    return [p for p in (value or "").split(",") if p]
+
+
+def style_families(value: str | None) -> list[str]:
+    """The families (each once, in order) of a stored style value; leaves with no family are
+    dropped (`other`)."""
+    out: list[str] = []
+    for leaf in style_leaves(value):
+        family = STYLE_FAMILY.get(leaf)
+        if family and family not in out:
+            out.append(family)
+    return out
+
+
+def tag_values(dim: str, raw: str | None) -> list[str]:
+    """The decision values of a stored tag: the families of a style, the value itself otherwise."""
+    if not raw:
+        return []
+    return style_families(raw) if dim == "style" else [raw]
+
+
 def vocab_text() -> str:
     """The allowed values, one line per dimension, for the prompts."""
     return "\n".join(f"{dim}: {', '.join(values)}" for dim, values in VOCAB.items())
