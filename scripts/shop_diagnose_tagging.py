@@ -10,8 +10,12 @@ tests/fixtures/shop/owner_session_replay_4.json) and sends the candidate tagging
   C  a forced tool call (`record_tags`, strict JSON schema) with 40 titles   (the stage 2g call)
 
 For each call it prints only: the model id, max_tokens, latency, how the call ended (ok, or the
-exception class, its redacted message and where it was raised), the content block types, the stop reason, token usage, how many rows or items were
-parsed and the first 300 characters of any text. It never prints keys, headers or the environment.
+exception class, its redacted message and where it was raised), the content block types, whether a
+thinking block was present (and the thinking tokens when the API reports them), the stop reason, token
+usage (or "unknown" with an estimated cost for a failed call that reported none), how many rows or
+items were parsed, for each call that parsed rows a "fields filled" count per field (shape, material,
+finish, frame_color, style: how much a title-only tagger can read), and the first 300 characters of
+any text. It never prints keys, headers or the environment.
 Read it with "How to read the diagnostic" in docs/adr/0012-two-modes-shop-first.md. `--mock` runs the
 same three calls against the free mock client (to see the layout).
 """
@@ -30,6 +34,7 @@ from app.shop.candidates import MODE_ROWS, MODE_TOOL, Taggable, run_call
 from app.shop.clock import Clock
 from app.shop.redact import describe_exception
 from app.shop.store import DEFAULT_ROOT
+from app.shop.vocab import DIMENSIONS
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_CHARS = 300
@@ -63,9 +68,31 @@ def latest_titles(root: Path, limit: int = 100) -> tuple[list[str], str]:
     return [x["title"] for x in pool][:limit], "the replay-4 fixture pool (no session file found)"
 
 
-def describe(label: str, entry: dict[str, object]) -> list[str]:
+def fields_filled(rows: dict[int, dict[str, str | None]], items: int) -> list[str]:
+    """For each field, how many of the items got a value (not null, not `other`): how much a
+    title-only tagger can read."""
+    out = []
+    for dim in DIMENSIONS:
+        filled = sum(1 for tags in rows.values() if tags.get(dim) not in (None, "other"))
+        out.append(f"{dim} {filled}/{items}")
+    return out
+
+
+def describe(
+    label: str, entry: dict[str, object], rows: dict[int, dict[str, str | None]] | None = None
+) -> list[str]:
     outcome = "ok" if not entry["error"] else f"FAILED: {entry['error']}"
-    return [
+    if entry.get("usage_known", True):
+        usage = f"{entry['input_tokens']} input tokens, {entry['output_tokens']} output tokens"
+    else:
+        usage = (
+            f"unknown (the response reported none); cost ${entry['usd']:.5f} is "
+            "estimated (failed call), from the max_tokens ceiling"
+        )
+    thinking = "yes" if entry.get("had_thinking") else "no"
+    if entry.get("thinking_tokens") is not None:
+        thinking += f" ({entry['thinking_tokens']} thinking tokens reported)"
+    lines = [
         f"--- {label}",
         f"  model:        {entry['model']}",
         f"  max_tokens:   {entry['max_tokens']}   (per-request timeout {entry['timeout_s']} s)",
@@ -73,11 +100,15 @@ def describe(label: str, entry: dict[str, object]) -> list[str]:
         f"  outcome:      {outcome}",
         *([f"  raised at:    {entry['where']}"] if entry.get("where") else []),
         f"  block types:  {', '.join(entry['block_types']) or '(none)'}",  # type: ignore[arg-type]
+        f"  thinking:     {thinking}",
         f"  stop reason:  {entry['stop_reason'] or '(none)'}",
-        f"  usage:        {entry['input_tokens']} input tokens, {entry['output_tokens']} output tokens",
+        f"  usage:        {usage}",
         f"  parsed:       {entry['rows_parsed']} of {entry['items']} (valid JSON: {entry['json_ok']})",
-        f"  text:         {entry['raw'] or '(no text)'}",
     ]
+    if rows is not None and rows:
+        lines.append(f"  fields filled: {', '.join(fields_filled(rows, int(str(entry['items']))))}")
+    lines.append(f"  text:         {entry['raw'] or '(no text)'}")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,10 +140,10 @@ def main(argv: list[str] | None = None) -> int:
             Taggable(f"d{i}", titles[i % len(titles)], None, "Seller") for i in range(min(n, 100))
         ]
         try:
-            _, entry = run_call(
+            rows, entry = run_call(
                 batch, TagBook(), Budget(config), mode, False, Clock(), 30.0, raw_chars=RAW_CHARS
             )
-            lines = describe(label, entry)
+            lines = describe(label, entry, rows)
         except Exception as exc:  # the redacted message and where it was raised in this repository
             text, where = describe_exception(exc)
             lines = [

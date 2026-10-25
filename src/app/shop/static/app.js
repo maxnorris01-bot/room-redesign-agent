@@ -425,7 +425,9 @@
       box.appendChild(h('p', { class: 'why-line' }, [
         'Tagging call ' + (i + 1) + (c.retry ? ' (retry)' : '') + ': ' + c.items + ' items, limit ' + c.max_tokens +
         ' tokens, stop ' + (c.stop_reason || 'none') + ', ' + (c.json_ok ? 'valid JSON' : 'not valid JSON') +
-        ', ' + c.rows_parsed + ' rows read' + (c.error ? ', error: ' + c.error : '') +
+        ', ' + c.rows_parsed + ' rows read' + (c.had_thinking ? ', thinking present' : '') +
+        (c.usage_known === false ? ', usage unknown (cost estimated, failed call)' : '') +
+        (c.error ? ', error: ' + c.error : '') +
         (c.rows_parsed < c.items ? '; began: ' + c.raw : '') + '.'
       ]));
     });
@@ -537,7 +539,10 @@
     var bits = ['searches ' + f(tm.searches) + ' s', 'preferences ' + f(tm.preferences) + ' s',
       'tagging ' + f(Number(tm.tagging || 0) + Number(tm.tagging_shown || 0)) + ' s', 'rank ' + f(tm.rank) + ' s'];
     var tg = s.tagging || {};
-    if (tg.tag_failed_usd) bits.push('failed tagging calls ' + usd(tg.tag_failed_usd));
+    if (tg.tag_failed_usd) {
+      bits.push('failed tagging calls ' + usd(tg.tag_failed_usd) +
+        (tg.tag_estimated_usd ? ' (estimated, failed call)' : ''));
+    }
     return bits.join(', ');
   }
 

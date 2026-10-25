@@ -29,6 +29,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from functools import lru_cache
+from types import SimpleNamespace
 from typing import Any, Protocol, cast
 
 import anthropic
@@ -68,11 +69,17 @@ class LLMOutputError(RuntimeError):
         stop_reason: str = "",
         block_types: tuple[str, ...] = (),
         cost_usd: float = 0.0,
+        cost_estimated: bool = False,
+        thinking_only: bool = False,
+        thinking_tokens: int | None = None,
     ) -> None:
         super().__init__(message)
         self.stop_reason = stop_reason
         self.block_types = block_types
         self.cost_usd = cost_usd
+        self.cost_estimated = cost_estimated  # the response reported no usage: cost from max_tokens
+        self.thinking_only = thinking_only  # the whole answer was thinking blocks
+        self.thinking_tokens = thinking_tokens
 
 
 class Budget:
@@ -130,6 +137,9 @@ class Completion:
     steps: int = 0
     stop_reason: str = ""  # the last request's stop reason (set on every return)
     block_types: tuple[str, ...] = ()  # content block types of the last response
+    usage_known: bool = True  # False: a response reported no tokens at all (a failed call)
+    cost_estimated: bool = False  # True: `cost_usd` is an estimate from the max_tokens ceiling
+    thinking_tokens: int | None = None  # reported by the API when the model thought (else None)
     tool_input: dict[str, Any] | None = None  # the forced tool's input, when a tool was used
     # Seconds from sending the first request to its first streamed content delta; None when the
     # call was not streamed. First request only (a pause_turn resume does not reset it).
@@ -206,6 +216,24 @@ def _create_message(
     return message, ttft
 
 
+# Models whose API refused `thinking={"type": "disabled"}` in this process: later calls omit it.
+_THINKING_FIELD_REFUSED: set[str] = set()
+THINKING_ONLY_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+
+def _estimated_usage(params: dict[str, Any]) -> Any:
+    """Usage to budget with when a response reports none: the input from the request's size (about
+    3.5 characters a token) and the WHOLE `max_tokens` as output (the most the call can bill)."""
+    chars = len(json.dumps(params, default=str))
+    return SimpleNamespace(
+        input_tokens=int(chars / 3.5) + 1,
+        output_tokens=int(params.get("max_tokens", 0)),
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+        server_tool_use=SimpleNamespace(web_search_requests=0),
+    )
+
+
 def complete(
     *,
     span_name: str,
@@ -222,6 +250,7 @@ def complete(
     keep_truncated: bool = False,
     tool_choice: dict[str, Any] | None = None,
     timeout_s: float | None = None,
+    disable_thinking: bool = False,
 ) -> Completion:
     """Run one logical model call (resuming `pause_turn`) and return the final text.
 
@@ -232,6 +261,14 @@ def complete(
     tool's input comes back in `Completion.tool_input` and `text` is its JSON.
     `timeout_s` is a per-request deadline on the live client (no SDK retries). The installed SDK
     takes no `temperature` (nor do these models), so none is sent.
+
+    `disable_thinking=True` sends `thinking={"type": "disabled"}` (a documented request field): some
+    models think by default, and the thinking counts against `max_tokens` (a Shop Mode call that
+    returns structured data has no use for it). If the API refuses the field for a model, the
+    request is repeated once without it and later calls to that model leave it out. A response with
+    only thinking blocks raises `LLMOutputError` ("the model used its whole budget thinking"). A
+    response that reports no tokens (a failed call) is costed from the `max_tokens` ceiling and
+    flagged `cost_estimated`; it is never booked as $0.
 
     Pass `stream=True` for calls that can run long (research/tool-heavy calls) - see
     `_create_message`. Leave it `False` (default) for short calls with nothing to fix.
@@ -267,6 +304,8 @@ def complete(
             params["tool_choice"] = tool_choice
         if output_config:
             params["output_config"] = output_config
+        if disable_thinking and model not in _THINKING_FIELD_REFUSED:
+            params["thinking"] = {"type": "disabled"}
 
         with span(
             span_name,
@@ -277,13 +316,31 @@ def complete(
         ) as rec:
             step = budget.start_step()
             rec["step"] = step
-            response, ttft = _create_message(client, config, params, stream, timeout_s)
+            try:
+                response, ttft = _create_message(client, config, params, stream, timeout_s)
+            except anthropic.BadRequestError as exc:
+                if "thinking" not in params or "thinking" not in str(exc).lower():
+                    raise
+                _THINKING_FIELD_REFUSED.add(model)  # the API refuses the field for this model
+                del params["thinking"]
+                response, ttft = _create_message(client, config, params, stream, timeout_s)
             if done.steps == 0:
                 done.time_to_first_token_s = ttft
             searches, urls = _inspect_tool_blocks(list(response.content))
             retrieved |= urls
-            cost = estimate_cost(model, response.usage, web_search_usd=config.web_search_usd)
             usage = response.usage
+            reported = (getattr(usage, "input_tokens", 0) or 0) + (
+                getattr(usage, "output_tokens", 0) or 0
+            ) > 0
+            if (
+                not reported
+            ):  # a failed call still bills: budget with the ceiling, say it is a guess
+                usage = _estimated_usage(params)
+                done.usage_known, done.cost_estimated = False, True
+            cost = estimate_cost(model, usage, web_search_usd=config.web_search_usd)
+            details = getattr(response.usage, "output_tokens_details", None)
+            if details is not None and getattr(details, "thinking_tokens", None) is not None:
+                done.thinking_tokens = (done.thinking_tokens or 0) + int(details.thinking_tokens)
             done.input_tokens += usage.input_tokens
             done.output_tokens += usage.output_tokens
             done.cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
@@ -294,9 +351,10 @@ def complete(
             done.searches.extend(searches)
             rec.update(
                 stop_reason=response.stop_reason,
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                web_searches=web_searches(response.usage),
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                usage_reported=reported,
+                web_searches=web_searches(usage),
                 searches=searches,
                 cost_usd=round(cost, 5),
                 time_to_first_token_s=None if ttft is None else round(ttft, 4),
@@ -310,6 +368,17 @@ def complete(
             continue
         done.stop_reason = str(response.stop_reason)
         done.block_types = tuple(str(getattr(b, "type", "?")) for b in response.content)
+        if done.block_types and set(done.block_types) <= THINKING_ONLY_TYPES:
+            raise LLMOutputError(
+                f"{span_name}: the model used its whole budget thinking "
+                f"(stop reason {done.stop_reason}, max_tokens {max_tokens})",
+                stop_reason=done.stop_reason,
+                block_types=done.block_types,
+                cost_usd=done.cost_usd,
+                cost_estimated=done.cost_estimated,
+                thinking_only=True,
+                thinking_tokens=done.thinking_tokens,
+            )
         if response.stop_reason == "refusal" or (
             response.stop_reason == "max_tokens" and not keep_truncated
         ):
@@ -318,6 +387,7 @@ def complete(
                 stop_reason=done.stop_reason,
                 block_types=done.block_types,
                 cost_usd=done.cost_usd,
+                cost_estimated=done.cost_estimated,
             )
         if tool_choice is not None:
             blocks: list[Any] = list(response.content)
@@ -346,6 +416,7 @@ def complete(
                 stop_reason=done.stop_reason,
                 block_types=done.block_types,
                 cost_usd=done.cost_usd,
+                cost_estimated=done.cost_estimated,
             )
         done.text = text_blocks[0]
         done.retrieved_urls = retrieved

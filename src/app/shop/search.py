@@ -364,6 +364,7 @@ def order_pool(
             max_tokens=RANK_MAX_TOKENS,
             schema=to_output_schema(RankedFinalists),
             effort=config.effort_retrieval,
+            disable_thinking=True,
             stream=True,
         )
         ranked = parse_model(RankedFinalists, completion.text, what="shop_rank")
