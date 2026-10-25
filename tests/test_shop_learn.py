@@ -143,6 +143,25 @@ def brass_scenario(svc: ShopService) -> tuple[str, list[dict[str, Any]]]:
     return sid, first
 
 
+def seller_scenario(svc: ShopService) -> tuple[str, list[dict[str, Any]]]:
+    """The mixed case with enough ratings for a seller chip (stage 2i: 4 rated and 2 liked from the
+    seller and a like rate 1.5 times the baseline): all four premium items loved (two round, two
+    rectangular), a round and a rectangular one from other sellers liked, and six other results
+    disliked. 6 of 12 liked overall; the premium seller is 4 of 4. Shape stays open."""
+    sid, first = brass_scenario(svc)
+    svc.rate(sid, pick(first, "Round Brushed Brass Drum")["id"], "love")
+    svc.rate(sid, pick(first, "Rectangular Walnut")["id"], "love")
+    rated = set(svc.store.load(sid).ratings)
+    others = [r for r in first if r["seller"] != PREMIUM_SELLER and r["id"] not in rated]
+    by_shape: dict[str, list[dict[str, Any]]] = {}
+    for r in others:  # one shape at a time, so no shape is disliked often enough to be a chip
+        by_shape.setdefault(r["title"].split()[1], []).append(r)
+    picks = [r for group in zip(*by_shape.values(), strict=False) for r in group]
+    for r in picks[:5]:
+        svc.rate(sid, r["id"], "dislike")
+    return sid, first
+
+
 def round_scenario(svc: ShopService) -> tuple[str, list[dict[str, Any]]]:
     """Scenario B: loves two round items from the premium seller, likes one rectangular one from
     another, dislikes one. Round carries 86% of the like mass against about a third of what was
@@ -184,18 +203,22 @@ def test_the_mixed_scenario_shows_seller_affinity_open_shape_and_better_alignmen
     tmp_path: Path,
 ) -> None:
     svc = mock_service(tmp_path)
-    sid, first = brass_scenario(svc)
+    sid, first = seller_scenario(svc)
     again = svc.shop_again(sid)
     profile = StoredProfile.model_validate(again["profile"])
     found = again["search"]
     seller = [e for e in profile.inferred if e.attr_kind == "seller"]
     assert [e.text for e in seller] == [f"seller: {PREMIUM_SELLER}"]
-    shape = [e for e in profile.inferred if e.dimension == "shape"]
+    shape = [
+        e for e in profile.inferred if e.dimension == "shape" and e.status != "leaning"
+    ]  # (2i: a leaning chip may sit beside the open chip; it is soft and checked elsewhere)
     assert [(e.status, sorted(e.values)) for e in shape] == [("open", ["rectangular", "round"])]
     assert any(PREMIUM_SELLER.lower() in q.lower() for q in found["queries"])  # the seller query
     assert any("round" in q.lower() for q in found["queries"])  # one phrasing per open value
     assert any("rectangular" in q.lower() for q in found["queries"])
-    assert found["queries"][0] == "wood and metal coffee table with storage"  # typed: no seller
+    assert (
+        PREMIUM_SELLER.lower() not in found["queries"][0].lower()
+    )  # the phrasings carry no seller
     assert (
         PREMIUM_SELLER in again["profile_summary"] and "Shape is open" in again["profile_summary"]
     )
@@ -515,7 +538,7 @@ def test_a_guess_never_reaches_the_ranker_as_a_like(
 
 def test_deleted_chips_never_come_back(tmp_path: Path) -> None:
     svc = mock_service(tmp_path)
-    sid, _ = brass_scenario(svc)
+    sid, _ = seller_scenario(svc)
     one = svc.shop_again(sid)
     texts = [e["text"] for e in one["profile"]["inferred"]]
     assert f"seller: {PREMIUM_SELLER}" in texts and "shape: open" in texts
@@ -775,34 +798,33 @@ def pages_of(size: int, count: int = 7) -> list[list[Any]]:
     ]
 
 
-def test_extra_pages_stop_once_the_pool_reaches_sixty(
+def test_the_base_query_is_paged_only_to_page_three_as_a_last_resort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     svc, search, client, sid = two_loved_brass(tmp_path, monkeypatch)
     calls_before = len(search.calls)
     search.sequence = pages_of(20)
     again = svc.shop_again(sid)
-    assert len(search.calls) - calls_before == 3  # three pages of 20: 60 candidates, then stop
+    # the typed search took pages 1 and 2; page 3 is a last resort (the pool is under 36) and page 4
+    # is never fetched, whatever the pool holds
+    assert [p for _, p in search.calls[calls_before:]] == [2, 3]  # the typed search took page 1
     rank_text = rank_call(client)["messages"][0]["content"]
     pool_lines = [x for x in rank_text.splitlines() if x.startswith("- id: ")]
-    assert len(pool_lines) == 60 and len(again["search"]["results"]) == 24
-    assert again["search"]["serper_calls"] == 3 and again["search"]["serper_credits"] == 6
-    assert len({q for q, _ in search.calls[calls_before:]}) == 1  # nothing converged: one phrasing
+    assert len(pool_lines) == 40 and len(again["search"]["results"]) == 24
+    assert again["search"]["serper_calls"] == 2 and again["search"]["serper_credits"] == 4
 
 
-def test_a_thin_pool_uses_all_four_serper_calls_and_never_a_fifth(
+def test_a_thin_pool_never_fetches_page_four(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     svc, search, client, sid = two_loved_brass(tmp_path, monkeypatch)
     calls_before = len(search.calls)
     search.sequence = pages_of(12)
     again = svc.shop_again(sid)
-    assert len(search.calls) - calls_before == 4 and again["search"]["serper_calls"] == 4
-    assert again["search"]["serper_credits"] == 8
-    assert again["search"]["provider_usd"] == pytest.approx(0.008)
-    assert len(search.sequence) == 3  # four of the seven pages were fetched
-    rank_text = rank_call(client)["messages"][0]["content"]
-    assert len([x for x in rank_text.splitlines() if x.startswith("- id: ")]) == 48
+    assert len(search.calls) - calls_before == 2 and again["search"]["serper_calls"] == 2
+    assert again["search"]["provider_usd"] == pytest.approx(0.004)
+    assert len(search.sequence) == 5  # two of the seven pages were fetched
+    assert max(p for _, p in search.calls) == 3  # a thin pool still never reaches page 4
     assert len(again["search"]["results"]) == 24
 
 
@@ -818,7 +840,7 @@ def test_the_rank_pool_is_capped_at_eighty(tmp_path: Path, monkeypatch: pytest.M
     sid = first["session_id"]
     for r in first["search"]["results"][:2]:
         svc.rate(sid, r["id"], "love")
-    search.sequence = pages_of(45, 4)  # more candidates than the ranker is shown
+    search.sequence = pages_of(90, 1)  # more candidates than the ranker is shown
     svc.shop_again(sid)
     rank_text = rank_call(client)["messages"][0]["content"]
     assert len([x for x in rank_text.splitlines() if x.startswith("- id: ")]) == 80
@@ -864,24 +886,25 @@ def test_a_repeated_phrasing_starts_after_the_pages_already_fetched(
     svc.rate(sid, first["search"]["results"][0]["id"], "love")
     search.sequence = [[cand(f"n{i}", 40.0, title=f"New {i}") for i in range(5)]]
     svc.shop_again(sid)
-    assert [p for _, p in search.calls][2:] == [3, 4]  # the same words: pages 3 and on, not 1 again
+    assert [p for _, p in search.calls][2:] == [3]  # the same words: page 3, never 1 again or 4
     stored = svc.store.load(sid).searches
-    assert stored[0].pages == {"boho curtains": 2} and stored[1].pages == {"boho curtains": 4}
+    assert stored[0].pages == {"boho curtains": 2} and stored[1].pages == {"boho curtains": 3}
 
 
 def test_seller_cap_is_four_normally_half_for_an_affinity_seller_and_most_when_pinned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     use_client(monkeypatch, RouterClient())
-    shown = [cand(f"f{i}", 60.0, title=f"Brass Shown {i}", seller="FavShop") for i in range(2)]
+    shown = [cand(f"f{i}", 60.0, title=f"Brass Shown {i}", seller="FavShop") for i in range(4)]
     shown += [cand(f"o{i}", 60.0, title=f"Other Shown {i}", seller=f"Other{i}") for i in range(10)]
     search = FakeSearch([shown])
     svc = make_service(tmp_path, search, FakeLookup())
     first = svc.search(None, "tables")
     sid = first["session_id"]
     by_title = {r["title"]: r["id"] for r in first["search"]["results"]}
-    svc.rate(sid, by_title["Brass Shown 0"], "love")
-    svc.rate(sid, by_title["Brass Shown 1"], "love")
+    for n in range(4):  # a seller chip needs 4 rated and 2 liked, at 1.5 times the baseline
+        svc.rate(sid, by_title[f"Brass Shown {n}"], "love")
+        svc.rate(sid, by_title[f"Other Shown {n}"], "dislike")
 
     def fresh(tag: str) -> list[Any]:
         out = [
@@ -892,7 +915,7 @@ def test_seller_cap_is_four_normally_half_for_an_affinity_seller_and_most_when_p
             for i in range(12)
         ]
 
-    search.sequence = [fresh("a")]
+    search.sequence = [fresh("a"), fresh("c")]  # page 3 of the base query, then the seller search
     again = svc.shop_again(sid)
     sellers = [r["seller"] for r in again["search"]["results"]]
     assert sellers.count("FavShop") == 12  # an affinity seller: 50% of a batch of 24

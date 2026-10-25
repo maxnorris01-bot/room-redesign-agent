@@ -108,7 +108,9 @@ def test_every_model_call_in_shop_mode_asks_for_no_thinking() -> None:
             assert (
                 shared or "disable_thinking=True" in text[match.start() : match.start() + 1200]
             ), path.name
-    assert calls == 6  # parse, rank, the preference calls (live, comment), and two tagging calls
+    assert (
+        calls == 7
+    )  # parse, rank, the preference calls (live, comment), two tagging calls, the query writer
 
 
 def test_the_wrapper_sends_the_disabled_field_only_when_asked(

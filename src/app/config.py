@@ -136,6 +136,7 @@ class Config:
     # stage 2h: background preparation (photo tags of each stored batch, comments read as they are
     # written) so a Shop Again finds its inputs ready; the limits that keep it cheap and bounded
     shop_prep_enabled: bool = False  # off for a bare Config (tests); `from_env` turns it on
+    shop_model_queries: bool = False  # stage 2i: model-written queries (off bare; `from_env` on)
     shop_prep_wait_s: float = 8.0  # the most a Shop Again waits for preparation still running
     shop_prep_max_concurrent: int = 4  # model calls at once across all background jobs
     shop_prep_chunk: int = 12  # items per photo tagging call (a batch of 24 is 2 calls)
@@ -297,6 +298,8 @@ class Config:
                 os.environ.get("APP_SHOP_AGAIN_MAX_SERPER_CALLS", cls.shop_again_max_serper_calls)
             ),
             shop_prep_enabled=os.environ.get("APP_SHOP_PREP", "1").strip()
+            not in ("0", "false", "no"),
+            shop_model_queries=os.environ.get("APP_SHOP_MODEL_QUERIES", "1").strip()
             not in ("0", "false", "no"),
             shop_prep_wait_s=float(os.environ.get("APP_SHOP_PREP_WAIT_S", cls.shop_prep_wait_s)),
             shop_prep_max_usd=float(os.environ.get("APP_SHOP_PREP_MAX_USD", cls.shop_prep_max_usd)),

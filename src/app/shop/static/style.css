@@ -214,6 +214,26 @@ button.outline:hover { border-color: var(--accent); }
 .chip.pref .pinned-tag, .chip.pref.inferred .pinned-tag {
   color: var(--accent-ink); background: var(--accent); border-color: var(--accent);
 }
+.chip.pref.lean { background: transparent; border: 1px dashed var(--muted); }
+.chip.pref.lean .k { font-size: 15px; font-weight: 700; }
+.chip.pref.lean-toward { border-color: var(--like); }
+.chip.pref.lean-toward .k, .chip.pref.lean-toward .tag { color: var(--like); border-color: var(--like); }
+.chip.pref.lean-away { border-color: var(--love); }
+.chip.pref.lean-away .k, .chip.pref.lean-away .tag { color: var(--love); border-color: var(--love); }
+.chip.pref.lean-filter { border-color: var(--accent); }
+.chip.pref.lean-filter .k, .chip.pref.lean-filter .tag { color: var(--accent); border-color: var(--accent); }
+.why-evidence { overflow-x: auto; }
+.why-evidence .why-table { max-width: none; }
+.why-evidence .why-table td, .why-evidence .why-table th { white-space: nowrap; }
+.why-evidence .why-table td:last-child { white-space: normal; min-width: 240px; }
+@media (max-width: 560px) {
+  .why-evidence .why-table th:nth-child(6), .why-evidence .why-table td:nth-child(6) { display: none; }
+  .chip.pref { flex-wrap: wrap; }
+  .chip.pref .txt { order: 1; white-space: normal; }
+  .chip.pref .tag { order: 2; }
+  .chip.pref .x { order: 3; }
+  .chip.pref .detail { order: 4; flex-basis: 100%; }
+}
 .chip.pref.guess {
   background: transparent; border: 1px dotted var(--muted); color: var(--muted); font-style: italic;
 }

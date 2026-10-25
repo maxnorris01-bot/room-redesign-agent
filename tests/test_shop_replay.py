@@ -50,6 +50,13 @@ from test_shop_decide import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+# stage 2i: the owner's first session liked all ten rated items, so no seller can beat the 100%
+# baseline by 1.5 times. These ratings (eight shown results from other sellers disliked, West Elm
+# 20 of the 30 extras) give West Elm a like rate to stand out with, where a test needs the chip.
+DISLIKES = {f"X{n}": ("dislike", "") for n in range(21, 29)}
+WITH_CHIP: dict[str, Any] = {"west_elm_extras": 20, "extra_ratings": DISLIKES}
+
+
 def replay_service(tmp_path: Path, **kw: Any) -> tuple[ShopService, str]:
     cfg = config()
     search, lookup = build_shop_providers(cfg)
@@ -121,35 +128,37 @@ def test_the_replay_decides_shape_open_price_mixed_and_no_industrial_or_round(
     assert "Price is mixed." in view["profile_summary"]
 
 
-def test_the_replay_seller_affinity_for_west_elm_and_its_numbers(tmp_path: Path) -> None:
+def test_the_replay_has_no_seller_chip_when_every_rated_item_was_liked(tmp_path: Path) -> None:
     svc, sid = replay_service(tmp_path)  # West Elm is 20 of the 40 shown results
-    view = svc.shop_again(sid)
-    seller = chips(view)[("seller", "seller: West Elm")]
-    assert seller["share"] == pytest.approx(0.8571, abs=1e-4)  # 12 of 14 like mass
-    assert seller["exposure"] == 0.5 and seller["lift"] == pytest.approx(1.714, abs=1e-3)
-    top = view["profile"]["trace"]["seller"]["candidates"][0]
-    assert top["seller"] == "West Elm" and top["items"] == 8 and top["verdict"] == "chip"
-    assert top["like_mass"] == 12 and top["dislikes"] == 0
-
-
-def test_the_replay_seller_chip_is_missing_only_when_the_lift_legitimately_fails(
-    tmp_path: Path,
-) -> None:
-    svc, sid = replay_service(tmp_path, west_elm_extras=30)  # West Elm becomes 38 of 40 shown
     view = svc.shop_again(sid)
     assert ("seller", "seller: West Elm") not in chips(view)
     trace = view["profile"]["trace"]["seller"]
-    assert trace["decision"] == "none"
-    west = trace["candidates"][0]
+    top = trace["candidates"][0]
+    assert top["seller"] == "West Elm" and top["rated"] == 8 and top["liked"] == 8
+    assert top["like_rate"] == 1.0 and trace["baseline"] == 1.0
+    assert "like rate 100% is under 150%" in top["verdict"]  # nothing can beat a 100% baseline
+
+
+def test_the_replay_seller_chip_comes_from_the_like_rate_and_not_from_what_was_shown(
+    tmp_path: Path,
+) -> None:
+    svc, sid = replay_service(tmp_path, **WITH_CHIP)  # 8 more ratings, all dislikes
+    view = svc.shop_again(sid)
+    seller = chips(view)[("seller", "seller: West Elm")]
+    assert seller["detail"] == "liked 8 of 8 (100%) against 56% overall"
     assert (
-        west["seller"] == "West Elm"
-        and west["exposure"] == 0.95
-        and west["lift"] == pytest.approx(0.902, abs=1e-3)
-    )
-    assert (
-        "lift 0.902 is under 1.3" in trace["reason"]
-        and "86% against 95% of what was shown" in trace["reason"]
-    )
+        seller["exposure"] is None and seller["lift"] is None
+    )  # the lift test is out of this rule
+    top = view["profile"]["trace"]["seller"]["candidates"][0]
+    assert top["seller"] == "West Elm" and top["rated"] == 8 and top["verdict"] == "chip"
+    # West Elm becomes 38 of 40 shown: the chip does not care how often it was shown
+    svc2, sid2 = replay_service(tmp_path / "b", west_elm_extras=20, extra_ratings=DISLIKES)
+    session = svc2.store.load(sid2)
+    for rid, result in session.results.items():
+        if result.seller != "West Elm" and rid not in session.ratings:
+            session.results[rid] = result.model_copy(update={"seller": "West Elm"})
+    svc2.store.save(session)
+    assert ("seller", "seller: West Elm") in chips(svc2.shop_again(sid2))
 
 
 def test_the_replay_in_title_only_fallback_mode_decides_no_attribute(tmp_path: Path) -> None:
@@ -157,7 +166,7 @@ def test_the_replay_in_title_only_fallback_mode_decides_no_attribute(tmp_path: P
     from app.shop.prefs import merge_profile_v3
 
     store = SessionStore(tmp_path / "shop-data")
-    session = seed_session(store)
+    session = seed_session(store, **WITH_CHIP)
     base = session.searches[0].query
     prof = merge_profile_v3(None, None, session, base, ImageReport(), set())
     kinds = {(e.attr_kind, e.text) for e in prof.inferred}
@@ -329,7 +338,7 @@ def test_without_a_disliked_item_the_retry_splits_loved_from_liked(tmp_path: Pat
 
 
 def test_when_every_part_fails_the_profile_falls_back_to_seller_and_price(tmp_path: Path) -> None:
-    svc, sid = replay_service(tmp_path)
+    svc, sid = replay_service(tmp_path, **WITH_CHIP)
     svc.rate(sid, "X20", "dislike")
     comment_on(svc, sid, "R1", "MOCK_TRUNCATE_ALL")  # the loved/liked part fails again
     comment_on(svc, sid, "X20", "MOCK_TRUNCATE_ALL")  # and so does the disliked part
@@ -616,15 +625,19 @@ def test_the_trace_has_the_numbers_for_every_dimension_seller_and_price(tmp_path
     assert (
         material["decision"] == "none" and "lift 1.286 for wood is under 1.3" in material["reason"]
     )
-    assert trace["seller"]["candidates"][0]["lift"] == pytest.approx(1.714, abs=1e-3)
+    assert trace["seller"]["candidates"][0]["like_rate"] == 1.0
     assert trace["price"]["decision"] == "mixed"
-    sent = {k: v for k, v in view["search"]["trace"].items() if k not in ("batch", "tag_calls")}
+    sent = {
+        k: v
+        for k, v in view["search"]["trace"].items()
+        if k not in ("batch", "tag_calls", "alignment_counted", "model_queries")
+    }
     assert sent == trace and "batch" in view["search"]["trace"]  # the response carries both
     session_file = json.loads((tmp_path / "shop-data" / f"{sid}.json").read_text())
     saved = {
         k: v
         for k, v in session_file["searches"][-1]["trace"].items()
-        if k not in ("batch", "tag_calls")
+        if k not in ("batch", "tag_calls", "alignment_counted", "model_queries")
     }
     assert session_file["profile"]["trace"] == trace and saved == trace
     assert session_file["profile"]["tagging"]["items_tagged"] == 10
@@ -689,7 +702,7 @@ def test_trace_text_with_markup_stays_data(tmp_path: Path) -> None:
 
 
 def test_the_replay_keeps_pin_request_chips_and_cost_behaviour(tmp_path: Path) -> None:
-    svc, sid = replay_service(tmp_path)
+    svc, sid = replay_service(tmp_path, **WITH_CHIP)
     view = svc.shop_again(sid)
     typed = svc.store.load(sid).searches[0].query.model_dump(mode="json")
     assert view["search"]["query"] == typed  # request chips unchanged

@@ -149,6 +149,18 @@ this choice over the alternatives. Note what's still open or deferred within it,
   `Config` and on from the environment; first-come tagging happens before the rank call, with a 12-title
   rank-ordered reserve; the fifth replay fixture was skipped (a saved session has no candidate pool). See
   `docs/sessions/2026-10-25-shop-speed-prep.md`.
+- **2026-10-25, stage 2i: tailor from like rates (ADR 0012 amended).** The live Shop Again at 13.7 s learned
+  nothing because "3 times the disliked mass" ignored hit rates. Decisions: one group like-rate function
+  (rated, liked, rate against the all-ratings baseline) replaces the net-mass, share and lift rules for
+  sellers and tiers; a leaning layer for soft values (toward at 4 rated, 2 liked, 1.5 times, 35%; away at 6
+  rated and half the baseline) feeds the ranker and holds a 30% soft share or cap; the marketplace tier is
+  excluded (chip, banner under 12, dismissal for 8 ratings) when 8 or more were rated at 20% or less; liked
+  sellers are searched by name and the model writes validated queries; the base query stops at page 2 (page 3
+  last resort). My choices where the brief was silent: up to 3 seller chips; a session where nearly
+  everything was liked has no seller chip (nothing can be 1.5 times a baseline over 67%); leanings use title
+  keywords for a dimension the tags left empty; query writing is off in a bare `Config` and on from the
+  environment; the fifth replay fixture was not built (the newest session predates pool snapshots), a
+  synthetic evidence fixture stands in. See `docs/sessions/2026-10-25-shop-tailoring.md`.
 
 ## See also
 

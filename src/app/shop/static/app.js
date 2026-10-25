@@ -186,8 +186,8 @@
     opts = opts || {};
     var x = h('button', { type: 'button', class: 'x', 'aria-label': 'Remove ' + text }, ['×']);
     x.addEventListener('click', function () { removePref(kind, text, x); });
-    var marker = kind === 'guess' ? '?' : (opts.cls && opts.cls.indexOf('neutral') >= 0 ? '≈'
-      : (polarity === 'dislike' ? '−' : '+'));
+    var marker = opts.marker || (kind === 'guess' ? '?' : (opts.cls && opts.cls.indexOf('neutral') >= 0 ? '≈'
+      : (polarity === 'dislike' ? '−' : '+')));
     var cls = 'chip pref ' + polarity + (kind === 'inferred' || kind === 'guess' ? ' ' + kind : '') +
       (opts.cls ? ' ' + opts.cls : '');
     var label;
@@ -228,8 +228,21 @@
       opts = { cls: 'neutral', detail: e.detail };
       tip = ['Mixed: your loved and liked items cost different amounts, so price does not steer.']
         .concat(e.evidence_titles);
+    } else if (e.attr_kind === 'leaning_toward' || e.attr_kind === 'leaning_away') {
+      var toward = e.attr_kind === 'leaning_toward';
+      tag = 'leaning';
+      opts = { cls: 'lean ' + (toward ? 'lean-toward' : 'lean-away'), detail: e.detail, marker: toward ? '↗' : '↘' };
+      tip = [toward
+        ? 'Leaning toward: this value was liked more often than your ratings overall. A soft share of each batch (at least 30% where the results have it), never a filter.'
+        : 'Leaning away: this value was liked far less often than your ratings overall. Held to at most 30% of each batch, never removed.',
+        'Remove it to drop its effect for this session.'].concat(e.evidence_titles);
+    } else if (e.attr_kind === 'exclude_marketplace') {
+      tag = 'filter';
+      opts = { cls: 'lean lean-filter', detail: e.detail, marker: '⊘' };
+      tip = ['Marketplace and budget retailers are left out of the candidates before ranking.',
+        'Remove the chip to include them again. It comes back only after 8 more ratings if the evidence still holds.'];
     } else if (e.attr_kind === 'seller' || e.attr_kind === 'tier') {
-      opts = { pin: true, pinned: !!e.pinned };
+      opts = { pin: true, pinned: !!e.pinned, detail: e.detail };
       tip = ['Learned from what you rated. Click the name to pin it:']
         .concat(e.detail ? [e.detail] : [], e.evidence_titles);
     } else {
@@ -402,6 +415,42 @@
           return [c.kind + ' ' + c.label, c.start, c.duration, c.queue_wait, c.retries];
         })));
     }
+    var mq = b.model_queries;
+    if (mq && mq.asked) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Model-written queries: ' + (mq.accepted.length ? mq.accepted.map(function (q) { return '"' + q + '"'; }).join(', ') : 'none accepted') +
+        (mq.error ? ' (the call failed: ' + mq.error + ')' : '') + '; cost ' + usd(mq.usd) + '.'
+      ]));
+      (mq.dropped || []).forEach(function (d) {
+        box.appendChild(h('p', { class: 'why-line' }, ['Dropped query "' + d.query + '": ' + d.reason + '.']));
+      });
+      (mq.searches || []).forEach(function (x) {
+        box.appendChild(h('p', { class: 'why-line' }, [
+          'Searched "' + x.query + '" page ' + x.page + ', found ' + x.found + ', ' + x.new_candidates + ' new' +
+          (x.error ? ' (' + x.error + ')' : '') + '.'
+        ]));
+      });
+    }
+    if (b.marketplace_excluded) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Left out by the marketplace exclusion: ' + b.marketplace_excluded + ' candidate(s).'
+      ]));
+    }
+    var ln = b.leanings;
+    if (ln && (Object.keys(ln.toward).length || Object.keys(ln.away).length)) {
+      Object.keys(ln.toward).forEach(function (k) {
+        box.appendChild(h('p', { class: 'why-line' }, [
+          'Leaning toward ' + k.replace(':', ' ').replace(/_/g, ' ') + ': ' + ln.toward[k].in_batch + ' of ' + b.batch.size +
+          ' in the batch (aimed for at least ' + ln.toward[k].wanted + ' where the pool has it).'
+        ]));
+      });
+      Object.keys(ln.away).forEach(function (k) {
+        box.appendChild(h('p', { class: 'why-line' }, [
+          'Leaning away from ' + k.replace(':', ' ').replace(/_/g, ' ') + ': ' + ln.away[k].in_batch + ' of ' + b.batch.size +
+          ' in the batch (at most ' + ln.away[k].cap + ').'
+        ]));
+      });
+    }
     var dd = b.dedupe;
     if (dd) {
       var rules = Object.keys(dd.by_rule || {}).map(function (k) {
@@ -438,7 +487,7 @@
     });
     (b.peers || []).forEach(function (x) {
       box.appendChild(h('p', { class: 'why-line' }, [
-        'Peer retailer ' + x.peer + ': searched "' + x.search + '" page ' + x.page + ', found ' + x.found + ', ' +
+        (x.kind === 'seller' ? 'Seller you liked, ' : 'Peer retailer ') + x.peer + ': searched "' + x.search + '" page ' + x.page + ', found ' + x.found + ', ' +
         x.new_candidates + ' new candidates' + (x.error ? ' (' + x.error + ')' : '') + '.'
       ]));
     });
@@ -499,16 +548,35 @@
       (tg.retried ? '; the first call failed and was retried in two parts' : '') +
       (tg.fallback ? '; the details could not be read at all' : '') + '.'
     ]));
+    var ev = trace.evidence;
+    if (ev && ev.rows && ev.rows.length) {
+      var evBox = h('div', { class: 'why-dim why-evidence' }, [
+        h('h4', {}, ['like-rate evidence (baseline ' + pct(ev.baseline) + ' of all rated items liked)'])
+      ]);
+      evBox.appendChild(whyTable(['group', 'name', 'rated', 'liked', 'like rate', 'baseline', 'verdict', 'why'],
+        ev.rows.map(function (r) {
+          return [r.kind.replace(/_/g, ' '), r.name, r.rated, r.liked, pct(r.like_rate), pct(r.baseline), r.verdict, r.reason];
+        })));
+      evBox.appendChild(h('p', { class: 'why-reason' }, [
+        'A seller, retailer tier or value earns a chip or a leaning from its own like rate (at least 4 rated, 2 liked, 1.5 times the baseline and 35%); how often it was shown does not matter.'
+      ]));
+      panel.appendChild(evBox);
+    }
+    var mk = trace.marketplace;
+    if (mk && mk.reason) {
+      panel.appendChild(h('p', { class: 'why-line' }, [
+        'Marketplace exclusion: ' + (mk.decision === 'chip' ? 'on (' + mk.reason + ')' : 'off (' + mk.reason + ')') + '.'
+      ]));
+    }
     Object.keys(trace.dimensions).forEach(function (name) {
       panel.appendChild(dimensionBlock(name, trace.dimensions[name]));
     });
     var sel = trace.seller || {};
     var seller = h('div', { class: 'why-dim' }, [h('h4', {}, ['seller: ' + (sel.decision || 'none')])]);
     if (sel.candidates && sel.candidates.length) {
-      seller.appendChild(whyTable(['seller', 'items', 'like share', 'shown share', 'lift', 'verdict'],
+      seller.appendChild(whyTable(['seller', 'rated', 'liked', 'like rate', 'baseline', 'verdict'],
         sel.candidates.map(function (c) {
-          return [c.seller, c.items, pct(c.like_share), c.exposure === null ? '-' : pct(c.exposure),
-            c.lift === null ? '-' : c.lift, c.verdict];
+          return [c.seller, c.rated, c.liked, pct(c.like_rate), pct(c.baseline), c.verdict];
         })));
     }
     seller.appendChild(h('p', { class: 'why-reason' }, [sel.reason || '']));
@@ -516,9 +584,9 @@
     var tr = trace.tier || {};
     if (tr.candidates && tr.candidates.length) {
       var tierBox = h('div', { class: 'why-dim' }, [h('h4', {}, ['retailer tier: ' + (tr.decision || 'none')])]);
-      tierBox.appendChild(whyTable(['tier', 'items', 'like share', 'sellers', 'verdict'],
+      tierBox.appendChild(whyTable(['tier', 'rated', 'liked', 'like rate', 'liked sellers', 'verdict'],
         tr.candidates.map(function (c) {
-          return [c.label, c.items, pct(c.like_share),
+          return [c.label, c.rated, c.liked, pct(c.like_rate),
             Object.keys(c.sellers).map(function (k) { return k + ' ' + c.sellers[k]; }).join(', '), c.verdict];
         })));
       panel.appendChild(tierBox);
@@ -564,8 +632,21 @@
 
   function alignmentText(s) {
     if (!s.alignment) return '';
-    if (s.alignment.signals === 0) return 'matches your preferences: n/a (nothing decided yet)';
-    return 'matches your preferences: ' + s.alignment.matches + ' of ' + s.alignment.total;
+    var c = (s.trace && s.trace.alignment_counted) || {};
+    if (s.alignment.signals === 0) {
+      if (c.other_chips > 0) {
+        return 'matches your preferences: nothing to match against yet (only ' + c.other_chips +
+          ' chip(s) that narrow the search: leaning away, the marketplace exclusion, open or mixed)';
+      }
+      return 'matches your preferences: n/a (nothing decided yet)';
+    }
+    var parts = [];
+    if (c.converged) parts.push(c.converged + ' converged');
+    if (c.seller_tier) parts.push(c.seller_tier + ' seller or retailer chip' + (c.seller_tier === 1 ? '' : 's'));
+    if (c.leaning_toward) parts.push(c.leaning_toward + ' leaning toward');
+    if (c.stated) parts.push(c.stated + ' of your own words');
+    return 'matches your preferences: ' + s.alignment.matches + ' of ' + s.alignment.total +
+      (parts.length ? ' (counted: ' + parts.join(', ') + ')' : '');
   }
 
   function timingText(s) {

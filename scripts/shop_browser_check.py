@@ -31,7 +31,13 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import BrowserContext, Page, Route, sync_playwright
 
-from app.shop.replay import REPLAY_FILE_2, REPLAY_FILE_3, REPLAY_FILE_4, seed_session
+from app.shop.replay import (
+    REPLAY_FILE_2,
+    REPLAY_FILE_3,
+    REPLAY_FILE_4,
+    REPLAY_FILE_EVIDENCE,
+    seed_session,
+)
 from app.shop.store import SessionStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -221,7 +227,11 @@ def seed_replays(data_dir: str) -> dict[str, str]:
     broken = seed_session(
         store,
         comments={"R1": "MOCK_TRUNCATE_ALL"},
-        extra_ratings={"X20": ("dislike", "MOCK_TRUNCATE_ALL")},
+        west_elm_extras=20,  # eight disliked results from other sellers give West Elm a like rate
+        extra_ratings={
+            "X20": ("dislike", "MOCK_TRUNCATE_ALL"),
+            **{f"X{n}": ("dislike", "") for n in range(21, 29)},
+        },
     )
     second = seed_session(store, replay=REPLAY_FILE_2)
     untagged = seed_session(  # the candidate tagging call fails (a mock-only marker in a title)
@@ -241,10 +251,14 @@ def seed_replays_3(data_dir: str) -> dict[str, str]:
     """The owner's third session, and a copy where the candidate tagging call fails (the mock-only
     marker sits in a title in two of the shown results' batches, so both calls fail)."""
     store = SessionStore(Path(data_dir))
-    clean = seed_session(store, replay=REPLAY_FILE_3)
+    # the owner liked 6 of 7: with that baseline no seller stands out (stage 2i), so ten shown
+    # results from other sellers are disliked too
+    dislikes = {f"S{n}": ("dislike", "") for n in range(1, 11)}
+    clean = seed_session(store, replay=REPLAY_FILE_3, extra_ratings=dislikes)
     broken = seed_session(
         store,
         replay=REPLAY_FILE_3,
+        extra_ratings=dislikes,
         shown_titles={
             "S1": "Rectangular Walnut Coffee Table MOCK_TAGS_FAIL",
             "S41": "Round Oak Coffee Table MOCK_TAGS_FAIL",
@@ -311,8 +325,8 @@ def run_replay(
         has=page.locator(".txt", has_text="seller: West Elm")
     )
     check(
-        seller_chip.count() == 1,
-        "the West Elm seller chip appears (the lift test passes at 50% exposure)",
+        seller_chip.count() == 0,
+        "no West Elm chip: all ten rated items were liked, so nothing beats the 100% baseline",
     )
     like_text = " ".join(
         page.locator("#pref-chips .chip.pref.inferred:not(.neutral) .txt").all_inner_texts()
@@ -353,7 +367,11 @@ def run_replay(
         and any(n.startswith("price: mixed") for n in names),
         "shape open and price mixed are listed",
     )
-    check(any(n.startswith("seller: chip") for n in names), "the seller decision is listed")
+    check(any(n.startswith("seller: none") for n in names), "the seller decision is listed")
+    check(
+        any(n.startswith("like-rate evidence") for n in names),
+        "the like-rate evidence table is listed",
+    )
     text = why.inner_text()
     check(
         "known coverage" in text and "like mass" in text and "lift" in text, "the numbers are shown"
@@ -397,7 +415,7 @@ def run_replay(
         "only seller and price chips remain",
     )
     check(
-        "tagged 0 of 11 items" in lookups_text(page) and "fallback" in lookups_text(page),
+        "tagged 0 of 19 items" in lookups_text(page) and "fallback" in lookups_text(page),
         "footer says the details were not read",
     )
     page.locator("#why-toggle").click()
@@ -464,7 +482,7 @@ def run_replay_2(
         "candidates tagged" in text and "Searches used:" in text,
         "candidate tagging and searches are shown",
     )
-    check("like share 25% is under 40%" in text, "the Home Depot rule that failed is shown")
+    check("rated 2, needs 4" in text, "the Home Depot rule that failed is shown")
     check("lift 1.25 for wood is under 1.3" in text, "the material lift is shown")
     page.screenshot(path=str(shots / "18-replay2-trace.png"), full_page=True)
     page.set_viewport_size({"width": 390, "height": 844})
@@ -534,7 +552,7 @@ def run_replay_3(
     batch = title_texts(page)
     check(not set(batch) & set(before), "the Shop Again batch shows nothing seen before")
     sellers = page.locator("#grid .card .seller").all_inner_texts()
-    peers_in = {s for s in sellers if s in ("Article", "CB2", "Crate & Barrel")}
+    peers_in = {s for s in sellers if s in ("West Elm", "Article", "CB2")}
     check(len(peers_in) == 3, f"the batch includes peer retailers {sorted(peers_in)}")
     check(
         sum(1 for s in sellers if s in PREMIUM_NAMES) <= 12,
@@ -644,12 +662,12 @@ def run_replay_4(
     check(status == "24 new results.", f"the banner is one short sentence: {status!r}")
     check(len(status) < 120 and status.count(". ") == 0, "and not a paragraph")
     check(page.locator("#status-details").is_visible(), "with a details link")
-    wait_pref_chip(page, "seller: West Elm")
-    check(
-        "retailers like" not in page.inner_text("#pref-chips"),
-        "no retailer tier chip (22 dislikes in the tier: the net rule)",
-    )
     wait_pref_chip(page, "shape: open")
+    check(
+        "seller:" not in page.inner_text("#pref-chips")
+        and "retailers like" not in page.inner_text("#pref-chips"),
+        "no seller or retailer chip (West Elm 3 rated, the premium tier liked 6 of 28: 21%)",
+    )
     check(chips(page) == request_chips, "the request chips are unchanged")
     page.screenshot(path=str(shots / "28-replay4-short-banner.png"))
     batch = title_texts(page)
@@ -694,7 +712,8 @@ def run_replay_4(
         "de-duplication counts are in the trace",
     )
     check("same product id" in text, "per rule")
-    check("Peer retailer Room & Board" in text, "the peers searched are in the trace")
+    check("Model-written queries:" in text, "the model-written queries are in the trace")
+    check("like-rate evidence" in text.lower(), "and the like-rate evidence table")
     check("Tags behind the batch:" in text, "and where the batch's tags came from")
     page.screenshot(path=str(shots / "29-replay4-trace.png"), full_page=True)
     page.set_viewport_size({"width": 390, "height": 844})
@@ -737,6 +756,8 @@ def run_checks(
     ids4: dict[str, str],
     base5: str,
     ids5: dict[str, str],
+    base6: str,
+    id6: str,
 ) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
@@ -806,6 +827,14 @@ def run_checks(
                 .first
             )
             oval.locator(".rate.dislike").click()
+            # a seller chip needs 4 rated and 2 liked from the seller at 1.5 times the overall like
+            # rate (stage 2i): love the other two premium items and dislike four more results
+            card_by_title(page, "Round Brushed Brass Drum", PREMIUM).locator(".rate.love").click()
+            card_by_title(page, "Rectangular Walnut", PREMIUM).locator(".rate.love").click()
+            for word, nth in (("Square", 0), ("Square", 1), ("Oval", 1), ("Oval", 2)):
+                others.filter(has=page.locator(".title", has_text=word)).nth(nth).locator(
+                    ".rate.dislike"
+                ).click()
             page.wait_for_load_state("networkidle")
             check("link lookups 0 of 12" in lookups_text(page), "loving and liking ran no lookup")
 
@@ -848,7 +877,7 @@ def run_checks(
             check(
                 page.locator("#pref-chips .chip.pref.inferred", has_text="seller: Hartwell").count()
                 == 1,
-                "the premium seller chip (2 loved items, over 40% of the like mass)",
+                "the premium seller chip (4 loved items, a like rate over 1.5 times the baseline)",
             )
             seller_chip = page.locator("#pref-chips .chip.pref").filter(
                 has=page.locator(".txt", has_text=f"seller: {PREMIUM}")
@@ -928,7 +957,7 @@ def run_checks(
             print("Saved panel wraps")
             page.click("#saved-toggle")
             check(page.locator("#saved").is_visible(), "Saved opens")
-            check(saved_counts(page)[0].startswith("Loved (2)"), f"tabs {saved_counts(page)}")
+            check(saved_counts(page)[0].startswith("Loved (4)"), f"tabs {saved_counts(page)}")
             page.click("#tab-liked")
             page.screenshot(path=str(shots / "08-saved-panel.png"))
             row = page.locator("#saved-row")
@@ -998,6 +1027,7 @@ def run_checks(
             run_replay_3(browser, base3, shots, ids3, console_errors)
             run_replay_4(browser, base4, shots, ids4, console_errors)
             run_progress(browser, base5, shots, ids5, console_errors)
+            run_tailoring(browser, base6, shots, id6, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -1048,6 +1078,107 @@ def run_progress(
     context.close()
 
 
+MARKETPLACE_SELLERS = ("Walmart", "Lowe's", "Home Depot", "Overstock", "Amazon")
+
+
+def run_tailoring(
+    browser: Any, base: str, shots: Path, session_id: str, console_errors: list[str]
+) -> None:
+    print("the evidence session (48 rated, 15 liked): chips, evidence table, exclusion")
+    context, page = open_session(browser, base, session_id)
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    request_chips = chips(page)
+    page.click("#shop-again")
+    wait_for_results(page)
+    page.locator("#prefs").wait_for(state="visible")
+    toward = page.locator("#pref-chips .chip.pref.lean-toward")
+    away = page.locator("#pref-chips .chip.pref.lean-away")
+    market = page.locator("#pref-chips .chip.pref.lean-filter")
+    toward.first.wait_for(timeout=10000)
+    check(
+        toward.filter(has=page.locator(".txt", has_text="natural wood (frame color)")).count() == 1,
+        "leaning toward natural wood (frame)",
+    )
+    check(
+        away.filter(has=page.locator(".txt", has_text="black (frame color)")).count() == 1,
+        "leaning away from black (frame)",
+    )
+    check(market.count() == 1 and "liked 1 of 11" in market.inner_text(), "the exclusion chip")
+    check(
+        page.locator("#pref-chips .chip.pref", has_text="seller: ").count() == 3,
+        "three seller chips (West Elm, Article, CB2)",
+    )
+    check("retailers like" in page.inner_text("#pref-chips"), "and the retailer tier chip")
+    check(
+        toward.first.evaluate("e => getComputedStyle(e).borderStyle") == "dashed"
+        and away.first.evaluate("e => getComputedStyle(e).borderStyle") == "dashed",
+        "leaning chips have a dashed outline",
+    )
+    check(chips(page) == request_chips, "the request chips are unchanged")
+    sellers = page.locator("#grid .card .seller").all_inner_texts()
+    check(
+        not [s for s in sellers if s in MARKETPLACE_SELLERS],
+        f"no marketplace seller in the batch ({len(sellers)} results)",
+    )
+    liked = [s for s in sellers if s in ("West Elm", "Article", "CB2")]
+    check(len(liked) >= 6, f"{len(liked)} results from the liked sellers")
+    foot = lookups_text(page)
+    print("   footer:", foot)
+    check("(counted: " in foot and "leaning toward" in foot, "the footer says what it counted")
+    check("nothing decided yet" not in foot, "and does not say nothing is decided")
+    toward.first.hover()
+    check("Leaning toward" in toward.first.locator(".tip").inner_text(), "the leaning tooltip")
+    page.mouse.move(5, 600)
+    page.locator("#prefs").screenshot(path=str(shots / "37-tailoring-chips.png"))
+    page.locator("#why-toggle").click()
+    why = page.locator("#why")
+    table = why.locator(".why-evidence")
+    table.scroll_into_view_if_needed()
+    text = table.inner_text()
+    check("natural wood" in text and "frame color" in text and "leaning toward" in text,
+          "the evidence table lists the frame values with a verdict")  # fmt: skip
+    check("West Elm" in text and "design premium" in text, "and the sellers and the tiers")
+    check("rated" in text.lower() and "like rate" in text.lower(), "with rated, liked and rates")
+    check("Model-written queries:" in why.inner_text(), "the written queries are in the panel")
+    check("Left out by the marketplace exclusion" in why.inner_text(), "and the excluded count")
+    table.screenshot(path=str(shots / "38-tailoring-evidence-table.png"))
+    page.emulate_media(color_scheme="dark")
+    page.locator("#pref-chips").screenshot(path=str(shots / "39-tailoring-chips-dark.png"))
+    table.screenshot(path=str(shots / "40-tailoring-evidence-table-dark.png"))
+    page.emulate_media(color_scheme="light")
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.locator("#pref-chips").scroll_into_view_if_needed()
+    page.locator("#pref-chips").screenshot(path=str(shots / "41-tailoring-chips-mobile.png"))
+    table.scroll_into_view_if_needed()
+    table.screenshot(path=str(shots / "42-tailoring-evidence-table-mobile.png"))
+    check(
+        page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+        "no sideways scroll at 390 px",
+    )
+    page.set_viewport_size({"width": 1280, "height": 900})
+    print("deleting chips")
+    leaning_chip = toward.first
+    leaning_text = leaning_chip.locator(".txt").inner_text()
+    leaning_chip.locator(".x").click()
+    page.locator("#pref-chips .chip.pref", has_text=leaning_text).first.wait_for(
+        state="detached", timeout=10000
+    )
+    check(True, "a leaning chip can be deleted")
+    market.first.locator(".x").click()
+    market.first.wait_for(state="detached", timeout=10000)
+    check(market.count() == 0, "the exclusion chip can be deleted")
+    page.click("#shop-again")
+    wait_for_results(page)
+    check(
+        page.locator("#pref-chips .chip.pref.lean-filter").count() == 0
+        and leaning_text not in page.inner_text("#pref-chips"),
+        "neither comes back on the next Shop Again (the exclusion waits for 8 more ratings)",
+    )
+    after = page.locator("#grid .card .seller").all_inner_texts()
+    print(f"   after deleting: {sum(1 for s in after if s in MARKETPLACE_SELLERS)} marketplace")
+    context.close()
+
+
 def _clip(page: Page, chip: Any) -> dict[str, float]:
     box = chip.bounding_box() or {"x": 0, "y": 0, "width": 200, "height": 30}
     top = max(0.0, box["y"] - 10)
@@ -1091,6 +1222,7 @@ def main() -> int:
         tempfile.TemporaryDirectory() as data_dir3,
         tempfile.TemporaryDirectory() as data_dir4,
         tempfile.TemporaryDirectory() as data_dir5,
+        tempfile.TemporaryDirectory() as data_dir6,
     ):
         try:
             first, port = start_server(data_dir)
@@ -1104,11 +1236,17 @@ def main() -> int:
                 data_dir5, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_4, "APP_SHOP_MOCK_DELAY": "1.2"}
             )
             servers.append(fifth)
+            sixth, port6 = start_server(data_dir6, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_EVIDENCE})
+            servers.append(sixth)
+            tailoring = seed_session(
+                SessionStore(Path(data_dir6)), replay=REPLAY_FILE_EVIDENCE
+            ).session_id
             run_checks(
                 f"http://127.0.0.1:{port}/", OUT, seed_replays(data_dir),
                 f"http://127.0.0.1:{port3}/", seed_replays_3(data_dir3),
                 f"http://127.0.0.1:{port4}/", seed_replays_4(data_dir4),
                 f"http://127.0.0.1:{port5}/", seed_replays_4(data_dir5),
+                f"http://127.0.0.1:{port6}/", tailoring,
             )  # fmt: skip
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

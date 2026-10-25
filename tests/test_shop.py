@@ -30,6 +30,7 @@ from app.mock_llm import (
     mock_prefs_payload,
     mock_prefs_v2_payload,
     mock_prefs_v3_payload,
+    mock_queries,
     mock_shop_parse_payload,
     response,
     text_block,
@@ -180,6 +181,19 @@ class RouterClient:
         self.messages = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs: Any) -> SimpleNamespace:
+        if (kwargs.get("tool_choice") or {}).get("name") == "record_queries":
+            self.calls.append(kwargs)
+            content = kwargs["messages"][0]["content"]
+            ask = (
+                content
+                if isinstance(content, str)
+                else "\n".join(blk["text"] for blk in content if blk.get("type") == "text")
+            )
+            block = SimpleNamespace(
+                type="tool_use", id="toolu_q", name="record_queries",
+                input={"queries": mock_queries(ask)},
+            )  # fmt: skip
+            return response([block], stop_reason="tool_use")
         is_tagging_tool = (kwargs.get("tool_choice") or {}).get("name") == "record_tags"
         # a forced tool call has no output_config: record it as a "CandidateTags" call, so the
         # tests that look calls up by schema title find it (the request itself is kept intact)

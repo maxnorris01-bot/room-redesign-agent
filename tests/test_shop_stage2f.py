@@ -118,6 +118,10 @@ def replay3(tmp_path: Path, **kw: Any) -> tuple[ShopService, str, ReplayPoolSear
     search = ReplayPoolSearch(REPLAY_FILE_3)
     store = SessionStore(tmp_path / "shop-data")
     svc = ShopService(cfg, store, search, FakeLookup())
+    if "extra_ratings" not in kw:
+        # stage 2i: the owner's real session liked 6 of 7. With a baseline that high no seller can
+        # beat it by 1.5 times, so these tests also dislike ten shown results from other sellers
+        kw["extra_ratings"] = {f"S{n}": ("dislike", "") for n in range(1, 11)}
     session = seed_session(store, replay=REPLAY_FILE_3, **kw)
     return svc, session.session_id, search
 
@@ -305,13 +309,16 @@ def test_marketplace_sub_sellers_are_one_seller_in_the_decisions() -> None:
         [
             ("like", "Walmart - JerFit Life", "1"),
             ("like", "Walmart - Hommoo", "2"),
-            ("like", "Target", "3"),
+            ("like", "Walmart", "3"),
+            ("dislike", "walmart.com", "4"),
+            ("dislike", "Target", "5"),
+            ("dislike", "Target", "6"),
         ]
     )
-    shown = shown_sellers({"Walmart": 2, "A": 20, "B": 20, "C": 20})
-    entry, trace = seller_decision(rated, shown)
-    assert entry is not None and entry.text == "seller: Walmart"  # both sub-sellers count: 2 items
-    assert trace["candidates"][0]["items"] == 2
+    entry, trace = seller_decision(rated)
+    walmart = next(c for c in trace["candidates"] if c["seller"] == "Walmart")
+    assert walmart["rated"] == 4 and walmart["liked"] == 3  # four spellings, one seller
+    assert entry is None and "marketplace and budget retailers never earn" in walmart["verdict"]
 
 
 def test_the_retailer_table_is_consistent() -> None:
@@ -344,44 +351,42 @@ def test_the_retailer_table_is_consistent() -> None:
 # ---- the net dislike rule --------------------------------------------------------------------------------------
 
 
-def net_case(likes: int, dislikes: int) -> tuple[ProfileEntry | None, dict[str, Any]]:
+def rate_case(likes: int, dislikes: int) -> tuple[ProfileEntry | None, dict[str, Any]]:
+    """Seller A with `likes` liked and `dislikes` disliked items, in a session where 12 more items
+    from other sellers were rated and 2 of them liked (so the baseline moves with A)."""
     spec = [("like", "A", f"l{i}") for i in range(likes)] + [
         ("dislike", "A", f"d{i}") for i in range(dislikes)
     ]
-    spec += [("like", "B", "b1")] * 0
-    rated = rated_sellers(spec)
-    shown = shown_sellers({"A": 4, "B": 20, "C": 20, "D": 20})
-    return seller_decision(rated, shown)
+    spec += [("like", "B", f"b{i}") for i in range(2)] + [
+        ("dislike", "C", f"c{i}") for i in range(10)
+    ]
+    return seller_decision(rated_sellers(spec))
 
 
-def test_the_net_dislike_rule_is_three_to_one_exactly() -> None:
-    assert net_case(4, 1)[0] is not None  # 4 likes against 1 dislike passes
-    assert net_case(3, 1)[0] is not None  # exactly 3 to 1 passes
-    assert net_case(2, 1)[0] is None  # 2 to 1 does not
-    assert net_case(2, 2)[0] is None  # 2 to 2 does not
-    assert net_case(6, 2)[0] is not None and net_case(5, 2)[0] is None  # 6 to 2 yes, 5 to 2 no
-    entry, trace = net_case(4, 1)
-    assert entry is not None and entry.detail == "1 disliked item(s) from this seller"
-    row = trace["candidates"][0]
-    assert row["dislikes"] == 1 and row["net"] == "4 against 1" and row["verdict"] == "chip"
-    failed = net_case(2, 2)[1]["candidates"][0]
-    assert failed["net"] == "2 against 2"
-    assert (
-        "2 disliked item(s) against liked mass 2: needs at least 3 times the disliked mass"
-        in failed["verdict"]
-    )
+def test_dislikes_lower_a_sellers_like_rate_and_the_rule_is_a_rate_not_a_net() -> None:
+    assert rate_case(4, 0)[0] is not None  # 4 of 4 against 6 of 16 (38%)
+    assert rate_case(4, 1)[0] is not None  # 80%: seven of the old net rule's passes still pass
+    assert rate_case(3, 2)[0] is not None  # 60% is over 1.5 times 5 of 17 (29%) and over 35%
+    assert rate_case(2, 2)[0] is not None  # 50% of 4 rated against 4 of 16 (25%)
+    assert rate_case(2, 5)[0] is None  # 29% of 7 rated: under 35%
+    entry, trace = rate_case(1, 3)
+    row_a = next(c for c in trace["candidates"] if c["seller"] == "A")
+    assert entry is None and "liked 1, needs 2" in row_a["verdict"]
+    row = next(c for c in rate_case(2, 6)[1]["candidates"] if c["seller"] == "A")
+    assert row["rated"] == 8 and row["liked"] == 2 and row["like_rate"] == 0.25
+    assert "like rate 25% is under" in row["verdict"]
+    assert rate_case(6, 2)[0] is not None
 
 
-def test_loved_items_weigh_three_against_a_dislike() -> None:
+def test_loved_items_count_once_in_the_like_rate_and_three_in_the_like_mass() -> None:
     rated = rated_sellers(
         [("love", "A", "1"), ("like", "A", "2"), ("dislike", "A", "3"), ("dislike", "A", "4")]
+        + [("dislike", "B", f"b{i}") for i in range(6)]
     )
-    entry, trace = seller_decision(rated, shown_sellers({"A": 4, "B": 20, "C": 20}))
-    assert entry is None and trace["candidates"][0]["net"] == "4 against 2"  # 3 + 1 against 2
-    more = rated_sellers(
-        [("love", "A", "1"), ("love", "A", "2"), ("dislike", "A", "3"), ("dislike", "A", "4")]
-    )
-    assert seller_decision(more, shown_sellers({"A": 4, "B": 20, "C": 20}))[0] is not None  # 6 vs 2
+    entry, trace = seller_decision(rated)
+    row = trace["candidates"][0]
+    assert row["seller"] == "A" and row["liked"] == 2 and row["like_mass"] == 4  # 3 + 1
+    assert entry is not None and entry.weight == 4 and entry.share == 1.0  # all the like mass
 
 
 def test_the_other_seller_conditions_stand_with_the_net_rule() -> None:
@@ -403,75 +408,57 @@ def tier_case(spec: list[tuple[str, str, str]]) -> tuple[ProfileEntry | None, di
     return tier_decision(rated_sellers(spec))
 
 
-def test_a_tier_needs_half_the_like_mass_two_items_and_the_net_rule() -> None:
+def test_a_tier_needs_the_group_like_rate_rule() -> None:
     entry, trace = tier_case(
         [
             ("love", "West Elm", "1"),
             ("like", "West Elm", "2"),
-            ("like", "Wayfair", "3"),
-            ("like", "Lowe's", "4"),
+            ("like", "Article", "3"),
+            ("dislike", "CB2", "4"),
         ]
-    )  # 4 of 6 = 67%
+        + [("dislike", "Walmart", f"w{i}") for i in range(4)]
+    )  # premium 3 of 4 (75%) against 3 of 8 (38%)
     assert entry is not None and entry.attr_kind == "tier" and entry.values == ["design_premium"]
-    assert entry.text == "retailers like West Elm" and entry.detail == "liked: West Elm"
-    assert trace["decision"] == "chip" and trace["candidates"][0]["label"] == "design premium"
-    # exactly 50% passes, just under fails
-    half, _ = tier_case(
-        [
-            ("like", "West Elm", "1"),
-            ("like", "Article", "2"),
-            ("like", "Lowe's", "3"),
-            ("like", "Walmart", "4"),
-        ]
+    assert entry.text == "retailers like West Elm" and entry.detail.endswith(
+        "liked: West Elm, Article"
     )
-    assert half is not None and half.detail == "liked: Article, West Elm"
+    assert trace["decision"] == "chip" and trace["candidates"][0]["label"] == "design premium"
+    # 4 rated and 2 liked is the least; a rate just under 1.5 times the baseline fails
     under, under_trace = tier_case(
         [
             ("like", "West Elm", "1"),
             ("like", "Article", "2"),
-            ("like", "Lowe's", "3"),
-            ("like", "Walmart", "4"),
-            ("like", "Etsy", "5"),
-        ]
-    )
-    assert (
-        under is None and "like share 40% is under 50%" in under_trace["candidates"][0]["verdict"]
-    )
-    # one item in the tier is never enough, however much mass it holds
-    single, single_trace = tier_case([("love", "West Elm", "1"), ("like", "Lowe's", "2")])
-    assert (
-        single is None
-        and "1 loved or liked item(s), needs 2" in single_trace["candidates"][0]["verdict"]
-    )
-    # the net dislike rule
-    blocked, blocked_trace = tier_case(
-        [
-            ("like", "West Elm", "1"),
-            ("like", "Article", "2"),
             ("dislike", "CB2", "3"),
-            ("dislike", "West Elm", "4"),
+            ("dislike", "Joybird", "4"),
+            ("like", "Lowe's", "5"),
+            ("like", "Walmart", "6"),
+            ("like", "Etsy", "7"),
+            ("dislike", "Etsy", "8"),
         ]
+    )  # premium 2 of 4 (50%) against 5 of 8 (62%)
+    premium = next(c for c in under_trace["candidates"] if c["tier"] == "design_premium")
+    assert under is None and "like rate 50% is under 94%" in premium["verdict"]
+    # fewer than 4 rated is never enough, however many were liked
+    single, single_trace = tier_case(
+        [("love", "West Elm", "1"), ("like", "West Elm", "2"), ("dislike", "Lowe's", "3")]
     )
-    assert (
-        blocked is None
-        and "2 disliked item(s) against liked mass 2" in blocked_trace["candidates"][0]["verdict"]
-    )
-    passes, _ = tier_case(
-        [("love", "West Elm", "1"), ("like", "Article", "2"), ("dislike", "West Elm", "3")]
-    )
-    assert passes is not None and "1 disliked item(s) in this tier" in passes.detail
+    assert single is None and "rated 2, needs 4" in single_trace["candidates"][0]["verdict"]
 
 
 def test_a_marketplace_tier_never_earns_a_chip() -> None:
     entry, trace = tier_case(
-        [("love", "Lowe's", "1"), ("love", "Home Depot", "2"), ("like", "Amazon", "3")]
-    )
+        [("love", "Lowe's", "1"), ("love", "Home Depot", "2"), ("like", "Amazon", "3"),
+         ("like", "Walmart", "4")] + [("dislike", "Etsy", f"e{i}") for i in range(6)]
+    )  # fmt: skip
     assert entry is None
     assert (
         "marketplace and budget retailers never earn a retailer chip"
         in trace["candidates"][0]["verdict"]
     )
-    mainstream, _ = tier_case([("love", "Wayfair", "1"), ("like", "Target", "2")])
+    mainstream, _ = tier_case(
+        [("love", "Wayfair", "1"), ("like", "Target", "2"), ("like", "IKEA", "3"),
+         ("dislike", "Target", "4")] + [("dislike", "Etsy", f"e{i}") for i in range(6)]
+    )  # fmt: skip
     assert mainstream is not None and mainstream.values == ["design_mainstream"]  # these tiers can
 
 
@@ -494,7 +481,10 @@ def test_the_tier_chip_is_deletable_stays_deleted_and_can_be_pinned() -> None:
     # a recompute from the same ratings does not bring it back
     from app.shop.decide import decide
 
-    rated = rated_sellers([("love", "West Elm", "1"), ("like", "West Elm", "2")])
+    rated = rated_sellers(
+        [("love", "West Elm", "1"), ("like", "West Elm", "2"), ("like", "Article", "3"),
+         ("like", "CB2", "4")] + [("dislike", "Etsy", f"e{i}") for i in range(6)]
+    )  # fmt: skip
     again = decide(rated, {}, [], gone.removed, [], exposure=Exposure(), fallback=True)
     assert not [e for e in again.entries if e.attr_kind == "tier"]
     kept = decide(rated, {}, [], [], [], exposure=Exposure(), fallback=True)
@@ -599,16 +589,19 @@ def test_two_shop_agains_on_replay_three_search_different_peers(tmp_path: Path) 
     svc, sid, search = replay3(tmp_path)
     first = svc.shop_again(sid)
     peers_one = [p["peer"] for p in first["search"]["trace"]["batch"]["peers"]]
-    assert peers_one == ["Article", "CB2", "Crate & Barrel"]
+    assert peers_one == ["West Elm", "Article", "CB2"]  # the liked seller first, then peers
+    kinds = {p["peer"]: p["kind"] for p in first["search"]["trace"]["batch"]["peers"]}
+    assert kinds == {"West Elm": "seller", "Article": "peer", "CB2": "peer"}
     saved = svc.store.load(sid)
-    assert set(saved.searched_peers) == {"article", "cb2", "crateandbarrel"}
+    assert set(saved.searched_peers) == {"westelm", "article", "cb2"}
     assert all(v["searches"] == 1 and v["new"] > 0 for v in saved.searched_peers.values())
     second = svc.shop_again(sid)
     peers_two = [p["peer"] for p in second["search"]["trace"]["batch"]["peers"]]
-    assert not set(peers_one) & set(peers_two)  # rotated on: no repeats
-    assert len(peers_two) == 3 and peers_two[0] == "Room & Board"
+    assert not (set(peers_one) - {"West Elm"}) & set(peers_two)  # peers rotated on: no repeats
+    assert len(peers_two) == 3 and peers_two[0] == "West Elm"  # a liked seller is searched again
+    assert "Crate & Barrel" in peers_two
     both = svc.store.load(sid).searched_peers
-    assert len(both) == 6 and all(v["searches"] == 1 for v in both.values())
+    assert len(both) == 5 and both["westelm"]["searches"] == 2
     texts = [q for q, _ in search.calls]
     assert texts.count("Article wood and metal coffee table with storage") == 1
 
@@ -1046,13 +1039,14 @@ def test_replay_three_decisions(tmp_path: Path) -> None:
     trace = view["profile"]["trace"]
     # West Elm: 4 items and 8 of 12 like mass despite one dislike (8 against 1: the net rule)
     seller = chips[("seller", "seller: West Elm")]
-    assert seller["detail"] == "1 disliked item(s) from this seller"
-    west = trace["seller"]["candidates"][0]
-    assert west["seller"] == "West Elm" and west["like_share"] == pytest.approx(0.6667, abs=1e-3)
-    assert west["net"] == "8 against 1" and west["lift"] >= 3.0 and west["verdict"] == "chip"
+    assert seller["detail"] == "liked 4 of 5 (80%) against 35% overall"
+    west = next(c for c in trace["seller"]["candidates"] if c["seller"] == "West Elm")
+    assert west["seller"] == "West Elm" and west["rated"] == 5 and west["liked"] == 4
+    assert west["like_rate"] == 0.8 and west["verdict"] == "chip"
     tier = chips[("tier", "retailers like West Elm")]
     assert tier["values"] == ["design_premium"] and "liked: West Elm" in tier["detail"]
-    assert trace["tier"]["candidates"][0]["like_share"] == pytest.approx(0.6667, abs=1e-3)
+    premium = next(c for c in trace["tier"]["candidates"] if c["tier"] == "design_premium")
+    assert premium["like_rate"] == 0.8
     # style is one family, converged, with the leaves in the trace only
     style = trace["dimensions"]["style"]
     assert style["decision"] == "converged" and style["top"] == "modern_leaning"
@@ -1090,8 +1084,8 @@ def test_replay_three_searches_peers_supplies_round_and_fills_the_batch_within_t
     view = svc.shop_again(sid)
     found = view["search"]
     batch = found["trace"]["batch"]
-    assert [p["peer"] for p in batch["peers"]] == ["Article", "CB2", "Crate & Barrel"]
-    assert all(p["new_candidates"] > 0 for p in batch["peers"])
+    assert [p["peer"] for p in batch["peers"]] == ["West Elm", "Article", "CB2"]
+    assert all(p["new_candidates"] > 0 for p in batch["peers"] if p["peer"] != "West Elm")
     assert found["serper_calls"] <= 9 and found["serper_credits"] == 2 * found["serper_calls"]
     assert found["serper_calls"] == batch["serper_calls"]
     assert batch["pool_before"]["size"] < batch["pool_after"]["size"] or not batch["supply"]
@@ -1104,7 +1098,7 @@ def test_replay_three_searches_peers_supplies_round_and_fills_the_batch_within_t
         max(sellers.values()) <= 12
         and sum(1 for s in sellers if tier_of(s) == "design_premium") >= 3
     )
-    peers_in = {r["seller"] for r in found["results"]} & {"Article", "CB2", "Crate & Barrel"}
+    peers_in = {r["seller"] for r in found["results"]} & {"West Elm", "Article", "CB2"}
     assert len(peers_in) == 3
     assert batch["tier"] == {"tier": "design_premium", "cap": 12, "quota": 12, "pinned": False}
     queries = [q for q, _ in search.calls]
@@ -1132,8 +1126,9 @@ def test_replays_one_and_two_keep_their_decisions_with_the_new_rules(tmp_path: P
     svc = ShopService(cfg, store, search, lookup)
     one = svc.shop_again(seed_session(store).session_id)
     kinds1 = {(e["attr_kind"], e["text"]) for e in one["profile"]["inferred"]}
-    assert ("seller", "seller: West Elm") in kinds1 and ("open", "shape: open") in kinds1
-    assert ("tier", "retailers like West Elm") in kinds1  # new in 2f: 86% of the like mass
+    # all ten rated items were liked: the baseline is 100%, no seller or tier can beat it (2i)
+    assert not [k for k in kinds1 if k[0] in ("seller", "tier")]
+    assert ("open", "shape: open") in kinds1
     two = svc.shop_again(seed_session(store, replay=REPLAY_FILE_2).session_id)
     kinds2 = {(e["attr_kind"], e["text"]) for e in two["profile"]["inferred"]}
     assert not [k for k in kinds2 if k[0] in ("seller", "tier")]  # Home Depot and the budget tier

@@ -540,7 +540,7 @@ def test_phases_are_reported_in_order(monkeypatch: pytest.MonkeyPatch, tmp_path:
     phases: list[str] = []
     run_shop_again(svc.store.load(sid), search, svc.config, None, clock, phases.append)
     assert phases[0] == "Reading your ratings"
-    assert phases[1].startswith("Searching") and "retailers" in phases[1]
+    assert phases[1].startswith("Searching")
     assert phases.index("Ranking") < phases.index("Tagging results")
     assert phases[-1] == "Tagging results"
 
@@ -1171,13 +1171,14 @@ def test_replay_four_decisions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     view = svc.shop_again(sid)
     chips = {(e["attr_kind"], e["text"]): e for e in view["profile"]["inferred"]}
     trace = view["profile"]["trace"]
-    assert ("seller", "seller: West Elm") in chips  # 5 of 12 like mass, no West Elm dislike
-    assert not [e for e in view["profile"]["inferred"] if e["attr_kind"] == "tier"]
-    tier = trace["tier"]["candidates"][0]
-    assert tier["label"] == "design premium" and tier["like_share"] == pytest.approx(
-        0.8333, abs=1e-3
-    )
-    assert "22 disliked item(s) against liked mass 10" in tier["verdict"]  # the net rule
+    # stage 2i: 8 of 46 liked (17%). West Elm is 3 of 3 but 3 rated is under the 4 a seller needs,
+    # and the premium tier is 6 of 28 (21%), under the 35% floor: no seller or tier chip
+    assert not [e for e in view["profile"]["inferred"] if e["attr_kind"] in ("seller", "tier")]
+    west = next(c for c in trace["seller"]["candidates"] if c["seller"] == "West Elm")
+    assert west["rated"] == 3 and west["liked"] == 3 and "rated 3, needs 4" in west["verdict"]
+    tier = next(c for c in trace["tier"]["candidates"] if c["label"] == "design premium")
+    assert tier["rated"] == 28 and tier["liked"] == 6
+    assert "like rate 21% is under 35%" in tier["verdict"]
     shape = trace["dimensions"]["shape"]
     assert (
         shape["decision"] == "open"

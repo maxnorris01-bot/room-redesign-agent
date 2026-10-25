@@ -29,8 +29,17 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.shop.evidence import (
+    Evidence,
+    group_rows,
+    lean_text,
+    leaning_entries,
+    marketplace_decision,
+    seller_entries,
+    tier_entry,
+)
 from app.shop.models import ItemTags, ProfileEntry, ShopQuery, ShopResult
-from app.shop.retailers import AFFINITY_TIERS, TIER_LABELS, canonical_name, seller_key, tier_of
+from app.shop.retailers import seller_key
 from app.shop.textutil import (
     Rated,
     mentions,
@@ -54,11 +63,8 @@ from app.shop.thresholds import (
     PRICE_UPPER_PERCENTILE,
     QUALITY_CUE_MIN_ITEMS,
     QUALITY_CUE_MIN_SHARE,
-    SELLER_MIN_LIKE_SHARE,
-    SELLER_NET_DISLIKE_RATIO,
     SHAPE_CONVERGE_SHARE,
     SOFT_CONVERGE_SHARE,
-    TIER_MIN_LIKE_SHARE,
 )
 from app.shop.vocab import (
     DIMENSIONS,
@@ -374,163 +380,22 @@ def seller_exposure(shown: list[ShopResult]) -> dict[str, float]:
 def seller_decision(
     rated: dict[str, Rated], shown: list[ShopResult] | None = None
 ) -> tuple[ProfileEntry | None, dict[str, Any]]:
-    """The seller affinity chip, if any, and the numbers behind the decision for every candidate.
+    """The first seller chip, if any, and the numbers behind the decision for every seller.
 
-    A seller needs at least 2 loved or liked items AND at least `SELLER_MIN_LIKE_SHARE` of the like
-    mass, no dislike of it, and a like share that beats its share of what was shown by `LIFT_MIN`. The trace lists each seller with a loved or
-    liked item, so a missing chip can be explained.
-    """
-    groups: dict[str, list[Rated]] = {}
-    for r in rated.values():
-        if r.seller:
-            groups.setdefault(seller_key(r.seller), []).append(r)
-    total_mass = sum(
-        LOVE_WEIGHT if r.rating == "love" else LIKE_WEIGHT
-        for r in rated.values()
-        if r.rating in ("love", "like")
-    )
-    exposure = seller_exposure(shown or [])
-    best: tuple[int, str, list[Rated], float | None, float | None] | None = None
-    candidates: list[dict[str, Any]] = []
-    for key, items in sorted(groups.items()):
-        positive = [r for r in items if r.rating in ("love", "like")]
-        if not positive:
-            continue
-        weight = sum(LOVE_WEIGHT if r.rating == "love" else LIKE_WEIGHT for r in positive)
-        share = weight / total_mass if total_mass else 0.0
-        seen = exposure.get(key)
-        lift = round(share / seen, 3) if seen else None
-        dislikes = sum(1 for r in items if r.rating == "dislike")
-        fails: list[str] = []  # every rule that failed, so the trace explains the missing chip
-        if len(positive) < MIN_AFFINITY_ITEMS:
-            fails.append(f"{len(positive)} loved or liked item(s), needs {MIN_AFFINITY_ITEMS}")
-        if share < SELLER_MIN_LIKE_SHARE:
-            fails.append(f"like share {share:.0%} is under {SELLER_MIN_LIKE_SHARE:.0%}")
-        if weight < SELLER_NET_DISLIKE_RATIO * dislikes:
-            fails.append(
-                f"{dislikes} disliked item(s) against liked mass {weight}: needs at least "
-                f"{SELLER_NET_DISLIKE_RATIO} times the disliked mass"
-            )
-        if lift is not None and lift < LIFT_MIN:
-            fails.append(
-                f"lift {lift} is under {LIFT_MIN} (like share {share:.0%} against {seen:.0%} of what was shown)"
-            )
-        why = "; ".join(fails)
-        candidates.append(
-            {
-                "seller": canonical_name(positive[0].seller), "items": len(positive), "like_mass": weight,
-                "like_share": round(share, 4), "exposure": round(seen, 4) if seen else None,
-                "lift": lift, "dislikes": dislikes, "net": f"{weight} against {dislikes}", "verdict": "chip" if not why else "no chip: " + why,
-            }
-        )  # fmt: skip
-        if not why and (best is None or weight > best[0]):
-            best = (weight, key, positive, lift, round(seen, 4) if seen else None)
-    top = max(candidates, key=lambda c: (c["like_mass"], c["seller"]), default=None)
-    trace: dict[str, Any] = {
-        "candidates": sorted(candidates, key=lambda c: (-c["like_mass"], c["seller"]))[:8],
-        "decision": "chip" if best else "none",
-        "reason": (top["verdict"] if top else "no loved or liked item has a seller")
-        if not best
-        else "seller affinity",
-    }
-    if best is None:
-        return None, trace
-    weight, key, positive, lift, seen = best
-    name = canonical_name(positive[0].seller)
-    dislikes_n = sum(
-        1 for r in rated.values() if r.rating == "dislike" and seller_key(r.seller) == key
-    )
-    ids = sorted(r.id for r in positive)
-    entry = ProfileEntry(
-        text=f"seller: {name}", attr_kind="seller", polarity="like", evidence=ids[:6],
-        evidence_titles=[" ".join(rated[i].title.split())[:100] for i in ids[:3]],
-        confidence=1.0, weight=weight, share=round(weight / total_mass, 4) if total_mass else None,
-        exposure=seen, lift=lift, dimension="seller",
-        detail=f"{dislikes_n} disliked item(s) from this seller" if dislikes_n else "",
-    )  # fmt: skip
-    return entry, trace
+    Stage 2i: a seller needs `GROUP_MIN_RATED` rated items, `GROUP_MIN_LIKED` liked, and a like rate
+    of at least `GROUP_RATE_RATIO` times the baseline and `GROUP_MIN_RATE` (see `app.shop.evidence`).
+    What was shown no longer matters (`shown` is kept only so older callers still work). Marketplace
+    and budget retailers never earn a chip. `decide` keeps every seller chip (up to
+    `MAX_SELLER_CHIPS`); this returns the best one."""
+    entries, trace = seller_entries(rated)
+    return (entries[0] if entries else None), trace
 
 
 def tier_decision(rated: dict[str, Rated]) -> tuple[ProfileEntry | None, dict[str, Any]]:
-    """The retailer tier chip ("retailers like West Elm"), if any, and the numbers behind it.
-
-    The like mass (loved 3, liked 1) is grouped by the tier of each item's seller
-    (`app.shop.retailers`; a retailer not in the table has no tier). A tier converges when it holds
-    at least `TIER_MIN_LIKE_SHARE` of ALL the like mass, at least `MIN_AFFINITY_ITEMS` loved or liked
-    items, and its liked mass is at least `SELLER_NET_DISLIKE_RATIO` times its disliked items.
-    """
-    total = sum(
-        LOVE_WEIGHT if r.rating == "love" else LIKE_WEIGHT
-        for r in rated.values()
-        if r.rating in ("love", "like")
-    )
-    by_tier: dict[str, list[Rated]] = {}
-    for r in rated.values():
-        tier = tier_of(r.seller) if r.seller else None
-        if tier:
-            by_tier.setdefault(tier, []).append(r)
-    candidates: list[dict[str, Any]] = []
-    best: tuple[int, str, list[Rated]] | None = None
-    for tier, items in sorted(by_tier.items()):
-        positive = [r for r in items if r.rating in ("love", "like")]
-        if not positive:
-            continue
-        weight = sum(LOVE_WEIGHT if r.rating == "love" else LIKE_WEIGHT for r in positive)
-        dislikes = sum(1 for r in items if r.rating == "dislike")
-        share = weight / total if total else 0.0
-        fails: list[str] = []
-        if tier not in AFFINITY_TIERS:
-            fails.append("marketplace and budget retailers never earn a retailer chip")
-        if share < TIER_MIN_LIKE_SHARE:
-            fails.append(f"like share {share:.0%} is under {TIER_MIN_LIKE_SHARE:.0%}")
-        if len(positive) < MIN_AFFINITY_ITEMS:
-            fails.append(f"{len(positive)} loved or liked item(s), needs {MIN_AFFINITY_ITEMS}")
-        if weight < SELLER_NET_DISLIKE_RATIO * dislikes:
-            fails.append(
-                f"{dislikes} disliked item(s) against liked mass {weight}: needs at least "
-                f"{SELLER_NET_DISLIKE_RATIO} times the disliked mass"
-            )
-        sellers: dict[str, int] = {}
-        for r in positive:
-            name = canonical_name(r.seller)
-            sellers[name] = sellers.get(name, 0) + (
-                LOVE_WEIGHT if r.rating == "love" else LIKE_WEIGHT
-            )
-        candidates.append(
-            {
-                "tier": tier, "label": TIER_LABELS[tier], "items": len(positive), "like_mass": weight,
-                "like_share": round(share, 4), "dislikes": dislikes,
-                "sellers": dict(sorted(sellers.items(), key=lambda kv: (-kv[1], kv[0]))),
-                "verdict": "chip" if not fails else "no chip: " + "; ".join(fails),
-            }
-        )  # fmt: skip
-        if not fails and (best is None or weight > best[0]):
-            best = (weight, tier, positive)
-    trace: dict[str, Any] = {
-        "candidates": sorted(candidates, key=lambda c: (-c["like_mass"], c["tier"])),
-        "decision": "chip" if best else "none",
-        "reason": "retailer tier affinity"
-        if best
-        else (
-            candidates[0]["verdict"]
-            if candidates
-            else "no loved or liked item has a known retailer"
-        ),
-    }
-    if best is None:
-        return None, trace
-    weight, tier, positive = best
-    pick = next(c for c in candidates if c["tier"] == tier)
-    top = next(iter(pick["sellers"]))
-    ids = sorted(r.id for r in positive)
-    entry = ProfileEntry(
-        text=f"retailers like {top}", attr_kind="tier", polarity="like", evidence=ids[:6],
-        evidence_titles=[" ".join(rated[i].title.split())[:100] for i in ids[:3]],
-        confidence=1.0, weight=weight, share=pick["like_share"], dimension="tier", values=[tier],
-        detail="liked: " + ", ".join(pick["sellers"])
-        + (f"; {pick['dislikes']} disliked item(s) in this tier" if pick["dislikes"] else ""),
-    )  # fmt: skip
-    return entry, trace
+    """The retailer tier chip ("retailers like West Elm"), if any, and the numbers behind it: the
+    same group like-rate rule as a seller, over the tier of each item's seller
+    (`app.shop.retailers`; a retailer not in the table has no tier)."""
+    return tier_entry(rated)
 
 
 def seller_affinity_entry(
@@ -695,6 +560,7 @@ def decide(
     image_ids: set[str] | None = None,
     fallback: bool = False,
     exposure: Exposure | None = None,
+    dismissed: Mapping[str, int] | None = None,
 ) -> Decisions:
     """The preference entries for the session's ratings, and the trace of how each was decided.
 
@@ -713,17 +579,22 @@ def decide(
 
     typed_keys = [normalize_phrase(t) for t in typed_terms]
 
-    def blocked(text: str, dim: str | None = None) -> bool:
-        """Deleted by the shopper, or already said in the request. For shape, finish and frame
-        color only the whole phrase counts ("warm wood" is not the typed "wood")."""
+    def removed_hit(text: str) -> bool:
+        key = normalize_phrase(text)
+        return bool(key) and any(phrases_match(key, r) for r in removed)
+
+    def typed_hit(text: str, dim: str | None = None) -> bool:
         key = normalize_phrase(text)
         if not key:
             return False
-        if any(phrases_match(key, r) for r in removed):
-            return True
         if dim in ("shape", "color_finish", "frame_color"):
             return key in typed_keys
         return any(phrases_match(key, t) for t in typed_keys)
+
+    def blocked(text: str, dim: str | None = None) -> bool:
+        """Deleted by the shopper, or already said in the request. For shape, finish and frame
+        color only the whole phrase counts ("warm wood" is not the typed "wood")."""
+        return removed_hit(text) or typed_hit(text, dim)
 
     for dim in DIMENSIONS:
         if fallback:
@@ -798,17 +669,27 @@ def decide(
             )
     if not fallback:
         entries += _quality_cues(positives, items, blocked, image_ids or set())
-    seller, seller_trace = seller_decision(rated, shown)
-    if seller is not None and not blocked(seller.text):
-        entries.append(seller)
-    tier, tier_trace = tier_decision(rated)
-    if tier is not None and not blocked(tier.text):
-        entries.append(tier)
+    ev = _evidence(rated, items, results, blocked, removed_hit, typed_hit, dismissed, fallback)
+    for seller in ev.sellers:
+        if not blocked(seller.text):
+            entries.append(seller)
+    if ev.tier is not None and not blocked(ev.tier.text):
+        entries.append(ev.tier)
+    entries += ev.leanings
+    if ev.marketplace is not None:
+        entries.append(ev.marketplace)
+    seller_trace = ev.trace["sellers"]
+    tier_trace = ev.trace["tiers"]
     price, price_trace = price_decision(rated, shown)
     if price is not None and not blocked(price.text):
         entries.append(price)
-    order = {"seller": 0, "tier": 1, "price_band": 2, "price_mixed": 3, "open": 4}
-    entries.sort(key=lambda e: (e.polarity != "like", order.get(e.attr_kind, 5), -e.weight, e.text))
+    order = {
+        "exclude_marketplace": 0, "seller": 1, "tier": 2, "price_band": 3, "price_mixed": 4,
+        "open": 5, "leaning_toward": 6, "leaning_away": 7,
+    }  # fmt: skip
+    entries.sort(
+        key=lambda e: (e.polarity != "like", order.get(e.attr_kind, 5.5), -e.weight, e.text)
+    )
     trace = {
         "mode": "fallback" if fallback else "model",
         "rated": {"love": sum(1 for r in rated.values() if r.rating == "love"),
@@ -820,8 +701,61 @@ def decide(
         "seller": seller_trace,
         "tier": tier_trace,
         "price": price_trace,
+        "evidence": ev.trace["evidence"],
+        "marketplace": ev.trace["marketplace"],
     }  # fmt: skip
     return Decisions(entries, results, items, trace)
+
+
+def _evidence(
+    rated: dict[str, Rated],
+    items: dict[str, TaggedItem],
+    results: dict[str, DimensionResult],
+    blocked: Callable[..., bool],
+    removed_hit: Callable[[str], bool],
+    typed_hit: Callable[..., bool],
+    dismissed: Mapping[str, int] | None,
+    fallback: bool,
+) -> Evidence:
+    """Stage 2i: the like-rate evidence of the session (sellers, tiers, leanings, the marketplace
+    exclusion) and its table. Item values are the best available: the photo or title model's tags,
+    and for a dimension they left empty, the title's keywords."""
+
+    def values_of(rid: str, dim: str) -> list[str]:
+        item = items.get(rid)
+        if item is None:
+            return []
+        raw = item.values.get(dim)
+        if raw is None:
+            raw = title_tags(item.rated.title).get(dim)
+            raw = normalize_style(raw) if dim == "style" and raw else raw
+        if not raw:
+            return []
+        return style_leaves(raw) if dim == "style" else [raw]
+
+    converged = {d: r.value for d, r in results.items() if r.status == "converged" and r.value}
+
+    def skip(direction: str, dim: str, value: str) -> bool:
+        text = FAMILY_LABELS.get(value, value)
+        return removed_hit(lean_text(direction, dim, value)) or typed_hit(text, dim)
+
+    sellers, seller_trace = seller_entries(rated)
+    tier, tier_trace = tier_entry(rated)
+    leanings: list[ProfileEntry] = []
+    leaning_rows: list[dict[str, Any]] = []
+    if not fallback:
+        leanings, leaning_rows = leaning_entries(rated, values_of, converged, skip)
+    dismissed_at = (dismissed or {}).get("marketplace")
+    market, market_trace = marketplace_decision(rated, dismissed_at)
+    rows = group_rows(rated) + leaning_rows
+    base = seller_trace.get("baseline", 0.0)
+    return Evidence(
+        sellers, tier, leanings, market, rows,
+        {
+            "sellers": seller_trace, "tiers": tier_trace, "marketplace": market_trace,
+            "evidence": {"baseline": base, "rows": rows[:80]},
+        },
+    )  # fmt: skip
 
 
 def _join(values: list[str]) -> str:

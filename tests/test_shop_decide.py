@@ -153,7 +153,15 @@ def test_every_threshold_is_in_one_module_with_the_documented_values() -> None:
     t = thresholds.all_thresholds()
     assert t["SHAPE_CONVERGE_SHARE"] == 0.80 and t["SOFT_CONVERGE_SHARE"] == 0.60
     assert t["KNOWN_COVERAGE_MIN"] == 0.60 and t["OPEN_SHARE"] == 0.30 and t["LIFT_MIN"] == 1.3
-    assert t["SELLER_MIN_LIKE_SHARE"] == 0.40 and t["MIN_AFFINITY_ITEMS"] == 2
+    assert t["MIN_AFFINITY_ITEMS"] == 2 and "SELLER_MIN_LIKE_SHARE" not in t  # replaced in 2i
+    assert t["GROUP_MIN_RATED"] == 4 and t["GROUP_MIN_LIKED"] == 2
+    assert t["GROUP_RATE_RATIO"] == 1.5 and t["GROUP_MIN_RATE"] == 0.35
+    assert t["LEAN_AWAY_MIN_RATED"] == 6 and t["LEAN_AWAY_MAX_RATIO"] == 0.5
+    assert t["LEAN_TOWARD_MIN_SHARE"] == 0.30 and t["LEAN_AWAY_MAX_SHARE"] == 0.30
+    assert (
+        t["MARKET_MIN_RATED"] == 8 and t["MARKET_MAX_RATIO"] == 0.5 and t["MARKET_MAX_RATE"] == 0.20
+    )
+    assert t["MARKET_MIN_RESULTS"] == 12 and t["MARKET_REDISMISS_RATED"] == 8
     assert t["MINORITY_POOL_SHARE"] == 0.40 and t["OPEN_STRATUM_FLOOR"] == 0.25
     assert t["MIN_SUPPORT_ITEMS"] == 2 and t["DISLIKE_MIN_ITEMS"] == 2
     assert t["LOVE_WEIGHT"] == 3 and t["LIKE_WEIGHT"] == 1
@@ -614,47 +622,31 @@ def test_a_mixed_price_chip_is_neutral_and_the_ranker_hears_it_is_only_a_hint() 
 # ---- seller affinity with the lift test ---------------------------------------------------------------------------------
 
 
-def test_seller_affinity_also_needs_a_lift_over_what_was_shown() -> None:
-    rated = rated_map(
-        make_session(
-            [("a", "T", 1.0, "WestElm"), ("b", "T", 1.0, "WestElm")],
-            {"a": ("love", ""), "b": ("love", "")},
-        )
-    )
-    mostly_one = [
+def west_elm_session() -> tuple[
+    list[tuple[str, str, float | None, str]], dict[str, tuple[str, str]]
+]:
+    """Four West Elm items liked and six others disliked: 4 of 10 liked, West Elm 4 of 4."""
+    shown = [(f"w{i}", f"Walnut Round Table {i}", 600.0 + i, "West Elm") for i in range(4)]
+    shown += [(f"d{i}", f"Plain Table {i}", 100.0 + i, f"Seller{i}") for i in range(6)]
+    ratings = {f"w{i}": ("love" if i < 2 else "like", "") for i in range(4)}
+    ratings |= {f"d{i}": ("dislike", "") for i in range(6)}
+    return shown, ratings
+
+
+def test_seller_affinity_ignores_how_often_the_seller_was_shown() -> None:
+    shown, ratings = west_elm_session()
+    rated = rated_map(make_session(shown, ratings))
+    flooded = [
         ShopResult(
-            id=f"s{i}",
-            title="T",
-            price=1.0,
-            currency="USD",
-            seller="WestElm",
-            thumbnail_url="",
-            link="",
-            link_kind="none",
-            size_hint=None,
-            product_id=f"s{i}",
-            rank=1,
-            pool_position=1,
+            id=f"s{i}", title="T", price=1.0, currency="USD", seller="West Elm", thumbnail_url="",
+            link="", link_kind="none", size_hint=None, product_id=f"s{i}", rank=1, pool_position=1,
         )
-        for i in range(9)
-    ]
-    others = [
-        r.model_copy(update={"id": f"o{i}", "seller": f"Other{i}"})
-        for i, r in enumerate(mostly_one[:3])
-    ]
-    assert (
-        seller_affinity_entry(rated, mostly_one + others[:1]) is None
-    )  # 90% of what was shown anyway
-    spread = [
-        r.model_copy(update={"id": f"z{i}", "seller": f"Z{i}"}) for i, r in enumerate(mostly_one)
-    ]
-    got = seller_affinity_entry(rated, spread + others[:1] + mostly_one[:1])
-    assert (
-        got is not None
-        and got.text == "seller: West Elm"
-        and got.lift is not None
-        and got.lift >= 1.3
-    )
+        for i in range(90)
+    ]  # fmt: skip
+    for seen in ([], flooded):  # 4 of 4 liked against 4 of 10: the same chip either way
+        got = seller_affinity_entry(rated, seen)
+        assert got is not None and got.text == "seller: West Elm"
+        assert got.detail == "liked 4 of 4 (100%) against 40% overall" and got.lift is None
 
 
 # ---- phrasings: converged only, one per open value, the call cap ------------------------------------------------------------
@@ -1008,10 +1000,12 @@ def test_the_same_ratings_give_the_same_profile_in_any_order() -> None:
 
 def test_deleted_chips_stay_deleted_across_recomputes() -> None:
     shown = shape_world(3, 4, 3) + [
-        ("w0", "Walnut Round Table", 650.0, "WestElm"),
-        ("w1", "Walnut Round Table 2", 690.0, "WestElm"),
+        (f"w{i}", f"Walnut Round Table {i}", 650.0 + i, "West Elm") for i in range(4)
     ]
-    ratings = {"w0": ("love", ""), "w1": ("love", "")}
+    ratings = {f"w{i}": ("love", "") for i in range(4)}
+    ratings |= {f"o{i}": ("dislike", "") for i in range(3)} | {
+        f"x{i}": ("dislike", "") for i in range(3)
+    }
     sess = make_session(shown, ratings)
     base = query(request="tables")
     prof = merged(None, sess, base)
@@ -1040,8 +1034,10 @@ def test_deleted_chips_stay_deleted_across_recomputes() -> None:
 def test_the_pin_toggles_and_is_carried_across_recomputes() -> None:
     sess = make_session(
         shape_world(3, 4, 3)
-        + [("w0", "Walnut Table", 650.0, "West Elm"), ("w1", "Walnut Table 2", 690.0, "West Elm")],
-        {"w0": ("love", ""), "w1": ("love", "")},
+        + [(f"w{i}", f"Walnut Table {i}", 650.0 + i, "West Elm") for i in range(4)],
+        {f"w{i}": ("love", "") for i in range(4)}
+        | {f"o{i}": ("dislike", "") for i in range(3)}
+        | {f"x{i}": ("dislike", "") for i in range(3)},
     )
     base = query(request="tables")
     prof = merged(None, sess, base)
@@ -1122,8 +1118,10 @@ def test_the_pin_endpoint_validates_pins_and_keeps_the_security_behaviour(tmp_pa
     view = svc.search(None, "coffee tables with a mix of wood and metal with storage")
     sid, first = view["session_id"], view["search"]["results"]
     premium = [r for r in first if r["seller"] == "Hartwell & Co"]
-    svc.rate(sid, premium[0]["id"], "love")
-    svc.rate(sid, premium[1]["id"], "love")
+    for r in premium[:4]:  # 4 rated and liked, against four disliked results from other sellers
+        svc.rate(sid, r["id"], "love")
+    for r in [r for r in first if r["seller"] != "Hartwell & Co"][:4]:
+        svc.rate(sid, r["id"], "dislike")
     again = svc.shop_again(sid)
     chip = next(e for e in again["profile"]["inferred"] if e["attr_kind"] == "seller")
     assert post({"session_id": sid}).status == 400  # no phrase

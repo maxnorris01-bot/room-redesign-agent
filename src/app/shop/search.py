@@ -44,30 +44,43 @@ from app.shop.models import (
 )
 from app.shop.parse import parse_request
 from app.shop.progress import Progress, Timeline
-from app.shop.retailers import count_sellers, seller_key, tier_of
+from app.shop.queries import QueryResult
+from app.shop.retailers import (
+    MARKETPLACE_BUDGET,
+    canonical_name,
+    count_sellers,
+    seller_key,
+    tier_of,
+)
 from app.shop.thresholds import (
+    BASE_PAGE_MAX,
     CANDIDATE_TAG_BATCH,
     DIVERSITY_MAX_SHARE,
-    MAX_PEER_SEARCHES,
+    LEAN_AWAY_MAX_SHARE,
+    LEAN_TOWARD_MIN_SHARE,
+    MARKET_MIN_RESULTS,
     MINORITY_POOL_SHARE,
     OPEN_STRATUM_FLOOR,
     SELLER_MAX_SHARE,
     SELLER_PINNED_SHARE,
+    SELLER_SEARCHES,
     TIER_BATCH_SHARE,
 )
-from app.shop.vocab import OTHER, PHRASE_DIMS, phrase_word, tag_values, title_tags
+from app.shop.vocab import OTHER, PHRASE_DIMS, phrase_word, style_leaves, tag_values, title_tags
 from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.shopping_retrieval import _record_provider_call, cap_per_seller
 from app.sizes import IN_M, resolve_size
 
 MAX_EXAMPLES = 8  # loved/liked and disliked titles shown to the ranker, each
 RANK_VERSION = "1"  # typed searches
-RANK_VERSION_AGAIN = "4"  # Shop Again: converged and open dimensions, examples (v2, v3 kept)
+RANK_VERSION_AGAIN = "5"  # Shop Again: converged, open, leanings, examples (v2 to v4 kept)
 RESULT_COUNT = 24  # results returned, and the fewest that avoid a second Serper page
 SELLER_CAP = 4  # most results one seller may have in the returned list. UNTUNED GUESS.
 MAX_POOL = 60  # candidates shown to the ranker (keeps the prompt small)
 MAX_POOL_AGAIN = 80  # a Shop Again pools several phrasings, so the ranker sees more
-POOL_TARGET_AGAIN = 60  # extra pages are fetched only while the pool is smaller than this
+POOL_TARGET_AGAIN = 36  # a Shop Again pages deeper only while the pool is smaller than a batch (24)
+# plus the tagging reserve (12). Page 3 of a phrasing is a last resort; page 4 is never fetched.
+LAST_RESORT_PAGE = 3
 RANK_MAX_TOKENS = 2500
 MAX_TITLE_CHARS = 100
 # Titles with these words are parts or covers, not the product (applied only for a known category).
@@ -132,6 +145,18 @@ class AgainContext:
     prefetched: dict[tuple[str, int], list[SearchCandidate] | Exception] = field(
         default_factory=dict
     )
+    # stage 2i: the exclude-marketplace chip (a hard filter before ranking and the seller caps)
+    # and the candidates it dropped; leanings (dimension, value) toward and away from, which the
+    # ranker sees and the selection holds to a soft share; the model query writer and its result;
+    # where each session tag came from; the seller keys searched because the shopper liked them
+    exclude_marketplace: bool = False
+    marketplace_dropped: set[str] = field(default_factory=set)
+    lean_toward: list[tuple[str, str]] = field(default_factory=list)
+    lean_away: list[tuple[str, str]] = field(default_factory=list)
+    query_writer: Callable[[], QueryResult] | None = None
+    query_result: QueryResult | None = None
+    tag_source: dict[str, str] = field(default_factory=dict)
+    liked_seller_keys: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -161,6 +186,7 @@ class SearchOutcome:
         default_factory=dict
     )  # for the session cache
     peer_log: list[dict[str, Any]] = field(default_factory=list)  # peer searches and their yield
+    pool_snapshot: list[dict[str, Any]] = field(default_factory=list)  # compact pool, for replays
     alignment_signals: int = 0  # decided signals the match was measured against
     alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
 
@@ -319,6 +345,10 @@ def rank_user_text(
                 )
                 or "none"
             ),
+            "Leaning toward (soft preference; rank a little higher): "
+            + ("; ".join(f"{v} ({d.replace('_', ' ')})" for d, v in again.lean_toward) or "none"),
+            "Leaning away from (soft avoid; rank a little lower): "
+            + ("; ".join(f"{v} ({d.replace('_', ' ')})" for d, v in again.lean_away) or "none"),
             line("Inferred dislikes", again.inferred_dislikes),
             f"Seller the shopper likes: {again.seller_affinity or 'none'}",
             f"Price: {again.price_line or 'no signal'}"
@@ -427,6 +457,7 @@ def build_results(
     tags: Callable[[SearchCandidate], Mapping[str, str | None]] | None = None,
     strata: tuple[str, dict[str, int]] | None = None,
     tier_limit: tuple[str, int, int] | None = None,
+    leanings: tuple[list[tuple[str, str]], list[tuple[str, str]]] | None = None,
 ) -> tuple[list[ShopResult], int, int]:
     """Walk the ranked order, up to `RESULT_COUNT`, keeping:
 
@@ -445,6 +476,11 @@ def build_results(
     `tier_limit=(tier, cap, quota)` (stage 2f) the best ranked results from that retailer tier go
     first, up to `quota`, and the tier never takes more than `cap` of the batch. Returns
     (results, skipped by the seller cap, skipped by the diversity guard).
+
+    Stage 2i: `leanings=(toward, away)` lists (dimension, value) pairs. Each value leaned toward
+    gets at least `LEAN_TOWARD_MIN_SHARE` of the batch where the pool has it (a pass after the
+    tier and the strata, never over a guard cap), and each value leaned away from at most
+    `LEAN_AWAY_MAX_SHARE`. A leaning never overrides a hard filter or a cap.
     """
     affinity = affinity_sellers or set()
     pinned = pinned_sellers or set()
@@ -465,6 +501,14 @@ def build_results(
 
     tier_count = 0
     shown_here = Index()  # the batch so far: the same product never appears twice in it
+    toward, away = leanings or ([], [])
+    away_cap = int(LEAN_AWAY_MAX_SHARE * RESULT_COUNT)
+    toward_min = math.ceil(LEAN_TOWARD_MIN_SHARE * RESULT_COUNT)
+    away_counts: dict[tuple[str, str], int] = {}
+
+    def holds(candidate: SearchCandidate, dim: str, value: str) -> bool:
+        got = tag_of(candidate).get(dim)
+        return value in (style_leaves(got) if dim == "style" else tag_values(dim, got))
 
     def try_take(index: int, candidate: SearchCandidate) -> bool:
         nonlocal tier_count
@@ -487,6 +531,12 @@ def build_results(
         ):
             diversity_skipped.add(index)
             return False
+        away_held = [(d, v) for d, v in away if holds(candidate, d, v)]
+        if any(away_counts.get(pair, 0) >= away_cap for pair in away_held):
+            diversity_skipped.add(index)
+            return False
+        for pair in away_held:
+            away_counts[pair] = away_counts.get(pair, 0) + 1
         for dim in guard:
             for v in held[dim]:
                 value_counts[(dim, v)] = value_counts.get((dim, v), 0) + 1
@@ -525,6 +575,16 @@ def build_results(
             value = tag_of(candidate).get(dim)
             if value in remaining and remaining[value] > 0 and try_take(index, candidate):
                 remaining[value] -= 1
+    strata_dim = strata[0] if strata is not None else None
+    for dim, value in toward:  # leanings toward: their soft share, where the pool has them
+        if dim == strata_dim:
+            continue  # an open dimension keeps its planned slots
+        have = sum(1 for i in accepted if holds(ordered[i][0], dim, value))
+        for index, (candidate, _) in enumerate(ordered):
+            if have >= toward_min or len(accepted) >= RESULT_COUNT:
+                break
+            if index not in taken and holds(candidate, dim, value) and try_take(index, candidate):
+                have += 1
     for index, (candidate, _) in enumerate(ordered):
         if len(accepted) >= RESULT_COUNT:
             break
@@ -540,7 +600,7 @@ def build_results(
                 title=candidate.title,
                 price=candidate.price,
                 currency=candidate.currency,
-                seller=candidate.seller,
+                seller=canonical_name(candidate.seller) if candidate.seller else "",
                 thumbnail_url=(
                     candidate.thumbnail_url
                     if candidate.thumbnail_url and is_https_url(candidate.thumbnail_url)
@@ -593,6 +653,22 @@ def _exclusions(
         and normalized_title_key(c.title, c.seller) not in again.exclude_title_keys
     ]
     return kept, len(pool) - len(kept)
+
+
+def drop_marketplace(
+    pool: list[SearchCandidate], again: AgainContext | None
+) -> list[SearchCandidate]:
+    """The exclude-marketplace chip as a hard filter: marketplace and budget sellers leave the pool
+    (counted, never silently re-added)."""
+    if again is None or not again.exclude_marketplace:
+        return pool
+    kept = []
+    for c in pool:
+        if c.seller and tier_of(c.seller) == MARKETPLACE_BUDGET:
+            again.marketplace_dropped.add(c.product_id)
+        else:
+            kept.append(c)
+    return kept
 
 
 def query_key(text: str) -> str:
@@ -755,6 +831,7 @@ def run_query(
     def filtered(raw: list[SearchCandidate]) -> tuple[list[SearchCandidate], FilterCounts]:
         pool, counts = apply_filters(raw, query, seen)
         pool, extra = _exclusions(pool, again)
+        pool = drop_marketplace(pool, again)
         counts.seen_excluded += extra
         counts.kept = len(pool)
         return pool, counts
@@ -774,6 +851,8 @@ def run_query(
     first = [skip.get(query_key(t), 0) + 1 for t in texts]
     plan = [(i, first[i]) for i in range(len(texts))]
     plan += [(i, first[i] + k) for k in range(1, max_calls) for i in range(len(texts))]
+    if again is not None:  # page 4 is never fetched; page 3 only as a last resort (below)
+        plan = [(i, pg) for i, pg in plan if pg <= LAST_RESORT_PAGE]
     parallel = getattr(search, "thread_safe", False) and config.shop_search_workers > 1
 
     def enough(pool: list[SearchCandidate]) -> bool:
@@ -824,7 +903,7 @@ def run_query(
             return
         own, _ = apply_filters(found, query, seen)
         own, _extra = _exclusions(own, again)
-        pipeline.submit(own)
+        pipeline.submit(drop_marketplace(own, again))
 
     def absorb(text: str, page: int, more: list[SearchCandidate]) -> list[SearchCandidate]:
         """Merge a page into the pool; returns the candidates it newly added."""
@@ -839,14 +918,16 @@ def run_query(
 
     peer_log: list[dict[str, Any]] = []
     peers = (
-        again.peer_queries[:MAX_PEER_SEARCHES]
+        again.peer_queries[:SELLER_SEARCHES]
         if again is not None and search.name == "serper"
         else []
     )
+    model_log: list[dict[str, Any]] = []
 
     def peer_entry(name: str, key: str, text: str, page: int) -> dict[str, Any]:
+        kind = "seller" if again is not None and key in again.liked_seller_keys else "peer"
         return {
-            "peer": name, "key": key, "search": text, "page": page,
+            "peer": name, "key": key, "search": text, "page": page, "kind": kind,
             "found": 0, "new_candidates": 0, "error": "",
         }  # fmt: skip
 
@@ -856,16 +937,44 @@ def run_query(
         steps.begin("searching", total=n_searches)
     timeline.phase_start("searching")
     t_searches = clock.now()
+    writer = again.query_writer if again is not None and search.name == "serper" else None
+    query_result: QueryResult | None = None
+    # a phrasing whose next page is already past page 2 waits: page 3 is a last resort (below)
+    eligible = [i for i in range(len(texts)) if again is None or first[i] <= BASE_PAGE_MAX]
+
+    def timed_writer() -> QueryResult | None:
+        if writer is None:
+            return None
+        with timeline.span("model", "write search queries"):
+            return writer()
+
+    def model_query_jobs(res: QueryResult | None) -> list[tuple[str, int]]:
+        """The accepted model queries that fit the call cap (one call stays for the supply
+        search); the rest are dropped with the reason."""
+        if res is None:
+            return []
+        room = max(0, cap - calls - 1)
+        for q in res.accepted[room:]:
+            res.dropped.append({"query": q, "reason": "no search call left in the cap"})
+        res.accepted = res.accepted[:room]
+        return [(q, skip.get(query_key(q), 0) + 1) for q in res.accepted]
+
+    def model_entry(text: str, page: int) -> dict[str, Any]:
+        return {"query": text, "page": page, "found": 0, "new_candidates": 0, "error": ""}
+
     if parallel:
-        # wave one: the first page of every phrasing and of every peer, at the same time
+        # wave one: the first page of every phrasing and of every peer, at the same time; the
+        # model query writer runs beside them (nothing here depends on it)
         jobs: list[tuple[str, int, tuple[str, str] | None]] = [
-            (texts[i], first[i], None) for i in range(len(texts))
+            (texts[i], first[i], None) for i in eligible
         ]
+        job_index: list[int | None] = list(eligible)
         room = max(0, cap - len(jobs))
         for peer_key, peer_name, peer_text in peers[:room]:
             qkey = query_key(peer_text)
             jobs.append((peer_text, skip.get(qkey, 0) + 1, (peer_key, peer_name)))
-        jobs = jobs[:cap]
+            job_index.append(None)
+        jobs, job_index = jobs[:cap], job_index[:cap]
         submitted = clock.now()
 
         def search_and_queue(
@@ -878,19 +987,25 @@ def run_query(
                 steps.advance("searching")
             return got
 
-        with ThreadPoolExecutor(max_workers=min(config.shop_search_workers, len(jobs))) as ex:
+        workers = min(config.shop_search_workers, max(1, len(jobs))) + (1 if writer else 0)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            writer_future = ex.submit(timed_writer) if writer is not None else None
             outcomes = list(ex.map(search_and_queue, jobs))
+            query_result = writer_future.result() if writer_future is not None else None
         calls += len(jobs)
-        for n, ((text, page, peer), got) in enumerate(zip(jobs, outcomes, strict=True)):
+        for n, ((text, page, peer), idx, got) in enumerate(
+            zip(jobs, job_index, outcomes, strict=True)
+        ):
             entry = peer_entry(peer[1], peer[0], text, page) if peer else None
             if isinstance(got, Exception):
                 if n == 0:
-                    raise got  # nothing to show without the first phrasing's first page
+                    raise got  # nothing to show without the first search
                 if peer is None:
                     warnings.append(
                         f"Search page {page} unavailable ({got}); showing what was found."
                     )
-                    finished.add(n)
+                    if idx is not None:
+                        finished.add(idx)
                 else:
                     warnings.append(f"Search for {peer[1]} unavailable ({got}).")
                     assert entry is not None
@@ -898,15 +1013,38 @@ def run_query(
                     peer_log.append(entry)
                 continue
             added = absorb(text, page, got)
-            if not got and peer is None:
-                finished.add(n)
+            if not got and peer is None and idx is not None:
+                finished.add(idx)
             if peer is not None:
                 supplied.update(c.product_id for c in added)
                 assert entry is not None
                 entry["found"], entry["new_candidates"] = len(got), len(added)
                 peer_log.append(entry)
-        extra_plan = [(i, pg) for i, pg in plan if pg > first[i]]
+        mq = model_query_jobs(query_result)
+        if mq:  # the accepted model queries, page one each, at the same time
+            if steps is not None:
+                steps.set_total("searching", n_searches + len(mq))
+            submitted = clock.now()
+            with ThreadPoolExecutor(max_workers=min(config.shop_search_workers, len(mq))) as ex2:
+                found_mq = list(ex2.map(search_and_queue, [(t, pg, None) for t, pg in mq]))
+            calls += len(mq)
+            for (text, page), got in zip(mq, found_mq, strict=True):
+                row = model_entry(text, page)
+                if isinstance(got, Exception):
+                    warnings.append(f"Search for a written query unavailable ({got}).")
+                    row["error"] = "search failed"
+                else:
+                    added = absorb(text, page, got)
+                    supplied.update(c.product_id for c in added)
+                    row["found"], row["new_candidates"] = len(got), len(added)
+                model_log.append(row)
+        extra_plan = [
+            (i, pg)
+            for i, pg in plan
+            if pg > first[i] or (again is not None and first[i] > BASE_PAGE_MAX)
+        ]
     else:
+        query_result = timed_writer()
         extra_plan = list(plan)
     # sequential pages: all of `plan` when not parallel, the further pages when it is
     for i, page in extra_plan:
@@ -914,7 +1052,8 @@ def run_query(
             break
         if calls >= (cap if parallel else max_calls):
             break
-        if (page > first[i] or parallel) and (enough(pool) or i in finished):
+        deep = again is not None and page > BASE_PAGE_MAX  # page 3: only when the pool is thin
+        if (page > first[i] or parallel or deep) and (enough(pool) or i in finished):
             continue
         calls += 1
         got = fetch(texts[i], page)
@@ -954,9 +1093,25 @@ def run_query(
                 steps.advance("searching")
             entry["found"], entry["new_candidates"] = len(got), len(added)
             peer_log.append(entry)
+        for text, page in model_query_jobs(query_result):
+            calls += 1
+            row = model_entry(text, page)
+            got = fetch(text, page)
+            if isinstance(got, Exception):
+                warnings.append(f"Search for a written query unavailable ({got}).")
+                row["error"] = "search failed"
+            else:
+                added = absorb(text, page, got)
+                supplied.update(c.product_id for c in added)
+                if pipeline is not None:
+                    pipeline.submit(added)
+                row["found"], row["new_candidates"] = len(got), len(added)
+            model_log.append(row)
     if steps is not None:
         steps.finish("searching")
     timeline.phase_end("searching")
+    if again is not None:
+        again.query_result = query_result
     if again is not None:  # a search made while the preference call ran but never used still billed
         calls += sum(1 for key in again.prefetched if key not in consumed)
     t_search = clock.now()
@@ -1073,6 +1228,7 @@ def run_query(
                 }
             )  # fmt: skip
         composition_info["supply"] = supply_log
+        tag_top(ordered, supply=True)  # what the supply did not use of the cap tags the next ranked
         composition_info["pool_after"] = pool_composition(
             [c for c, _ in ordered], again, config.shop_tag_top_n
         )
@@ -1126,6 +1282,7 @@ def run_query(
             tag_of,
             strata,
             tier_limit,
+            (again.lean_toward, again.lean_away) if again is not None else None,
         )
 
     results, capped, diversity_skipped = select()
@@ -1162,6 +1319,12 @@ def run_query(
                 results, capped, diversity_skipped = select()
                 refill_log[-1]["after"] = len(results)
     counts.seller_capped = capped
+    if again is not None:
+        counts.marketplace_excluded = len(again.marketplace_dropped)
+    by_id_tags: dict[str, Mapping[str, str | None]] = {}
+    if again is not None and tag_of is not None:
+        by_cand = {result_id(c.product_id): c for c, _ in ordered}
+        by_id_tags = {r.id: tag_of(by_cand[r.id]) for r in results if r.id in by_cand}
     diversity: dict[str, tuple[str, float]] = {}
     seller_share: tuple[str, float] | None = None
     if again is not None and results:
@@ -1233,6 +1396,11 @@ def run_query(
         )
     elif not results:
         warnings.append("No results matched the filters. Try loosening the price or the wording.")
+    if again is not None and again.exclude_marketplace and len(results) < MARKET_MIN_RESULTS:
+        warnings.append(
+            f"Only {len(results)} results without marketplace retailers. "
+            "Remove the chip to include them."
+        )
     if again is not None:
         composition_info["shortfall"] = {
             "wanted": RESULT_COUNT, "got": len(results), "seen_or_rated": counts.seen_excluded,
@@ -1242,6 +1410,29 @@ def run_query(
         }  # fmt: skip
         composition_info["refill"] = refill_log
         composition_info["dedupe"] = dd
+        composition_info["marketplace_excluded"] = len(again.marketplace_dropped)
+        composition_info["model_queries"] = {
+            "asked": bool(query_result and query_result.asked),
+            "accepted": list(query_result.accepted) if query_result else [],
+            "dropped": list(query_result.dropped) if query_result else [],
+            "error": query_result.error if query_result else "",
+            "usd": query_result.usd if query_result else 0.0,
+            "searches": model_log,
+        }
+        toward_in = {
+            f"{d}:{v}": sum(1 for r in results if _holds(by_id_tags.get(r.id), d, v))
+            for d, v in again.lean_toward
+        }
+        away_in = {
+            f"{d}:{v}": sum(1 for r in results if _holds(by_id_tags.get(r.id), d, v))
+            for d, v in again.lean_away
+        }
+        composition_info["leanings"] = {
+            "toward": {k: {"in_batch": n, "wanted": math.ceil(LEAN_TOWARD_MIN_SHARE * RESULT_COUNT)}
+                       for k, n in toward_in.items()},
+            "away": {k: {"in_batch": n, "cap": int(LEAN_AWAY_MAX_SHARE * RESULT_COUNT)}
+                     for k, n in away_in.items()},
+        }  # fmt: skip
     if composition_info or again is not None:
         composition_info["serper_calls"] = calls
         composition_info["serper_credits"] = (
@@ -1291,7 +1482,40 @@ def run_query(
         composition=composition_info,
         new_tags=dict(book.new) if book is not None else {},
         peer_log=list(peer_log),
+        pool_snapshot=snapshot_of(
+            ordered,
+            (lambda c: tag_of(c)) if tag_of is not None else (lambda c: title_tags(c.title)),
+            again.tag_source if again is not None else {},
+        ),
     )
+
+
+def _holds(tags: Mapping[str, str | None] | None, dim: str, value: str) -> bool:
+    got = (tags or {}).get(dim)
+    return value in (style_leaves(got) if dim == "style" else tag_values(dim, got))
+
+
+def snapshot_of(
+    ordered: list[tuple[SearchCandidate, str]],
+    tags: Callable[[SearchCandidate], Mapping[str, str | None]],
+    sources: Mapping[str, str],
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """A compact copy of the pool (at most `limit` candidates, in rank order) for the session file:
+    title, price, canonical seller, https thumbnail, the tags and where they came from."""
+    out: list[dict[str, Any]] = []
+    for c, _ in ordered[:limit]:
+        rid = result_id(c.product_id)
+        got = dict(tags(c))
+        out.append(
+            {
+                "title": c.title[:140], "price": c.price, "seller": canonical_name(c.seller),
+                "thumbnail_url": c.thumbnail_url if is_https_url(c.thumbnail_url or "") else "",
+                "tags": {k: v for k, v in got.items() if v},
+                "source": sources.get(rid, "title" if got else "keyword"),
+            }
+        )  # fmt: skip
+    return out
 
 
 def _strongest_value(again: AgainContext) -> tuple[str, str] | None:

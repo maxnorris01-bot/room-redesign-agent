@@ -43,6 +43,7 @@ from app.shop.decide import (
     decide,
     typed_terms_of,
 )
+from app.shop.evidence import MARKETPLACE_TEXT
 from app.shop.models import (
     MAX_SEARCH_TEXT_CHARS,
     MAX_TERMS,
@@ -535,6 +536,7 @@ def merge_profile_v3(
         image_ids,
         fallback=fallback,
         exposure=exposure,
+        dismissed=previous.dismissed,
     )
     info = dict(tagging or {})
     info.setdefault("items_total", len(rated))
@@ -610,7 +612,9 @@ def pin_seller(profile: StoredProfile, phrase: str) -> StoredProfile | None:
 # ---- editing the profile ----
 
 
-def remove_entry(profile: StoredProfile, kind: str, phrase: str) -> StoredProfile | None:
+def remove_entry(
+    profile: StoredProfile, kind: str, phrase: str, rated_now: int | None = None
+) -> StoredProfile | None:
     """The profile without one chip, its phrase added to the deleted list; None if the chip is not
     there. `kind` is like or dislike (stated), inferred, or guess. Adjustment terms that match the
     phrase go too, so the next search drops them."""
@@ -626,6 +630,11 @@ def remove_entry(profile: StoredProfile, kind: str, phrase: str) -> StoredProfil
         if len(kept) == len(profile.inferred):
             return None
         update["inferred"] = kept
+        if key == _short(MARKETPLACE_TEXT):
+            # dismissed, not forgotten: it returns after more ratings if the evidence still holds
+            count = profile.rated_count if rated_now is None else rated_now
+            update["dismissed"] = {**profile.dismissed, "marketplace": count}
+            return profile.model_copy(update=update)
     elif kind == "guess":
         if key not in profile.guesses:
             return None
@@ -689,10 +698,16 @@ def is_removed_in(phrase: str, gone: list[str]) -> bool:
     return bool(key) and any(phrases_match(key, g) for g in gone)
 
 
-def reapply_removed(profile: StoredProfile, removed: list[str]) -> StoredProfile:
+def reapply_removed(
+    profile: StoredProfile, removed: list[str], dismissed: dict[str, int] | None = None
+) -> StoredProfile:
     """The profile with a newer deleted list enforced again, for chips deleted while a Shop Again
-    was running, so nothing deleted comes back."""
+    was running, so nothing deleted comes back. A marketplace chip dismissed meanwhile stays
+    dismissed."""
     adj = profile.adjustments
+    late = dismissed is not None and dismissed.get("marketplace") != profile.dismissed.get(
+        "marketplace"
+    )
 
     def keep(values: list[str]) -> list[str]:
         return [v for v in values if not is_removed(v, removed)]
@@ -702,7 +717,13 @@ def reapply_removed(profile: StoredProfile, removed: list[str]) -> StoredProfile
             "removed": list(removed),
             "likes": keep(profile.likes),
             "dislikes": keep(profile.dislikes),
-            "inferred": [e for e in profile.inferred if not is_removed(e.text, removed)],
+            "inferred": [
+                e
+                for e in profile.inferred
+                if not is_removed(e.text, removed)
+                and not (late and e.attr_kind == "exclude_marketplace")
+            ],
+            "dismissed": dict(dismissed) if dismissed is not None else profile.dismissed,
             "guesses": keep(profile.guesses),
             "adjustments": adj.model_copy(
                 update={
@@ -742,7 +763,11 @@ def open_dimension(profile: StoredProfile) -> ProfileEntry | None:
 
 
 def build_phrasings(
-    base: ShopQuery, profile: StoredProfile, adjusted: ShopQuery, max_calls: int = MAX_QUERIES
+    base: ShopQuery,
+    profile: StoredProfile,
+    adjusted: ShopQuery,
+    max_calls: int = MAX_QUERIES,
+    with_seller: bool = True,
 ) -> tuple[list[str], list[str]]:
     """The search phrasings for a Shop Again and the ones dropped to fit `max_calls` (one Serper
     call each, at least). Pressure comes only from what converged; an open dimension exerts none:
@@ -781,7 +806,7 @@ def build_phrasings(
         clean(
             f"{seller_name(seller)} {product} {adjusted.must_have[0] if adjusted.must_have else ''}"
         )
-        if seller is not None and product
+        if seller is not None and product and with_seller
         else ""
     )
     open_phrases: list[str] = []
@@ -863,7 +888,8 @@ def profile_summary(profile: StoredProfile | None) -> str:
             [*profile.dislikes, *[e.text for e in profile.inferred if e.polarity == "dislike"]]
         )
     )[:4]
-    seller = next((e for e in profile.inferred if e.attr_kind == "seller"), None)
+    sellers = [e for e in profile.inferred if e.attr_kind == "seller"]
+    seller = sellers[0] if sellers else None
     tier = next((e for e in profile.inferred if e.attr_kind == "tier"), None)
     band = next((e for e in profile.inferred if e.attr_kind == "price_band"), None)
     parts: list[str] = []
@@ -871,10 +897,11 @@ def profile_summary(profile: StoredProfile | None) -> str:
         text = f"more {_join(likes)}" if likes else "more pieces"
         if likes and (seller or tier or band):
             text += " pieces"
+        names = _join([seller_name(e) for e in sellers])
         if seller and tier:
-            text += f" from {seller_name(seller)} and similar retailers"
+            text += f" from {names} and similar retailers"
         elif seller:
-            text += f" from {seller_name(seller)}"
+            text += f" from {names}"
         elif tier:
             text += f" from retailers like {tier.text.removeprefix('retailers like ')}"
         if band:
@@ -889,19 +916,60 @@ def profile_summary(profile: StoredProfile | None) -> str:
             text += f" {label} is open: showing both {_join(e.values)}."
     if any(e.status == "mixed" for e in profile.inferred):
         text += " Price is mixed."
+    toward = [e.values[0] for e in profile.inferred if e.attr_kind == "leaning_toward" and e.values]
+    away = [e.values[0] for e in profile.inferred if e.attr_kind == "leaning_away" and e.values]
+    if toward:
+        text += f" Leaning toward {_join(toward)}."
+    if away:
+        text += f" Leaning away from {_join(away)}."
+    if any(e.attr_kind == "exclude_marketplace" for e in profile.inferred):
+        text += " Marketplace retailers are left out."
     if profile.adjustments.price_note:
         text += f" {profile.adjustments.price_note}"
     return text.strip()
 
 
+def _signal_entries(profile: StoredProfile) -> list[ProfileEntry]:
+    """The chips a result can be matched against: converged likes (an attribute, a seller, a
+    retailer tier, a price band) and leanings toward a value."""
+    return [
+        e
+        for e in profile.inferred
+        if e.polarity == "like" and (e.status == "converged" or e.attr_kind == "leaning_toward")
+    ]
+
+
 def alignment_signals(profile: StoredProfile | None) -> int:
     """How many decided signals a result can be matched against: converged inferred likes (an
-    attribute, a seller, a retailer tier), a price band (a mixed price is no signal) and the
-    shopper's own stated likes. Zero means nothing has been decided yet."""
+    attribute, a seller, a retailer tier), leanings toward a value, a price band (a mixed price is
+    no signal) and the shopper's own stated likes. Zero means nothing can be matched yet."""
     if profile is None:
         return 0
-    converged = [e for e in profile.inferred if e.polarity == "like" and e.status == "converged"]
-    return len(converged) + len(profile.likes)
+    return len(_signal_entries(profile)) + len(profile.likes)
+
+
+def alignment_detail(profile: StoredProfile | None) -> dict[str, int]:
+    """What the "matches your preferences" count was made of, by kind, so the footer can say it:
+    converged attributes and price bands, seller and tier chips, leanings toward, the shopper's own
+    words, and the chips that match nothing (leaning away, the marketplace exclusion)."""
+    out = {"converged": 0, "seller_tier": 0, "leaning_toward": 0, "stated": 0, "other_chips": 0}
+    if profile is None:
+        return out
+    for e in profile.inferred:
+        if e.polarity != "like":
+            continue
+        if e.attr_kind in ("seller", "tier"):
+            out["seller_tier"] += 1
+        elif e.attr_kind == "leaning_toward":
+            out["leaning_toward"] += 1
+        elif e.attr_kind in ("leaning_away", "exclude_marketplace"):
+            out["other_chips"] += 1
+        elif e.status == "converged":
+            out["converged"] += 1
+    out["stated"] = len(profile.likes)
+    counted = out["converged"] + out["seller_tier"] + out["leaning_toward"]
+    out["other_chips"] = max(0, len(profile.inferred) - counted)  # open, mixed, dislikes, filters
+    return out
 
 
 def alignment_counts(
@@ -919,7 +987,7 @@ def alignment_counts(
     """
     if not results or profile is None:
         return 0, len(results)
-    likes = [e for e in profile.inferred if e.polarity == "like" and e.status == "converged"]
+    likes = _signal_entries(profile)
     if not likes and not profile.likes:
         return 0, len(results)
     dislike_entries = [e for e in profile.inferred if e.polarity == "dislike"]
@@ -937,6 +1005,8 @@ def alignment_counts(
                 "color_finish",
                 "frame_color",
             ):
+                if e.attr_kind.startswith("leaning_") and e.dimension == "style":
+                    return e.values[0] in style_leaves(got)  # a leaning names one style label
                 return e.values[0] in tag_values(e.dimension, got)
         return text_matches(e.text, r.title)
 

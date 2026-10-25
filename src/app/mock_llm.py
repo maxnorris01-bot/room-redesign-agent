@@ -681,6 +681,7 @@ _REPLAY_FILES = (
     "owner_session_replay_2.json",
     "owner_session_replay_3.json",
     "owner_session_replay_4.json",
+    "tailoring_evidence.json",
 )
 
 
@@ -699,6 +700,28 @@ MOCK_TAGS_FAIL = "MOCK_TAGS_FAIL"  # a title containing this makes the candidate
 
 
 MOCK_TAGS_EMPTY = "MOCK_TAGS_EMPTY"  # a title containing this makes the call return no content
+
+
+def mock_queries(request_text: str) -> list[str]:
+    """Two queries for a `record_queries` request, the way a careful writer would: each puts one
+    leaning value (up to two words) in front of the category, the typed materials and the
+    must-haves, so every typed constraint stays in and the query stays under eight words."""
+
+    def field_of(label: str) -> list[str]:
+        m = re.search(rf"^{label}: (.*)$", request_text, flags=re.MULTILINE)
+        if not m or m.group(1).strip() == "none":
+            return []
+        return [x.strip() for x in m.group(1).split(",") if x.strip()]
+
+    category = (field_of("Category") or [""])[0]
+    core: list[str] = []
+    for part in [category, *field_of("Typed materials"), *field_of("Must have")]:
+        for word in part.split():
+            if word != "unknown" and word not in core:
+                core.append(word)
+    leanings = [re.sub(r"\s*\(.*\)", "", v) for v in field_of("Leaning toward")]
+    out = [" ".join([*lean.split()[:2], *core][:8]) for lean in leanings[:2]]
+    return out or [" ".join(core[:8])]
 
 
 def mock_candidate_tool_input(request_text: str) -> dict[str, Any]:
@@ -837,6 +860,12 @@ class MockAnthropicClient:
         self.calls.append(kwargs)
         schema = kwargs.get("output_config", {}).get("format", {}).get("schema")
         choice = kwargs.get("tool_choice") or {}
+        if choice.get("name") == "record_queries":  # the forced query writer tool call
+            block = SimpleNamespace(
+                type="tool_use", id="toolu_mock", name="record_queries",
+                input={"queries": mock_queries(_request_text(kwargs))},
+            )  # fmt: skip
+            return response([block], stop_reason="tool_use", input_tokens=400, output_tokens=40)
         if choice.get("name") == "record_tags":  # the forced candidate tagging tool call
             ask = _request_text(kwargs)
             if MOCK_TAGS_EMPTY in ask:
