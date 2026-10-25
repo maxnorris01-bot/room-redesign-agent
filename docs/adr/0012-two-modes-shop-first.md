@@ -586,3 +586,30 @@ diagnostic are the answer to find out. Concurrency is only exercised with fakes;
 Anthropic latencies are unmeasured. Where tagging fails the lift tests cannot run, as before. The top-60
 rule means candidates ranked below 60 are guarded only by keywords.
 
+### Fix after stage 2g: the `temperature` TypeError (`make shop-diagnose`)
+
+The first live `make shop-diagnose` printed "FAILED before a response: TypeError" for all three calls. Cause:
+stage 2g passed `temperature=0` to `messages.stream()`, and the installed SDK (anthropic 1.8.0) has no such
+parameter, so the SDK raised `TypeError: Messages.stream() got an unexpected keyword argument 'temperature'`
+at `src/app/llm.py` (`_create_message`) before any request was sent. In a Shop Again every tagging call died
+the same way (and the TypeError escaped the tagging handler, which only caught API and output errors).
+
+Changes: `temperature` is gone from `llm.complete` and the tagging call; a client-side exception in a tagging
+call is now recorded in the call log (class, redacted message of at most 300 characters, and the repository
+`file:line` where it was raised) and the Shop Again goes on without tags (a budget error still propagates);
+`tests/test_shop_sdk_shapes.py` runs every Shop Mode call shape (parse, rank, preferences, candidate tags in
+the three diagnostic shapes) through the real SDK client over an httpx `MockTransport` and checks the JSON
+body that would be sent.
+
+Fields deliberately NOT sent: `temperature` (the SDK has no such argument; the newest models take no
+sampling parameters), `thinking` (no extended thinking for tagging) and `output_config.effort` on the tagging
+calls. Fields sent that the SDK documents but the API's support for the model is unverified: `strict` on the
+`record_tags` tool, and `tool_choice`; if the API rejects the tool call (an HTTP 400) the one retry sends the
+rows format instead, which sends neither.
+
+`make shop-diagnose` now prints, for a failure before a response: `exception:` (the class and the message,
+at most 300 characters, anything that looks like a key, token or Authorization value replaced by
+`[redacted]`) and `raised at:` (the innermost frame in `src/` or `scripts/`); for a call that failed after
+the request, `outcome: FAILED: <class and message>` and the same `raised at:` line. It never prints headers,
+the environment or a request body.
+

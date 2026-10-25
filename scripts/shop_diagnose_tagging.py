@@ -10,7 +10,7 @@ tests/fixtures/shop/owner_session_replay_4.json) and sends the candidate tagging
   C  a forced tool call (`record_tags`, strict JSON schema) with 40 titles   (the stage 2g call)
 
 For each call it prints only: the model id, max_tokens, latency, how the call ended (ok, or the
-exception class), the content block types, the stop reason, token usage, how many rows or items were
+exception class, its redacted message and where it was raised), the content block types, the stop reason, token usage, how many rows or items were
 parsed and the first 300 characters of any text. It never prints keys, headers or the environment.
 Read it with "How to read the diagnostic" in docs/adr/0012-two-modes-shop-first.md. `--mock` runs the
 same three calls against the free mock client (to see the layout).
@@ -28,6 +28,7 @@ from app.config import Config, load_env
 from app.llm import Budget
 from app.shop.candidates import MODE_ROWS, MODE_TOOL, Taggable, run_call
 from app.shop.clock import Clock
+from app.shop.redact import describe_exception
 from app.shop.store import DEFAULT_ROOT
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,7 @@ def describe(label: str, entry: dict[str, object]) -> list[str]:
         f"  max_tokens:   {entry['max_tokens']}   (per-request timeout {entry['timeout_s']} s)",
         f"  latency:      {entry['seconds']} s",
         f"  outcome:      {outcome}",
+        *([f"  raised at:    {entry['where']}"] if entry.get("where") else []),
         f"  block types:  {', '.join(entry['block_types']) or '(none)'}",  # type: ignore[arg-type]
         f"  stop reason:  {entry['stop_reason'] or '(none)'}",
         f"  usage:        {entry['input_tokens']} input tokens, {entry['output_tokens']} output tokens",
@@ -111,10 +113,13 @@ def main(argv: list[str] | None = None) -> int:
                 batch, TagBook(), Budget(config), mode, False, Clock(), 30.0, raw_chars=RAW_CHARS
             )
             lines = describe(label, entry)
-        except Exception as exc:  # the class only: a message could echo a request
+        except Exception as exc:  # the redacted message and where it was raised in this repository
+            text, where = describe_exception(exc)
             lines = [
                 f"--- {label}",
-                f"  outcome:      FAILED before a response: {type(exc).__name__}",
+                "  outcome:      FAILED before a response",
+                f"  exception:    {text}",
+                f"  raised at:    {where or '(outside this repository)'}",
             ]
         print("\n".join(lines))
     return 0
