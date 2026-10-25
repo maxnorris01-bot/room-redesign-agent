@@ -305,11 +305,68 @@
       box.appendChild(whyTable(['value', 'like mass', 'share of all', 'shown share'], rows));
       box.appendChild(h('p', { class: 'why-line' }, [
         'known coverage ' + pct(d.known_coverage) + ' of the like mass; ' +
-        pct(d.exposure_coverage) + ' of shown titles have a keyword for it' +
+        pct(d.exposure_coverage) + ' of shown results are tagged for it' +
         (d.lift !== undefined && d.lift !== null ? '; lift ' + d.lift : '')
       ]));
     }
     box.appendChild(h('p', { class: 'why-reason' }, [d.reason || '']));
+    return box;
+  }
+
+  function countKeys(maps) {
+    var seen = {};
+    var keys = [];
+    maps.forEach(function (m) {
+      Object.keys(m || {}).forEach(function (k) { if (!seen[k]) { seen[k] = 1; keys.push(k); } });
+    });
+    return keys;
+  }
+
+  function compTable(label, before, after, batch, quota) {
+    var keys = countKeys([before, after, batch]);
+    if (!keys.length) return null;
+    var head = [label, 'pool before'];
+    if (after) head.push('pool after');
+    head.push('final batch');
+    if (quota) head.push('slots planned');
+    var rows = keys.map(function (k) {
+      var row = [k, (before || {})[k] || 0];
+      if (after) row.push(after[k] || 0);
+      row.push((batch || {})[k] || 0);
+      if (quota) row.push(quota[k] === undefined ? '-' : quota[k]);
+      return row;
+    });
+    return whyTable(head, rows);
+  }
+
+  function batchBlock(trace, tg) {
+    var b = trace && trace.batch;
+    if (!b || !b.batch) return null;
+    var box = h('div', { class: 'why-dim why-batch' }, [h('h4', {}, ['Batch makeup (' + b.batch.size + ' results)'])]);
+    var st = trace.shown_tags || {};
+    var lines = [
+      'Searches used: ' + (b.serper_calls || 0) + ' (' + (b.serper_credits || 0) + ' credits)',
+      'shown results tagged ' + (st.tagged || 0) + ' of ' + (st.total || 0) + ' (' + (st.source || 'none') + ')'
+    ];
+    if (tg && tg.candidates_total !== undefined) {
+      lines.push('candidates tagged ' + tg.candidates_tagged + ' of ' + tg.candidates_total +
+        ' in ' + (tg.tag_calls || 0) + ' call(s)');
+    }
+    box.appendChild(h('p', { class: 'why-line' }, [lines.join('; ') + '.']));
+    (b.supply || []).forEach(function (x) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Looked for more ' + x.value + ' (' + x.dimension.replace(/_/g, ' ') + '): searched "' + x.search + '" page ' + x.page +
+        ', found ' + x.found + ', ' + x.new_candidates + ' new; ' + x.value + ' was ' + x.value_before + ' of the pool, now ' + x.value_after + '.'
+      ]));
+    });
+    var quota = b.strata ? b.strata.quota : null;
+    [['shape', 'shape'], ['color_finish', 'finish']].forEach(function (pair) {
+      var t = compTable(pair[1], b.pool_before && b.pool_before[pair[0]], b.pool_after && b.pool_after[pair[0]],
+        b.batch[pair[0]], pair[0] === 'shape' ? quota : null);
+      if (t) box.appendChild(t);
+    });
+    var sellers = compTable('seller', b.pool_before && b.pool_before.seller, b.pool_after && b.pool_after.seller, b.batch.seller, null);
+    if (sellers) box.appendChild(sellers);
     return box;
   }
 
@@ -346,6 +403,8 @@
     seller.appendChild(h('p', { class: 'why-reason' }, [sel.reason || '']));
     panel.appendChild(seller);
     var pr = trace.price || {};
+    var batch = batchBlock(state.search && state.search.trace, state.search && state.search.tagging);
+    if (batch) panel.appendChild(batch);
     var price = h('div', { class: 'why-dim' }, [h('h4', {}, ['price: ' + (pr.decision || 'none')])]);
     var bits = ['shown prices ' + (pr.shown_prices || 0)];
     if (pr.loved) bits.push('loved $' + pr.loved[0] + ' to $' + pr.loved[1]);
@@ -389,6 +448,9 @@
       tg.images_used ? 'photos ' + tg.images_used : 'no photos'];
     if (tg.retried) bits.push('retried');
     if (tg.fallback) bits.push('fallback');
+    if (tg.candidates_total !== undefined) {
+      bits.push('candidates tagged ' + tg.candidates_tagged + ' of ' + tg.candidates_total);
+    }
     return bits.join(', ');
   }
 

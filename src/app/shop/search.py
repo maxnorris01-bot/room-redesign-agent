@@ -15,8 +15,10 @@ loves a result (`app.shop.resolve`).
 
 from __future__ import annotations
 
+import math
 import re
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,8 +27,10 @@ from app.config import Config
 from app.llm import Budget, LLMOutputError, complete
 from app.prompts import load_prompt
 from app.schemas import DimensionsM, RankedFinalists, SchemaError, parse_model, to_output_schema
-from app.shop.decide import lexicon_tags, value_shares
+from app.shop.candidates import TagBook, Taggable, tag_results
+from app.shop.decide import composition, top_share
 from app.shop.models import (
+    MAX_SEARCH_TEXT_CHARS,
     FilterCounts,
     LinkKind,
     ShopQuery,
@@ -38,9 +42,12 @@ from app.shop.models import (
 from app.shop.parse import parse_request
 from app.shop.thresholds import (
     DIVERSITY_MAX_SHARE,
+    MINORITY_POOL_SHARE,
+    OPEN_STRATUM_FLOOR,
     SELLER_MAX_SHARE,
     SELLER_PINNED_SHARE,
 )
+from app.shop.vocab import OTHER, PHRASE_DIMS, phrase_word, title_tags
 from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.shopping_retrieval import _record_provider_call, cap_per_seller, seller_key
 from app.sizes import IN_M, resolve_size
@@ -93,6 +100,13 @@ class AgainContext:
     pool_target: int = POOL_TARGET_AGAIN
     # phrasing key (`query_key`) -> pages already fetched this session; a repeat starts after them
     skip_pages: dict[str, int] = field(default_factory=dict)
+    # stage 2e: the model's tags of the pool (cached by result id), the like mass of each open
+    # dimension's values (and the values with a loved item) for the stratified selection, and the
+    # Serper call cap when an open dimension's minority value needs targeted searches
+    tag_book: TagBook | None = None
+    open_mass: dict[str, dict[str, int]] = field(default_factory=dict)
+    open_loved: dict[str, set[str]] = field(default_factory=dict)
+    max_calls_open: int = 6
 
 
 @dataclass
@@ -117,6 +131,10 @@ class SearchOutcome:
     trace: dict[str, Any] = field(default_factory=dict)  # how the preferences were decided
     tagging: dict[str, Any] = field(default_factory=dict)  # items tagged, images, retry, fallback
     pages: dict[str, int] = field(default_factory=dict)  # phrasing key -> highest page fetched
+    composition: dict[str, Any] = field(default_factory=dict)  # pool and batch makeup (stage 2e)
+    new_tags: dict[str, dict[str, str | None]] = field(
+        default_factory=dict
+    )  # for the session cache
     alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
 
     @property
@@ -323,6 +341,33 @@ def _link(candidate: SearchCandidate) -> tuple[str, LinkKind]:
     return (url, "google_panel") if is_https_url(url) else ("", "none")
 
 
+def strata_quotas(
+    values: list[str], mass: Mapping[str, int], loved: set[str], n: int = RESULT_COUNT
+) -> dict[str, int]:
+    """Batch slots per open value, in proportion to its like mass, within the open cap
+    (`DIVERSITY_MAX_SHARE` of `n`) and with a floor of `OPEN_STRATUM_FLOOR` of `n` for a value
+    with a loved item. Always adds up to `n`."""
+    cap = int(DIVERSITY_MAX_SHARE * n)
+    floor = math.ceil(OPEN_STRATUM_FLOOR * n)
+    total = sum(mass.get(v, 0) for v in values) or len(values)
+    weight = {v: (mass.get(v, 0) or (1 if total == len(values) else 0)) for v in values}
+    quota = {v: round(n * weight[v] / total) for v in values}
+    for v in values:
+        if v in loved:
+            quota[v] = max(quota[v], floor)
+        quota[v] = min(quota[v], cap)
+    while sum(quota.values()) > n:  # take from the value furthest above its floor
+        v = max(
+            (v for v in values if quota[v] > (floor if v in loved else 0)),
+            key=lambda v: (quota[v], v),
+        )
+        quota[v] -= 1
+    while sum(quota.values()) < n and any(quota[v] < cap for v in values):
+        v = max((v for v in values if quota[v] < cap), key=lambda v: (weight[v], v))
+        quota[v] += 1
+    return quota
+
+
 def build_results(
     ordered: list[tuple[SearchCandidate, str]],
     query: ShopQuery,
@@ -331,6 +376,8 @@ def build_results(
     pinned_sellers: set[str] | None = None,
     guard_dims: list[str] | None = None,
     guard_caps: dict[str, float] | None = None,
+    tags: Callable[[SearchCandidate], Mapping[str, str | None]] | None = None,
+    strata: tuple[str, dict[str, int]] | None = None,
 ) -> tuple[list[ShopResult], int, int]:
     """Walk the ranked order, up to `RESULT_COUNT`, keeping:
 
@@ -338,11 +385,15 @@ def build_results(
         (up to `SELLER_MAX_SHARE` of a batch) and a pinned seller (`SELLER_PINNED_SHARE`);
       * for each guarded dimension, at most its share of a batch (`guard_caps`:
         `DIVERSITY_MAX_SHARE` for an open dimension or shape, `CONVERGED_MAX_SHARE` for a converged
-        one; `guard_dims` alone means the former) from any one known value (titles with no keyword
-        for the dimension are unknown and never counted); an item over that is skipped and the next
+        one; `guard_dims` alone means the former) from any one known value (a result with no tag
+        for the dimension is unknown and never counted); an item over that is skipped and the next
         best ranked item of another value takes its place.
 
-    Returns (results, skipped by the seller cap, skipped by the diversity guard).
+    `tags` gives a candidate's values by dimension (the model's tags in a Shop Again; title
+    keywords when omitted). With `strata=(dimension, quota per value)` the batch is selected
+    stratified: first each value's best ranked items up to its quota, then the rest in ranked
+    order, and the batch is returned in ranked order. Every cap holds in both passes. Returns
+    (results, skipped by the seller cap, skipped by the diversity guard).
     """
     affinity = affinity_sellers or set()
     pinned = pinned_sellers or set()
@@ -352,29 +403,55 @@ def build_results(
     pinned_cap = int(SELLER_PINNED_SHARE * RESULT_COUNT)
     value_caps = {d: int(share * RESULT_COUNT) for d, share in caps.items()}
     value_counts: dict[tuple[str, str], int] = {}
-    diversity_skipped = 0
     per_seller: dict[str, int] = {}
-    results: list[ShopResult] = []
-    capped = 0
-    for candidate, reason in ordered:
-        if len(results) >= RESULT_COUNT:
-            break
+    accepted: list[int] = []
+    taken: set[int] = set()
+    seller_skipped: set[int] = set()
+    diversity_skipped: set[int] = set()
+
+    def tag_of(candidate: SearchCandidate) -> Mapping[str, str | None]:
+        return tags(candidate) if tags is not None else title_tags(candidate.title)
+
+    def try_take(index: int, candidate: SearchCandidate) -> bool:
         key = seller_key(candidate.seller)
         cap = pinned_cap if key in pinned else affinity_cap if key in affinity else SELLER_CAP
         if per_seller.get(key, 0) >= cap:
-            capped += 1
-            continue
-        tags = lexicon_tags(candidate.title) if guard else {}
+            seller_skipped.add(index)
+            return False
+        got = tag_of(candidate) if guard else {}
         if any(
-            (v := tags.get(dim)) is not None and value_counts.get((dim, v), 0) >= value_caps[dim]
+            (v := got.get(dim)) is not None
+            and v != OTHER
+            and value_counts.get((dim, v), 0) >= value_caps[dim]
             for dim in guard
         ):
-            diversity_skipped += 1
-            continue
+            diversity_skipped.add(index)
+            return False
         for dim in guard:
-            if (v := tags.get(dim)) is not None:
+            if (v := got.get(dim)) is not None and v != OTHER:
                 value_counts[(dim, v)] = value_counts.get((dim, v), 0) + 1
         per_seller[key] = per_seller.get(key, 0) + 1
+        accepted.append(index)
+        taken.add(index)
+        return True
+
+    if strata is not None:
+        dim, quota = strata
+        remaining = dict(quota)
+        for index, (candidate, _) in enumerate(ordered):
+            if len(accepted) >= RESULT_COUNT or not any(remaining.values()):
+                break
+            value = tag_of(candidate).get(dim)
+            if value in remaining and remaining[value] > 0 and try_take(index, candidate):
+                remaining[value] -= 1
+    for index, (candidate, _) in enumerate(ordered):
+        if len(accepted) >= RESULT_COUNT:
+            break
+        if index not in taken:
+            try_take(index, candidate)
+    results: list[ShopResult] = []
+    for index in sorted(accepted):
+        candidate, reason = ordered[index]
         link, kind = _link(candidate)
         results.append(
             ShopResult(
@@ -397,7 +474,7 @@ def build_results(
                 rank_reason=reason,
             )
         )
-    return results, capped, diversity_skipped
+    return results, len(seller_skipped - taken), len(diversity_skipped - taken)
 
 
 def _search_page(
@@ -511,9 +588,83 @@ def run_query(
             finished.add(i)
         raw = raw + more
         pool, counts = filtered(raw)
+
+    # ---- stage 2e: tag the pool, then (open dimensions) go and find the minority value ----
+    book = again.tag_book if again is not None else None
+    composition_info: dict[str, Any] = {}
+    supplied: set[str] = set()
+    if again is not None and book is not None:
+
+        def tag_pool() -> None:
+            assert book is not None
+            tag_results(
+                [Taggable(result_id(c.product_id), c.title, c.price, c.seller) for c in pool],
+                book,
+                budget,
+            )
+
+        tag_pool()
+        composition_info["pool_before"] = pool_composition(pool, again)
+        supply_log: list[dict[str, Any]] = []
+        extra_done: set[str] = set()
+        cap = max(max_calls, again.max_calls_open) if search.name == "serper" else max_calls
+        while calls < cap:
+            need = minority_values(pool, again)
+            step = next(((d, v, c, k) for d, v, c, k in need if f"{d}:{v}" not in extra_done), None)
+            if step is None:
+                break
+            dim, value, count, known = step
+            text = " ".join(f"{phrase_word(dim, value)} {query.search_text}".split())[
+                :MAX_SEARCH_TEXT_CHARS
+            ]
+            key = query_key(text)
+            page = max(again.skip_pages.get(key, 0), pages.get(key, 0)) + 1
+            calls += 1
+            try:
+                more = _search_page(search, text, page, budget)
+            except ProviderError as exc:
+                warnings.append(
+                    f"Search for {value} {dim} unavailable ({exc}); showing what was found."
+                )
+                extra_done.add(f"{dim}:{value}")
+                continue
+            if text not in used:
+                used.append(text)
+            pages[key] = max(pages.get(key, 0), page)
+            before = {c.product_id for c in pool}
+            raw = raw + more
+            pool, counts = filtered(raw)
+            added = [c for c in pool if c.product_id not in before]
+            supplied.update(c.product_id for c in added)
+            if not more or not added:
+                extra_done.add(f"{dim}:{value}")  # nothing new from this phrasing: stop asking it
+            tag_pool()
+            after = next(
+                (
+                    n
+                    for d, v, n, _ in minority_values(pool, again, all_values=True)
+                    if (d, v) == (dim, value)
+                ),
+                None,
+            )
+            supply_log.append(
+                {
+                    "dimension": dim, "value": value, "search": text, "page": page,
+                    "found": len(more), "new_candidates": len(added),
+                    "value_before": f"{count} of {known}", "value_after": after,
+                }
+            )  # fmt: skip
+        composition_info["supply"] = supply_log
+        composition_info["pool_after"] = pool_composition(pool, again)
     t_search = time.perf_counter()
 
-    pool = pool[: (MAX_POOL_AGAIN if again is not None else MAX_POOL)]
+    limit = MAX_POOL_AGAIN if again is not None else MAX_POOL
+    if len(pool) > limit:  # supplied candidates are what the pool lacked: they are kept first
+        keep = [c for c in pool if c.product_id in supplied][:limit]
+        kept = {c.product_id for c in keep}
+        rest = [c for c in pool if c.product_id not in kept][: limit - len(keep)]
+        chosen = {c.product_id for c in [*keep, *rest]}
+        pool = [c for c in pool if c.product_id in chosen]
     pool_index = {c.product_id: i + 1 for i, c in enumerate(pool)}
     ranked = False
     ordered: list[tuple[SearchCandidate, str]] = []
@@ -523,9 +674,35 @@ def run_query(
         if rank_warning:
             warnings.append(rank_warning)
     if again is not None and again.deprioritize_sellers:  # not excluded: ranked after the rest
-        keep = [x for x in ordered if seller_key(x[0].seller) not in again.deprioritize_sellers]
+        keep_first = [
+            x for x in ordered if seller_key(x[0].seller) not in again.deprioritize_sellers
+        ]
         later = [x for x in ordered if seller_key(x[0].seller) in again.deprioritize_sellers]
-        ordered = keep + later
+        ordered = keep_first + later
+
+    tag_of: Callable[[SearchCandidate], Mapping[str, str | None]] | None = None
+    strata: tuple[str, dict[str, int]] | None = None
+    if again is not None:
+
+        def _tag_of(candidate: SearchCandidate) -> Mapping[str, str | None]:
+            got = book.get(result_id(candidate.product_id)) if book is not None else None
+            if got is not None:
+                return got
+            return title_tags(candidate.title) if book is None or book.failed else {}
+
+        tag_of = _tag_of
+
+        shape_values = [v for v in again.open_dims.get("shape", []) if v != OTHER]
+        if len(shape_values) >= 2:
+            strata = (
+                "shape",
+                strata_quotas(
+                    shape_values,
+                    again.open_mass.get("shape", {}),
+                    again.open_loved.get("shape", set()),
+                ),
+            )
+            composition_info["strata"] = {"dimension": "shape", "quota": strata[1]}
     results, capped, diversity_skipped = build_results(
         ordered,
         query,
@@ -534,13 +711,22 @@ def run_query(
         again.pinned_sellers if again is not None else None,
         None,
         again.guard_caps if again is not None else None,
+        tag_of,
+        strata,
     )
     counts.seller_capped = capped
     diversity: dict[str, tuple[str, float]] = {}
     seller_share: tuple[str, float] | None = None
     if again is not None and results:
         dims = list(dict.fromkeys(["shape", *again.guard_caps]))
-        for dim, top in value_shares([r.title for r in results], dims).items():
+        tagged_batch: dict[str, Mapping[str, str | None]] = {
+            r.id: tag_of(_candidate_of(r, ordered)) if tag_of else {} for r in results
+        }
+        batch_comp = composition(
+            results, tagged_batch, list(dict.fromkeys([*dims, "color_finish"]))
+        )
+        for dim in dims:
+            top = top_share(batch_comp.get(dim, {}))
             if top is not None:
                 diversity[dim] = top
         by_seller: dict[str, int] = {}
@@ -548,15 +734,30 @@ def run_query(
             by_seller[r.seller] = by_seller.get(r.seller, 0) + 1
         name = max(sorted(by_seller), key=lambda k: by_seller[k])
         seller_share = (name, round(by_seller[name] / len(results), 4))
-        for dim, cap in again.guard_caps.items():
+        composition_info["batch"] = {
+            "size": len(results),
+            **batch_comp,
+            "seller": dict(sorted(by_seller.items(), key=lambda kv: (-kv[1], kv[0]))[:8]),
+        }
+        pool_known = composition_info.get("pool_after", {})
+        for dim, cap_share in again.guard_caps.items():
             top = diversity.get(dim)
-            if dim in again.typed_dims or top is None or top[1] <= cap:
+            if dim in again.typed_dims or top is None or top[1] <= cap_share:
                 continue  # a dimension the typed request names is not a thing to warn about
             label = dim.replace("_", " ")
-            what = "mixed" if cap <= DIVERSITY_MAX_SHARE else f"under {cap:.0%}"
+            what = "mixed" if cap_share <= DIVERSITY_MAX_SHARE else f"under {cap_share:.0%}"
+            pool_counts = pool_known.get(dim, {})
+            others = {v: n for v, n in pool_counts.items() if v not in (top[0], "(unknown)")}
+            detail = (
+                f" The pool of {len(pool)} had {pool_counts.get(top[0], 0)} {top[0]} and "
+                + (", ".join(f"{n} {v}" for v, n in others.items()) or "nothing else")
+                + f"; {calls} searches were run."
+                if pool_counts
+                else ""
+            )
             warnings.append(
                 f"Could not keep {label} {what}: the pool is mostly {top[0]} "
-                f"({top[1]:.0%} of these results, limit {cap:.0%})."
+                f"({top[1]:.0%} of these results, limit {cap_share:.0%}).{detail}"
             )
         if again.dropped_phrasings:
             warnings.append(
@@ -572,6 +773,11 @@ def run_query(
         )
     elif not results:
         warnings.append("No results matched the filters. Try loosening the price or the wording.")
+    if composition_info:
+        composition_info["serper_calls"] = calls
+        composition_info["serper_credits"] = (
+            calls * config.serper_credits_per_call if search.name == "serper" else 0
+        )
     return SearchOutcome(
         query=query,
         results=results,
@@ -594,7 +800,81 @@ def run_query(
         dropped_phrasings=list(again.dropped_phrasings) if again is not None else [],
         diversity=diversity,
         seller_share=seller_share,
+        composition=composition_info,
+        new_tags=dict(book.new) if book is not None else {},
     )
+
+
+def _candidate_of(
+    result: ShopResult, ordered: list[tuple[SearchCandidate, str]]
+) -> SearchCandidate:
+    for candidate, _ in ordered:
+        if candidate.product_id == result.product_id:
+            return candidate
+    raise KeyError(result.product_id)
+
+
+def pool_composition(pool: list[SearchCandidate], again: AgainContext) -> dict[str, Any]:
+    """The pool's makeup for the trace: its size, the tag counts by shape and finish (a result with
+    no tag is "(unknown)"), and the seller counts."""
+    book = again.tag_book
+    tags: dict[str, Mapping[str, str | None]] = {}
+    for c in pool:
+        rid = result_id(c.product_id)
+        got = book.get(rid) if book is not None else None
+        tags[rid] = (
+            got
+            if got is not None
+            else ({} if book is not None and not book.failed else title_tags(c.title))
+        )
+    fake = [
+        ShopResult(
+            id=result_id(c.product_id), title=c.title, price=c.price, currency=c.currency,
+            seller=c.seller, thumbnail_url="", link="", link_kind="none", size_hint=None,
+            product_id=c.product_id, rank=0, pool_position=0,
+        )
+        for c in pool
+    ]  # fmt: skip
+    comp = composition(fake, tags, ["shape", "color_finish"])
+    by_seller: dict[str, int] = {}
+    for c in pool:
+        by_seller[c.seller] = by_seller.get(c.seller, 0) + 1
+    return {
+        "size": len(pool),
+        "tagged": sum(1 for c in pool if book is not None and book.get(result_id(c.product_id))),
+        **comp,
+        "seller": dict(sorted(by_seller.items(), key=lambda kv: (-kv[1], kv[0]))[:8]),
+    }
+
+
+def minority_values(
+    pool: list[SearchCandidate], again: AgainContext, all_values: bool = False
+) -> list[tuple[str, str, int, int]]:
+    """(dimension, value, count, known) for each value of an open dimension that has search words
+    and holds less than `MINORITY_POOL_SHARE` of the pool's tagged candidates (all of them when
+    `all_values`), the rarest first within a dimension, shape first. A pool with fewer than 8
+    tagged candidates for a dimension says nothing."""
+    book = again.tag_book
+    if book is None or book.failed:
+        return []
+    out: list[tuple[str, str, int, int]] = []
+    for dim in PHRASE_DIMS:
+        values = [v for v in again.open_dims.get(dim, []) if v != OTHER]
+        if len(values) < 2:
+            continue
+        counts: dict[str, int] = {}
+        for c in pool:
+            got = book.get(result_id(c.product_id))
+            value = got.get(dim) if got is not None else None
+            if value:
+                counts[value] = counts.get(value, 0) + 1
+        known = sum(counts.values())
+        if known < 8:
+            continue
+        rows = [(dim, v, counts.get(v, 0), known) for v in values]
+        out += [r for r in rows if all_values or r[2] / known < MINORITY_POOL_SHARE]
+    out.sort(key=lambda r: (PHRASE_DIMS.index(r[0]), r[2]))
+    return out
 
 
 def run_search(request: str, search: SearchProvider, config: Config) -> SearchOutcome:

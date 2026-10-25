@@ -344,6 +344,7 @@ class ShopService:
                 )
             live.profile = profile
             live.shop_agains_used += 1
+            live.tag_cache.update(outcome.new_tags)  # a result is tagged once, ever
             self._record(live, live.searches[-1].request if live.searches else "", outcome,
                          note=profile_summary(profile))  # fmt: skip
             return self._view(live)

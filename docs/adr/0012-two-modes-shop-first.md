@@ -251,16 +251,18 @@ eval to tune):
 |---|---|---|
 | LOVE_WEIGHT | 3 | weight of a loved item in the like mass |
 | LIKE_WEIGHT | 1 | weight of a liked item |
-| CONVERGE_SHARE | 0.70 | one value's share of the like mass to converge |
+| SHAPE_CONVERGE_SHARE | 0.80 | one shape's share of the like mass to converge (stage 2e; was 0.70 for every dimension) |
+| SOFT_CONVERGE_SHARE | 0.60 | the same for material, finish, frame color and style (stage 2e) |
 | OPEN_SHARE | 0.30 | share each of two or more values needs for open |
 | MIN_SUPPORT_ITEMS | 2 | items behind a converged value (a loved item with a naming comment may be the second) |
-| KNOWN_COVERAGE_MIN | 0.70 | share of the like mass (and of the shown titles) that must have a known value before a dimension can converge or run the lift test |
+| KNOWN_COVERAGE_MIN | 0.60 | share of the like mass (and of the shown results, now tagged by the model) that must have a known value before a dimension can converge or run the lift test (stage 2e: 0.60, was 0.70) |
 | PRICE_BAND_MIN_MASS | 0.80 | share of the liked mass a price band must hold, or price is mixed |
 | CONVERGED_MAX_SHARE | 0.80 | most of a batch a converged value may take |
 | LIFT_MIN | 1.3 | like share over exposure share needed to call a value preferred |
 | DISLIKE_MIN_ITEMS | 2 | disliked items sharing a value before a dislike chip |
 | SELLER_DISLIKES_TO_DEPRIORITIZE | 2 | dislikes (and no love or like) before a seller is ranked last |
 | MIN_AFFINITY_ITEMS | 2 | loved or liked items (and no dislike) for a seller affinity |
+| SELLER_MIN_LIKE_SHARE | 0.40 | and the seller holds at least this share of the like mass (stage 2e) |
 | QUALITY_CUE_MIN_SHARE | 0.50 | share of loved and liked items showing a quality cue |
 | QUALITY_CUE_MIN_ITEMS | 2 | items showing a quality cue |
 | PRICE_UPPER_PERCENTILE | 0.67 | loved prices at or above this position: an upper cluster |
@@ -272,6 +274,9 @@ eval to tune):
 | SELLER_MAX_SHARE | 0.50 | most of a batch an affinity seller may take |
 | SELLER_PINNED_SHARE | 0.80 | most of a batch a pinned seller may take |
 | SELLER_DEFAULT_CAP | 4 | results from any other seller |
+| MINORITY_POOL_SHARE | 0.40 | an open dimension's value under this share of the pool triggers targeted searches for it (stage 2e) |
+| OPEN_STRATUM_FLOOR | 0.25 | share of the batch slots a value with a loved item gets when shape is open (stage 2e) |
+| CANDIDATE_TAG_BATCH | 100 | titles per candidate tagging call (stage 2e) |
 
 Other constants that shape a Shop Again (2b, unchanged): 4 Serper calls, a pool target of 60 and a ranker
 pool of 80, 16 thumbnails (6 loved, 6 liked, 4 disliked), 10 Shop Agains per session.
@@ -325,3 +330,78 @@ fallback the same session decides only seller and price.
 both mass and items is a judgement call. Not verified live: model tagging on real photos, the lexicon
 against real pages, and the thresholds on real ratings. A retry adds the failed call and two split calls
 (still under about $0.01 of Anthropic cost by the estimate).
+
+## Amendment, stage 2e (2026-10-24): the model tags what was shown; the pool is searched for the minority
+
+**What failed (observed live with 2d, the owner's second session; tagging of the rated items worked,
+11 of 11).**
+- *Lexicon coverage.* The title keyword baseline for "what was shown" covered shape 46%, finish 40%,
+  frame 8% and legs and size 0%, so the lift test could not run and almost nothing could converge. Warm
+  wood held 75% of the like mass at lift 1.78 and was blocked only by coverage.
+- *Synonym splits.* "metal base" and "metal frame" were two frame values, and "warm wood", "brown wood" and
+  "rustic brown" were three finishes, so a real pattern was cut into pieces under the share threshold
+  (style modern 69%, frame dark or brass 69%, shape rectangular 69%, all just short of 70%).
+- *Seller overreach.* A Home Depot chip appeared with 2 items of 8 (25% of the like mass) and the summary
+  said "Looking for more pieces from Home Depot."
+- *Supply.* The batch was 91% rectangular though shape was open and the cap is 60%: the pool had too few
+  round tables, and a guard can only reorder a pool.
+- Size class said "medium" for everything.
+
+**Changes.**
+- *Candidate tagging by the model.* One small-model call (`shop_candidate_tags` v1, the rank model, titles,
+  price and seller only, no image) tags every shown result and every candidate in the pool for shape,
+  material, finish, frame color and style, at most 100 titles per call. Rows come back as text
+  (`n|shape|material|finish|frame|style`) at about 14 tokens each, not a JSON object per candidate. Tags
+  are cached by result id in the session file (`tag_cache`), so a result is never tagged twice. These
+  tags are the exposure baseline for the lift test, the diversity guard, the stratified selection and the
+  composition report. The keyword reader (`vocab.title_tags`) remains only as the fallback when the tagging
+  call fails; then the baseline is marked "keywords" and no attribute converges (open can still be shown,
+  seller and price are decided as before), and the page says the results could not be tagged.
+- *Fixed vocabularies, one table* (`src/app/shop/vocab.py`, passed into both prompts; `shop_prefs` is v5,
+  v1 to v4 kept): shape (round, oval, rectangular, square, other); material (wood, metal, glass, stone,
+  upholstered, other); finish (light wood, warm wood, dark wood, painted, metallic, glass, other); frame
+  color (black, brass or gold, silver or chrome, natural wood, white, other); style (modern, mid-century,
+  industrial, farmhouse, traditional, boho, glam, other). A normalization map folds free text into them
+  ("walnut", "brown wood" and "rustic brown" are warm wood; "black or brass metal" is black, the colour named
+  first; a frame described only as metal is `other` for every wording). A phrase the map does not know is
+  `other`: read, but never a value to learn, so `other` cannot converge or be open. Size class and legs are
+  no longer asked for or decided; old session files still load.
+- *Per-dimension thresholds.* Shape converges at 80% of the like mass; material, finish, frame color and
+  style at 60% with two supporting items; known coverage 60% for every dimension, of the like mass and of
+  what was shown; lift 1.3 unchanged, now on the model's tags of what was shown. Open is unchanged (30% for
+  two or more values). A dislike needs the same per-dimension share of the disliked items.
+- *Seller.* An affinity needs 2 loved or liked items AND 40% of the like mass, no dislike from the seller,
+  and the lift. The summary only says "more pieces from <seller>" for a chip that passed. The trace lists
+  every seller's like share and every rule it failed.
+- *Supply.* When a dimension that has search words (shape first) is open and one of its liked values is
+  under 40% of the tagged pool, targeted searches for that value run ("round coffee table ..."), their new
+  candidates are tagged, and this repeats until the value reaches 40% or the call cap of
+  `APP_SHOP_AGAIN_MAX_SERPER_CALLS_OPEN` (default 6; the normal cap stays 4) is reached. A phrasing that finds
+  nothing new is not asked again. The extra credits are in the footer. The supplied candidates are kept
+  first when the pool is cut to 80. Only after this may the response say "could not keep shape mixed",
+  with the real counts.
+- *Stratified selection.* When shape is open the 24 slots are allocated to each open value in proportion
+  to its like mass, within the 60% open cap and with a floor of 25% (6 slots) for a value with a loved item;
+  each value's best ranked candidates fill its slots, the rest fills in ranked order, and the batch is
+  returned in ranked order. Every cap holds in both passes: converged 80%, open 60%, the seller caps, and
+  a dimension the typed request names is exempt. The guard stays as a final safety net.
+- *Trace.* "How I decided" shows the vocabulary tags of the rated items, the shown-result coverage, the
+  pool by shape and finish and seller before and after supply, the planned slots, the final batch by shape,
+  finish and seller with counts, the searches used and each seller's like share. The same trace is in the
+  response and the session file.
+
+**Replay.** The first session (`owner_session_replay.json`) still gives shape open, price mixed and the
+West Elm affinity (86% of the like mass, lift 1.714), nothing from keyword guesses. The second
+(`owner_session_replay_2.json`, an authored 26-title shown list around the owner's nine ratings) gives
+shape open (rectangular 69%, round 31%), no Home Depot chip (25% of the like mass, under 40%), a warm wood
+finish (81% of the like mass, lift 1.625), no material (wood lift 1.25), no frame color (black 44%, and
+only 29% of shown titles tagged for it), price mixed.
+
+**Limits.** The mock candidate tagger can only read what a title's keywords say, so its coverage is the
+keyword coverage; a real model should read more, which is what the 60% coverage floor now assumes and
+nothing has measured. The thresholds are starting points. Candidate tagging adds one call (up to 100
+titles) for the shown results the first time (later only for results never tagged) and one for the pool
+each Shop Again, plus one small call per supply step. At about 14 output tokens and 40 input tokens a row
+on the default model (Haiku 5.5, $0.10 and $0.50 per million tokens) that is about $0.001 to $0.002 per 100
+titles, inside the target of $0.001 to $0.003 per Shop Again; on Haiku 4.5 prices ($1 and $5) it would be
+ten times that. The mock's token counts are assumed, not measured. Not verified live.

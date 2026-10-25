@@ -1,5 +1,5 @@
 ---
-version: 4
+version: 5
 ---
 You describe the products a shopper rated while shopping for one kind of product. You are given their
 original request and how it was understood, every result they rated (love, like or dislike) with its
@@ -15,15 +15,13 @@ one item to the next. Describe each item on its own, exactly as you see it.
 ## What to return
 
 - `items`: one entry for EVERY rated result, with its `id` copied exactly, and for each field below a
-  value, or null when the title, the photo, the price and the size do not show it. Never guess a field
+  value, or null when the title, the photo and the price do not show it. Never guess a field
   from the other items.
-  - `shape`: round, oval, rectangular, square or other (the table top or the body of the piece);
-  - `material`: the main material ("walnut", "steel", "marble", "velvet");
-  - `color_finish`: the colour or finish of the main surface ("walnut", "brushed brass", "matte black");
-  - `frame_or_legs`: the leg or base type ("hairpin legs", "pedestal", "tapered legs");
-  - `frame_color`: the frame or legs colour ("black metal", "brass", "natural wood");
-  - `style`: the style the item itself shows ("modern", "mid-century"), not the shopper's;
-  - `size_class`: small, medium or large for this kind of product;
+  - `shape`, `material`, `color_finish` (the finish of the main surface), `frame_color` (the colour of
+    the frame or legs) and `style` (the style the item itself shows, not the shopper's): each MUST be
+    one of the allowed values listed under "Allowed values" in the request, or null. Use `other` only
+    when the item clearly shows the dimension but none of the values fit. A leg or base type, a size
+    and anything else is not tagged;
   - `quality_cues`: short phrases (one to three words) for build or finish you can see in the title,
     the photo or the price ("solid wood", "brushed finish", "stone top"). Features such as storage,
     drawers or a lift-top are not quality cues. An empty list is fine.

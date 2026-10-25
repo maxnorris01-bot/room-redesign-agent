@@ -16,14 +16,12 @@ import pytest
 from app.shop import thresholds
 from app.shop.decide import (
     FEATURE_WORDS,
+    Exposure,
     TaggedItem,
-    canon_value,
+    build_exposure,
     classify_dimension,
     decide,
     dislike_values,
-    exposure_shares,
-    lexicon_tags,
-    lexicon_value,
     price_entry,
     seller_affinity_entry,
     tag_item,
@@ -42,6 +40,7 @@ from app.shop.prefs import (
 from app.shop.search import RESULT_COUNT, build_results
 from app.shop.store import RatingRecord, Session
 from app.shop.textutil import Rated
+from app.shop.vocab import normalize, title_tags, title_value
 from app.shopping import SearchCandidate
 from test_shop import (  # noqa: F401  (the autouse guard must be imported to apply here)
     FakeLookup,
@@ -79,23 +78,26 @@ def tagged(
     rid: str, rating: str, title: str, seller: str = "S", comment: str = "", **values: str
 ) -> TaggedItem:
     r = Rated(rid, rating, comment, title, 100.0, seller, "")
-    return TaggedItem(r, {**lexicon_tags(title), **values})
+    return TaggedItem(r, {**title_tags(title), **values})
 
 
 def model_tags(sess: Session) -> dict[str, ItemTags]:
     """Tags a careful model would give: what each title shows by keyword, null for the rest."""
-    from app.shop.decide import lexicon_tags as lex
-
     tags: dict[str, ItemTags] = {}
     for rid in sess.ratings:
-        got = lex(sess.results[rid].title)
+        got = title_tags(sess.results[rid].title)
         tags[rid] = ItemTags(
-            id=rid, shape=got.get("shape"), material=got.get("material"),  # type: ignore[arg-type]
-            color_finish=got.get("color_finish"), frame_or_legs=got.get("frame_or_legs"),
-            frame_color=got.get("frame_color"), style=got.get("style"), size_class=None,
-            quality_cues=[],
+            id=rid, shape=got.get("shape"), material=got.get("material"),
+            color_finish=got.get("color_finish"), frame_color=got.get("frame_color"),
+            style=got.get("style"), quality_cues=[],
         )  # fmt: skip
     return tags
+
+
+def title_exposure(sess: Session) -> Exposure:
+    """The baseline from a model that tagged every shown title as far as its keywords go."""
+    shown = list(sess.results.values())
+    return build_exposure(shown, {r.id: title_tags(r.title) for r in shown})
 
 
 def merged(existing: StoredProfile | None, sess: Session, base: Any) -> StoredProfile:
@@ -109,7 +111,9 @@ def merged(existing: StoredProfile | None, sess: Session, base: Any) -> StoredPr
             price_max=None, price_note="",
         ),
     )  # fmt: skip
-    return merge_profile_v3(existing, answer, sess, base, ImageReport(), set())
+    return merge_profile_v3(
+        existing, answer, sess, base, ImageReport(), set(), exposure=title_exposure(sess)
+    )
 
 
 def entries_by(dim: str, decisions: Any) -> list[ProfileEntry]:
@@ -125,6 +129,7 @@ def decide_session(
         list(sess.results.values()),
         removed or [],
         base_terms or [],
+        exposure=title_exposure(sess),
     )
 
 
@@ -146,10 +151,13 @@ def shape_world(
 
 def test_every_threshold_is_in_one_module_with_the_documented_values() -> None:
     t = thresholds.all_thresholds()
-    assert t["CONVERGE_SHARE"] == 0.70 and t["OPEN_SHARE"] == 0.30 and t["LIFT_MIN"] == 1.3
+    assert t["SHAPE_CONVERGE_SHARE"] == 0.80 and t["SOFT_CONVERGE_SHARE"] == 0.60
+    assert t["KNOWN_COVERAGE_MIN"] == 0.60 and t["OPEN_SHARE"] == 0.30 and t["LIFT_MIN"] == 1.3
+    assert t["SELLER_MIN_LIKE_SHARE"] == 0.40 and t["MIN_AFFINITY_ITEMS"] == 2
+    assert t["MINORITY_POOL_SHARE"] == 0.40 and t["OPEN_STRATUM_FLOOR"] == 0.25
     assert t["MIN_SUPPORT_ITEMS"] == 2 and t["DISLIKE_MIN_ITEMS"] == 2
     assert t["LOVE_WEIGHT"] == 3 and t["LIKE_WEIGHT"] == 1
-    assert t["DIVERSITY_MAX_SHARE"] == 0.60
+    assert t["DIVERSITY_MAX_SHARE"] == 0.60 and t["CONVERGED_MAX_SHARE"] == 0.80
     assert t["SELLER_MAX_SHARE"] == 0.50 and t["SELLER_PINNED_SHARE"] == 0.80
     assert t["PRICE_MIXED_LIKED_SPAN"] == pytest.approx(0.6667, abs=1e-4)
     assert t["RESULT_COUNT"] == RESULT_COUNT == 24
@@ -163,75 +171,94 @@ def test_every_threshold_is_in_one_module_with_the_documented_values() -> None:
 # ---- lexicon and exposure -------------------------------------------------------------------------------
 
 
-def test_the_lexicon_reads_titles_and_leaves_unknowns_out() -> None:
-    assert lexicon_tags('Round Walnut Drum Storage Coffee Table 36"') == {
+def test_the_title_reader_is_a_fallback_that_leaves_unknowns_out() -> None:
+    assert title_tags('Round Walnut Drum Storage Coffee Table 36"') == {
         "shape": "round", "material": "wood", "color_finish": "warm wood",
     }  # fmt: skip
-    got = lexicon_tags("Rectangular Wood and Black Metal Lift-Top Coffee Table")
-    assert got["shape"] == "rectangular" and got["material"] == "wood"
-    assert got["color_finish"] == "dark" and got["frame_color"] == "dark or brass metal"
-    assert lexicon_tags('Coffee Table with Storage 40"') == {}  # nothing to read
-    assert lexicon_tags("Brushed Brass Drum Table")["frame_color"] == "dark or brass metal"
+    got = title_tags("Rectangular Wood and Black Metal Lift-Top Coffee Table")
+    assert got == {"shape": "rectangular", "material": "wood", "frame_color": "black"}
+    assert title_tags('Coffee Table with Storage 40"') == {}  # nothing to read
+    assert title_tags("Brushed Brass Drum Table")["frame_color"] == "brass or gold"
+    assert title_value("shape", "ROUND table") == "round"
+    assert title_value("shape", "background") is None
+    assert title_value("style", "Mid-Century Modern desk") == "mid-century"  # earliest word wins
+    assert title_value("frame_color", "Black Steel Base") == "black"
+
+
+def test_free_text_folds_into_the_fixed_vocabularies() -> None:
+    assert normalize("material", "walnut") == "wood"
+    assert normalize("color_finish", "Walnut") == "warm wood"
+    for words in ("warm wood", "brown wood", "rustic brown", "walnut", "oak brown finished"):
+        assert normalize("color_finish", words) == "warm wood", words
+    assert normalize("color_finish", "dark warm wood") == "warm wood"
+    assert normalize("color_finish", "espresso") == "dark wood"
+    assert normalize("color_finish", "brushed brass") == "metallic"
+    assert normalize("frame_color", "black metal") == "black"
+    assert normalize("frame_color", "black powder-coated steel") == "black"
+    assert normalize("frame_color", "gold metal") == "brass or gold"
+    assert normalize("frame_color", "natural wood") == "natural wood"
+    # a frame described only as metal says nothing about colour: one value, never split in two
     assert (
-        lexicon_value("shape", "ROUND table") == "round"
-        and lexicon_value("shape", "background") is None
+        normalize("frame_color", "metal base")
+        == normalize("frame_color", "metal frame")
+        == normalize("frame_color", "metal legs")
+        == "other"
     )
+    assert normalize("shape", "Round") == "round" and normalize("shape", "other") == "other"
+    assert normalize("shape", "kidney bean") == "other"  # read, but not a value to learn
+    assert normalize("shape", None) is None and normalize("material", "  ") is None
+    assert normalize("style", "Mid-Century Modern") == "mid-century"
     assert (
-        lexicon_value("style", "Mid-Century Modern desk") == "mid-century"
-    )  # the earliest word wins
-    assert lexicon_value("frame_color", "Powder-Coated Steel Base") == "dark or brass metal"
-
-
-def test_model_tags_are_mapped_into_the_lexicon_value_space() -> None:
-    assert canon_value("material", "walnut") == "wood"
-    assert canon_value("color_finish", "Walnut") == "warm wood"
-    assert canon_value("frame_color", "black metal") == "dark or brass metal"
-    assert canon_value("shape", "Round") == "round" and canon_value("shape", "other") is None
-    assert canon_value("shape", None) is None and canon_value("material", "  ") is None
-    assert (
-        canon_value("size_class", "Large") == "large" and canon_value("size_class", "huge") is None
+        normalize("style", "Scandinavian") == "modern"
+        and normalize("style", "rustic") == "farmhouse"
     )
-    assert (
-        canon_value("style", "quirky cabin vibes") == "quirky cabin vibes"
-    )  # unknown stays as text
+    assert normalize("style", "quirky cabin vibes") == "other"
+    assert normalize("size_class", "large") is None  # not a decided dimension any more
 
 
-def test_exposure_is_the_share_among_titles_that_have_a_value() -> None:
-    titles = ["Round A", "Round B", "Round C", "Rectangular D", "Plain E", "Plain F"]
-    shares = exposure_shares(titles)
-    assert shares["shape"] == {
-        "round": 0.75,
-        "rectangular": 0.25,
-    }  # the two plain titles are unknown
-    assert "color_finish" not in exposure_shares(titles)  # no title shows it: no baseline at all
-    shown = [r for _, t, _, _ in shape_world(2, 1) for r in [t]]
-    assert exposure_shares(shown)["shape"]["round"] == pytest.approx(2 / 3)
+def test_exposure_is_the_share_among_shown_results_that_have_a_value() -> None:
+    sess = make_session(
+        [
+            (f"t{i}", t, 100.0, "S")
+            for i, t in enumerate(
+                ["Round A", "Round B", "Round C", "Rectangular D", "Plain E", "Plain F"]
+            )
+        ],
+        {},
+    )
+    shown = list(sess.results.values())
+    exp = build_exposure(shown, {r.id: title_tags(r.title) for r in shown})
+    assert exp.shares["shape"] == {"round": 0.75, "rectangular": 0.25}  # two plain: unknown
+    assert exp.coverage["shape"] == pytest.approx(4 / 6) and exp.tagged == 6 and exp.total == 6
+    assert "color_finish" not in exp.shares  # nothing shows it: no baseline at all
+    assert exp.usable
+    keywords = build_exposure(shown, None, keywords=True)  # the tagging call failed
+    assert keywords.source == "keywords" and not keywords.usable and keywords.tagged == 0
 
 
 def test_tagging_uses_the_model_only_and_unknowns_stay_unknown() -> None:
     r = Rated("a", "love", "", "Round Walnut Table", 100.0, "S", "")
     model = ItemTags(
-        id="a", shape=None, material="steel", color_finish=None, frame_or_legs=None,
-        frame_color="brass", style="modern", size_class="small", quality_cues=["Solid Wood", "storage"],
+        id="a", shape=None, material="steel", color_finish=None, frame_color="brass",
+        style="modern", quality_cues=["Solid Wood", "storage"],
     )  # fmt: skip
     item = tag_item(r, model)
-    assert item.values["material"] == "metal"  # the model's reading
+    assert item.values["material"] == "metal"  # the model's reading, folded into the vocabulary
     assert "shape" not in item.values and "color_finish" not in item.values  # null stays unknown:
-    # the title says "Round Walnut" but the lexicon no longer fills what the model left out
-    assert (
-        item.values["frame_color"] == "dark or brass metal" and item.values["size_class"] == "small"
-    )
+    # the title says "Round Walnut" but title keywords never fill what the model left out
+    assert item.values["frame_color"] == "brass or gold" and "size_class" not in item.values
     assert item.cues == ("solid wood", "storage")
-    assert (
-        tag_item(r, None).values == {}
-    )  # an item the model did not tag is unknown on every dimension
+    assert tag_item(r, None).values == {}  # an item the model did not tag is unknown everywhere
 
 
 # ---- one dimension: converged, open, none -----------------------------------------------------------------
 
 
-def exposure_of(round_share: float) -> dict[str, dict[str, float]]:
-    return {"shape": {"round": round_share, "rectangular": 1 - round_share}}
+def exposure_of(round_share: float, coverage: float = 1.0) -> Exposure:
+    return Exposure(
+        shares={"shape": {"round": round_share, "rectangular": 1 - round_share}},
+        coverage={"shape": coverage},
+    )
 
 
 def test_one_round_and_one_rectangular_love_make_shape_open_with_no_pressure() -> None:
@@ -289,7 +316,7 @@ def test_the_exposure_feedback_loop_does_not_become_a_preference() -> None:
     )  # 1.3 and over
 
 
-def test_the_seventy_percent_and_thirty_percent_thresholds() -> None:
+def test_shape_converges_at_eighty_percent_and_soft_dimensions_at_sixty() -> None:
     low = exposure_of(0.2)
 
     def items(spec: list[tuple[str, str]]) -> list[TaggedItem]:
@@ -297,56 +324,33 @@ def test_the_seventy_percent_and_thirty_percent_thresholds() -> None:
             tagged(f"i{n}", rating, f"{shape} Table {n}") for n, (rating, shape) in enumerate(spec)
         ]
 
-    seventy = items(
-        [
-            ("love", "Round"),
-            ("like", "Round"),
-            ("like", "Round"),
-            ("like", "Round"),
-            ("like", "Round"),
-            ("like", "Rectangular"),
-            ("like", "Rectangular"),
-            ("like", "Rectangular"),
-        ]
-    )
-    assert classify_dimension("shape", seventy, low).status == "converged"  # 7 of 10 = 70%
-    sixty_nine = items(
-        [
-            ("love", "Round"),
-            ("like", "Round"),
-            ("like", "Round"),
-            ("like", "Round"),
-            ("like", "Rectangular"),
-            ("like", "Rectangular"),
-            ("like", "Rectangular"),
-        ]
-    )
-    res = classify_dimension("shape", sixty_nine, low)  # 6 of 9 = 66.7%, 33.3% rectangular
+    # 4 of 5 = 80%: shape (the structural dimension) converges exactly at its share
+    eighty = items([("love", "Round"), ("like", "Round"), ("like", "Rectangular")])
+    assert classify_dimension("shape", eighty, low).status == "converged"
+    # 3 of 5 = 60% and 2 of 5 = 40%: both hold 30%, so shape is open, not converged
+    sixty = items([("love", "Round"), ("like", "Rectangular"), ("like", "Rectangular")])
+    res = classify_dimension("shape", sixty, low)
     assert res.status == "open" and res.values == ["round", "rectangular"]
-    twenty_nine = items(
-        [("love", "Round")] * 1 + [("like", "Round")] * 4 + [("like", "Rectangular")] * 2
+    # 6 of 8 = 75% round and 25% rectangular: neither converged nor open
+    seventy_five = items(
+        [("love", "Round"), ("love", "Round"), ("like", "Rectangular"), ("like", "Rectangular")]
     )
-    assert classify_dimension("shape", twenty_nine, low).status == "converged"  # 7 of 9 = 77%
-    barely_open = items(
-        [
-            ("love", "Round"),
-            ("love", "Round"),
-            ("like", "Rectangular"),
-            ("like", "Rectangular"),
-            ("like", "Rectangular"),
-        ]
+    none = classify_dimension("shape", seventy_five, low)
+    assert none.status == "none" and "75% of all like mass, under 80%" in none.trace["reason"]
+    # a soft dimension converges at 60%: three liked wood items against two liked glass ones
+    soft = Exposure(shares={"material": {"wood": 0.2, "glass": 0.8}}, coverage={"material": 1.0})
+    mixed = [tagged(f"w{n}", "like", "Table", material="wood") for n in range(3)]
+    mixed += [tagged(f"g{n}", "like", "Table", material="glass") for n in range(2)]
+    got = classify_dimension("material", mixed, soft)
+    assert got.status == "converged" and got.value == "wood" and got.share == 0.6
+    # the same 60% for shape is open; just under 60% is open for material too
+    under = mixed + [tagged("g9", "like", "Table", material="glass")]  # 3 of 6 = 50%
+    assert classify_dimension("material", under, soft).status == "open"
+    assert thresholds.SHAPE_CONVERGE_SHARE == 0.80 and thresholds.SOFT_CONVERGE_SHARE == 0.60
+    assert (
+        classify_dimension("shape", sixty, low).trace["converge_share"] == 0.8
+        and got.trace["converge_share"] == 0.6
     )
-    assert classify_dimension("shape", barely_open, low).status == "open"  # 6/9 and 3/9 = 33%
-    only_twenty_five = items(
-        [("love", "Round"), ("love", "Round"), ("love", "Round"), ("like", "Rectangular")]
-    )
-    assert classify_dimension("shape", only_twenty_five, low).status == "converged"  # 9 of 10: 90%
-    under = items([("love", "Round"), ("love", "Round"), ("love", "Oval"), ("like", "Rectangular")])
-    res3 = classify_dimension("shape", under, low)  # 6/10 round, 3/10 oval, 1/10 rectangular
-    assert res3.status == "open" and res3.values == [
-        "round",
-        "oval",
-    ]  # rectangular (10%) is below 30%
 
 
 def test_two_supporting_items_are_needed_unless_a_loved_comment_names_it() -> None:
@@ -366,12 +370,24 @@ def test_two_supporting_items_are_needed_unless_a_loved_comment_names_it() -> No
 
 def test_a_dimension_with_no_exposure_baseline_cannot_converge() -> None:
     items = [
-        tagged("a", "love", "Table", size_class="large"),
-        tagged("b", "love", "Chair", size_class="large"),
+        tagged("a", "love", "Table", color_finish="warm wood"),
+        tagged("b", "love", "Chair", color_finish="warm wood"),
     ]
-    res = classify_dimension("size_class", items, {})  # size class has no lexicon, so no baseline
+    res = classify_dimension("color_finish", items, Exposure())  # nothing shown was tagged for it
     assert res.status == "none" and "lift test cannot run" in res.trace["reason"]
     assert res.trace["exposure_coverage"] == 0.0 and res.lift is None
+    # tagged on 60% of what was shown: the lift test may run (and a 100% like share passes it)
+    ok = Exposure(
+        shares={"color_finish": {"warm wood": 0.4, "dark wood": 0.6}},
+        coverage={"color_finish": 0.6},
+    )
+    assert classify_dimension("color_finish", items, ok).status == "converged"
+    thin = Exposure(shares=ok.shares, coverage={"color_finish": 0.59})
+    assert classify_dimension("color_finish", items, thin).status == "none"
+    # the shown results could not be tagged (title keywords only): nothing converges at all
+    keywords = Exposure(shares=ok.shares, coverage=ok.coverage, source="keywords")
+    blocked = classify_dimension("color_finish", items, keywords)
+    assert blocked.status == "none" and "title keywords only" in blocked.trace["reason"]
 
 
 # ---- dislike discipline -----------------------------------------------------------------------------------
@@ -448,7 +464,7 @@ def test_sellers_are_still_deprioritized_only_after_two_dislikes_and_no_like() -
 def test_frame_color_converges_as_a_finish_signal() -> None:
     shown = [
         ("a", "Round Black Steel Coffee Table", 300.0, "S1"),
-        ("b", "Oval Brushed Brass Coffee Table", 320.0, "S2"),
+        ("b", "Oval Black Metal Coffee Table", 320.0, "S2"),
         ("c", "Round Natural Wood Frame Coffee Table", 310.0, "S3"),
         ("d", "Rectangular White Frame Coffee Table", 290.0, "S4"),
         ("e", "Square Chrome Coffee Table", 280.0, "S5"),
@@ -456,8 +472,8 @@ def test_frame_color_converges_as_a_finish_signal() -> None:
     ]
     sess = make_session(shown, {"a": ("love", ""), "b": ("love", "")})
     got = entries_by("frame_color", decide_session(sess))
-    assert [(e.text, e.status) for e in got] == [("dark or brass metal", "converged")]
-    assert got[0].lift == pytest.approx(2.5)  # 2 of 5 known frame colours were dark or brass
+    assert [(e.text, e.status) for e in got] == [("black", "converged")]
+    assert got[0].lift == pytest.approx(2.5)  # 2 of 5 known frame colours were black
 
 
 def test_a_typed_request_term_is_never_written_back_as_a_learned_chip() -> None:
@@ -477,8 +493,8 @@ def test_quality_cues_need_half_the_positives_visible_evidence_and_are_never_fea
     )
     tags = {
         rid: ItemTags(
-            id=rid, shape=None, material=None, color_finish=None, frame_or_legs=None, frame_color=None,
-            style=None, size_class=None, quality_cues=["solid walnut", "storage", "lift-top storage"],
+            id=rid, shape=None, material=None, color_finish=None, frame_color=None, style=None,
+            quality_cues=["solid walnut", "storage", "lift-top storage"],
         )
         for rid in rated
     }  # fmt: skip
@@ -843,7 +859,7 @@ def test_no_single_known_value_may_exceed_sixty_percent() -> None:
     results, capped, skipped = build_results(
         ordered(pool), query(request="t"), index, guard_dims=["shape"]
     )
-    shapes = [lexicon_value("shape", r.title) for r in results]
+    shapes = [title_value("shape", r.title) for r in results]
     assert len(results) == 24 and shapes.count("round") == 14
     assert shapes.count("round") <= int(0.6 * RESULT_COUNT) == 14
     assert skipped == 16  # the 16 round items past the 14th were passed over
@@ -851,7 +867,7 @@ def test_no_single_known_value_may_exceed_sixty_percent() -> None:
         shapes.count("rectangular") + shapes.count(None) == 24 - 14
     )  # the next best of other values
     # replacing keeps rank order inside each value
-    kept_round = [r.title for r in results if lexicon_value("shape", r.title) == "round"]
+    kept_round = [r.title for r in results if title_value("shape", r.title) == "round"]
     assert kept_round == [f"Round Table {i}" for i in range(14)]
 
 

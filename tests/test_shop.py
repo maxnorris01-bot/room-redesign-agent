@@ -25,6 +25,7 @@ from app.config import Config
 from app.llm import Budget
 from app.mock_llm import (
     MOCK_SHOP_PARSES,
+    mock_candidate_tags_payload,
     mock_prefs_payload,
     mock_prefs_v2_payload,
     mock_prefs_v3_payload,
@@ -168,10 +169,12 @@ class RouterClient:
         parse: dict[str, Any] | str | None = None,
         rank: Callable[[str], list[str] | str] | None = None,
         prefs: dict[str, Any] | str | None = None,
+        tags: dict[str, Any] | str | None = None,
     ) -> None:
         self.parse = parse
         self.rank = rank
         self.prefs = prefs
+        self.tags = tags  # the candidate tagging answer; None: tags read from the title keywords
         self.calls: list[dict[str, Any]] = []
         self.messages = SimpleNamespace(create=self._create)
 
@@ -192,6 +195,10 @@ class RouterClient:
             if isinstance(self.prefs, str):
                 return response([text_block(self.prefs)])
             return response([text_block(self.prefs or mock_prefs_v3_payload(text))])
+        if title == "CandidateTags":
+            if isinstance(self.tags, str):
+                return response([text_block(self.tags)])
+            return response([text_block(self.tags or mock_candidate_tags_payload(text))])
         if title == "PreferenceProfileV2":
             if isinstance(self.prefs, str):
                 return response([text_block(self.prefs)])

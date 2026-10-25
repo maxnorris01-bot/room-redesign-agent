@@ -15,17 +15,14 @@ from typing import Any
 from app.shop.models import FilterCounts, ShopQuery, ShopResult
 from app.shop.store import RatingRecord, SearchRecord, Session, SessionStore, now_iso, now_iso_ms
 
-REPLAY_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "tests"
-    / "fixtures"
-    / "shop"
-    / "owner_session_replay.json"
-)
+REPLAY_DIR = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "shop"
+REPLAY_FILE = "owner_session_replay.json"  # the first real session (West Elm)
+REPLAY_FILE_2 = "owner_session_replay_2.json"  # the second (Home Depot, 91% rectangular batch)
+REPLAY_PATH = REPLAY_DIR / REPLAY_FILE
 
 
-def load_replay() -> dict[str, Any]:
-    data = json.loads(REPLAY_PATH.read_text())
+def load_replay(name: str = REPLAY_FILE) -> dict[str, Any]:
+    data = json.loads((REPLAY_DIR / name).read_text())
     assert isinstance(data, dict)
     return data
 
@@ -44,11 +41,14 @@ def seed_session(
     west_elm_extras: int | None = None,
     comments: dict[str, str] | None = None,
     extra_ratings: dict[str, tuple[str, str]] | None = None,
+    replay: str = REPLAY_FILE,
+    shown_titles: dict[str, str] | None = None,
 ) -> Session:
     """A new session holding the replay: one typed search that showed the rated items and the extras
     (`west_elm_extras` of the 30 extras are West Elm; the rest keep their other sellers), and the
-    ratings (`comments` by id; `extra_ratings` rates shown extras too). Saved and returned."""
-    data = load_replay()
+    ratings (`comments` by id; `extra_ratings` rates shown extras too; `shown_titles` replaces the
+    title of a shown extra by id). Saved and returned."""
+    data = load_replay(replay)
     session = store.create()
     results: list[ShopResult] = []
     for n, r in enumerate(data["rated"], start=1):
@@ -59,7 +59,8 @@ def seed_session(
         if west_elm_extras is not None:
             index = n - len(data["rated"]) - 1
             seller = "West Elm" if index < west_elm_extras else others[index % len(others)]
-        results.append(_result(x["id"], x["title"], x["price"], seller, n))
+        title = (shown_titles or {}).get(x["id"], x["title"])
+        results.append(_result(x["id"], title, x["price"], seller, n))
     for res in results:
         session.results[res.id] = res
         session.first_seen[res.id] = 1

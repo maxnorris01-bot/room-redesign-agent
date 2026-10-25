@@ -125,6 +125,9 @@ class Session(_Model):
     lookup_usd: float = 0.0
     profile: StoredProfile | None = None  # Shop Again's preference profile
     shop_agains_used: int = 0
+    # stage 2e: the model's tags of shown and candidate results by result id (a dimension the title
+    # does not show is null); a result in here is never tagged again
+    tag_cache: dict[str, dict[str, str | None]] = Field(default_factory=dict)
 
 
 def valid_session_id(session_id: str) -> bool:

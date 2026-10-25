@@ -661,21 +661,37 @@ def mock_prefs_v2_payload(request_text: str) -> dict[str, Any]:
     }  # fmt: skip
 
 
-_REPLAY_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "tests"
-    / "fixtures"
-    / "shop"
-    / "owner_session_replay.json"
-)
+_REPLAY_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "shop"
+_REPLAY_FILES = ("owner_session_replay.json", "owner_session_replay_2.json")
 
 
 def _replay_attrs() -> dict[str, dict[str, Any]]:
     """The owner's replay items' real attributes by id (see tests/fixtures/shop/README.md)."""
-    if not _REPLAY_PATH.is_file():
-        return {}
-    data = json.loads(_REPLAY_PATH.read_text())
-    return {r["id"]: r["attrs"] for r in data["rated"]}
+    out: dict[str, dict[str, Any]] = {}
+    for name in _REPLAY_FILES:
+        path = _REPLAY_DIR / name
+        if path.is_file():
+            out.update({r["id"]: r["attrs"] for r in json.loads(path.read_text())["rated"]})
+    return out
+
+
+_CAND_ROW = re.compile(r"^(\d+) \| (.*) \| (\$[\d,]+|no price) \| (.*)$")
+MOCK_TAGS_FAIL = "MOCK_TAGS_FAIL"  # a title containing this makes the candidate tagging call fail
+
+
+def mock_candidate_tags_payload(request_text: str) -> dict[str, Any]:
+    """Rows for the candidate tagging call: what each title's keywords say (the mock cannot read
+    anything a title leaves out, so its coverage is the keyword coverage) and `-` for the rest."""
+    from app.shop.vocab import DIMENSIONS, title_value
+
+    rows: list[str] = []
+    for line in request_text.splitlines():
+        m = _CAND_ROW.match(line)
+        if not m:
+            continue
+        values = [title_value(dim, m.group(2)) or "-" for dim in DIMENSIONS]
+        rows.append("|".join([m.group(1), *values]))
+    return {"rows": rows}
 
 
 def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
@@ -683,7 +699,7 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
     parser-guess contradictions and price asks come from the v2 mock). It describes only; it never
     says what the shopper prefers. A visual cue ("visible grain") is added only for an item that
     came with an image, so a run with no images differs from one with them."""
-    from app.shop.decide import lexicon_match
+    from app.shop.vocab import title_value
 
     base = mock_prefs_v2_payload(request_text)
     replay = _replay_attrs()
@@ -699,16 +715,11 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
             items.append(
                 {
                     "id": rid, "shape": a.get("shape"), "material": a.get("material"),
-                    "color_finish": a.get("color_finish"), "frame_or_legs": None,
-                    "frame_color": a.get("frame_color"), "style": a.get("style"),
-                    "size_class": None, "quality_cues": [],
+                    "color_finish": a.get("color_finish"), "frame_color": a.get("frame_color"),
+                    "style": a.get("style"), "quality_cues": [],
                 }
             )  # fmt: skip
             continue
-
-        def raw(dim: str, text: str = title) -> str | None:
-            found = lexicon_match(dim, text)
-            return found[1] if found else None
 
         cues: list[str] = []
         if "solid" in low:
@@ -719,18 +730,14 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
             cues.append("stone top")
         if image != "image none" and ("walnut" in low or "oak" in low or "wood" in low):
             cues.append("visible grain")
-        shape = raw("shape")
-        canon = lexicon_match("shape", title)
         items.append(
             {
                 "id": rid,
-                "shape": canon[0] if canon and shape else None,
-                "material": raw("material"),
-                "color_finish": raw("color_finish"),
-                "frame_or_legs": raw("frame_or_legs"),
-                "frame_color": raw("frame_color"),
-                "style": raw("style"),
-                "size_class": None,
+                "shape": title_value("shape", title),
+                "material": title_value("material", title),
+                "color_finish": title_value("color_finish", title),
+                "frame_color": title_value("frame_color", title),
+                "style": title_value("style", title),
                 "quality_cues": cues,
             }
         )
@@ -833,6 +840,18 @@ class MockAnthropicClient:
                 [text_block(mock_prefs_v3_payload(_request_text(kwargs)))],
                 input_tokens=1200 + 90 * n_images,
                 output_tokens=500,
+            )
+        if title == "CandidateTags":
+            ask = _request_text(kwargs)
+            if MOCK_TAGS_FAIL in ask:
+                return response(
+                    [text_block('{"rows": ["1|')], stop_reason="max_tokens", output_tokens=1000
+                )
+            n_rows = len(re.findall(r"^\d+ \| ", ask, flags=re.MULTILINE))
+            return response(
+                [text_block(mock_candidate_tags_payload(ask))],
+                input_tokens=300 + 40 * n_rows,
+                output_tokens=60 + 14 * n_rows,
             )
         if title == "PreferenceProfileV2":
             images = (

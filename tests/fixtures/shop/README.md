@@ -31,3 +31,10 @@ shape word, 24 under $440 and the rest $465 to $610 (so the upper third of the s
 $450, as it did live), 12 from West Elm so West Elm is half of the 40 shown results). The mock
 preference call reads these attributes by id (`R1` to `R10`), so a replay can run through the service
 and the page with tags derived from the real attributes rather than from title keywords.
+
+Stage 2e: `owner_session_replay_2.json` is the owner's second real session: the nine rated items (four
+loved, four liked, one disliked) with the attributes a model would tag them with, and 26 shown results
+that are AUTHORED to be plausible (the owner's real shown list was not recorded), so its numbers
+(warm wood 50% of tagged shown finishes, wood 80% of shown materials) are a fixture's, not a measurement.
+Ids are `Q1` to `Q9` and `Y1` to `Y26`; the mock preference call reads the attributes by id. The mock
+candidate tagger reads only title keywords, so coverage in the replays is the keyword coverage.
