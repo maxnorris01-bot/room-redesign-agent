@@ -23,7 +23,6 @@ from app.config import Config
 from app.llm import Budget
 from app.mock_llm import mock_candidate_tool_input, response, text_block
 from app.shop.candidates import (
-    MODE_ROWS,
     MODE_TOOL,
     TAG_TOOL_DEF,
     TagBook,
@@ -248,7 +247,7 @@ def test_a_call_with_no_text_content_in_under_two_seconds_is_not_retried(
     assert "stop reason end_turn" in book.reason and "blocks: none" in book.reason
 
 
-def test_a_slow_no_text_call_is_retried_once_in_the_rows_format(
+def test_a_slow_no_text_call_is_retried_once_as_the_same_tool_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = FakeClock()
@@ -263,10 +262,11 @@ def test_a_slow_no_text_call_is_retried_once_in_the_rows_format(
     use_client(monkeypatch, client)
     book = TagBook()
     tag_results(taggables(10), book, Budget(config()), clock, workers=1)
-    assert book.calls == 2 and book.tagged == 10 and not book.failed
-    assert [e["mode"] for e in book.log] == [MODE_TOOL, MODE_ROWS]
-    assert [e["retry"] for e in book.log] == [False, True]
-    assert "output_config" in client.calls[1] and "tool_choice" not in client.calls[1]
+    assert book.calls == 3 and book.tagged == 10 and not book.failed
+    assert [e["mode"] for e in book.log] == [MODE_TOOL] * 3  # never another format
+    assert [e["retry"] for e in book.log] == [False, True, True]
+    assert [e["items"] for e in book.log] == [10, 5, 5]  # a smaller batch size
+    assert all("tool_choice" in c for c in client.calls[1:])
 
 
 def test_there_is_at_most_one_retry_per_batch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -280,8 +280,8 @@ def test_there_is_at_most_one_retry_per_batch(monkeypatch: pytest.MonkeyPatch) -
     use_client(monkeypatch, client)
     book = TagBook()
     tag_results(taggables(40), book, Budget(config()), clock, workers=1)
-    assert book.calls == 2  # the call and ONE retry: no halving, no third call
-    assert book.failed and "cut off at the" in book.reason and "after 0 of 40 rows" in book.reason
+    assert book.calls == 3  # the call and ONE retry round (two pieces of 20): no second round
+    assert book.failed and "cut off at the" in book.reason and "after 0 of 20 rows" in book.reason
     assert book.failed_usd > 0 and book.usd >= book.failed_usd  # a failed call still costs
 
 

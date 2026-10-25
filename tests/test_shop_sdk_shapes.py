@@ -54,8 +54,10 @@ from test_shop import (  # noqa: F401  (the autouse guard must be imported to ap
 ROOT = Path(__file__).resolve().parents[1]
 SDK_FIELDS = set(inspect.signature(Messages.create).parameters) - {"self"}
 STREAM_FIELDS = set(inspect.signature(Messages.stream).parameters) - {"self"}
-TAG_TOOL_BODY = {"model", "max_tokens", "system", "messages", "tools", "tool_choice", "stream"}
-TAG_ROWS_BODY = {"model", "max_tokens", "system", "messages", "output_config", "stream"}
+TAG_TOOL_BODY = {
+    "model", "max_tokens", "system", "messages", "tools", "tool_choice", "stream", "thinking",
+}  # fmt: skip
+TAG_ROWS_BODY = {"model", "max_tokens", "system", "messages", "output_config", "stream", "thinking"}
 
 
 def live_config() -> Config:
@@ -222,7 +224,8 @@ def test_the_three_diagnostic_shapes_run_without_a_type_error_and_send_the_inten
     assert set(body) <= STREAM_FIELDS | {"stream"} and set(body) <= SDK_FIELDS | {"stream"}
     assert body["model"] == live_config().rank_model and isinstance(body["max_tokens"], int)
     assert body["stream"] is True and body["messages"][0]["role"] == "user"
-    assert "thinking" not in body and "temperature" not in body and "effort" not in json.dumps(body)
+    assert body["thinking"] == {"type": "disabled"}  # no thinking against the max_tokens budget
+    assert "temperature" not in body and "effort" not in json.dumps(body)
     if mode == MODE_TOOL:
         assert set(body) == TAG_TOOL_BODY and "output_config" not in body
         assert body["tool_choice"] == {"type": "tool", "name": "record_tags"}
@@ -289,7 +292,9 @@ def test_a_type_error_in_the_tagging_call_is_recorded_with_its_message_and_does_
     monkeypatch.setattr(candidates_mod, "complete", boom)
     book = TagBook()
     tag_results(batch(10), book, Budget(live_config()), workers=1)
-    assert book.failed and book.tagged == 0 and book.calls == 2  # the call and the one retry
+    assert (
+        book.failed and book.tagged == 0 and book.calls == 3
+    )  # the call, then a retry in 2 pieces
     entry = book.log[0]
     assert entry["error"].startswith(
         "TypeError: Messages.stream() got an unexpected keyword argument 'x'"
@@ -349,7 +354,8 @@ def test_the_parse_call_shape_is_accepted_by_the_sdk(monkeypatch: pytest.MonkeyP
     assert warning == "" and completion is not None and parsed.category
     (body,) = wire.bodies
     assert set(body) <= SDK_FIELDS and schema_title(body) == "ShopParse" and "stream" not in body
-    assert set(body) == {"model", "max_tokens", "system", "messages", "output_config"}
+    assert set(body) == {"model", "max_tokens", "system", "messages", "output_config", "thinking"}
+    assert body["thinking"] == {"type": "disabled"}
     assert body["output_config"]["effort"] == live_config().effort_retrieval
 
 
@@ -379,7 +385,8 @@ def test_the_preference_call_shape_is_accepted_by_the_sdk(
     assert wire.bodies and all(set(b) <= SDK_FIELDS for b in wire.bodies)
     body = wire.bodies[0]
     assert schema_title(body) == "PreferenceTags" and "stream" not in body
-    assert set(body) == {"model", "max_tokens", "system", "messages", "output_config"}
+    assert set(body) == {"model", "max_tokens", "system", "messages", "output_config", "thinking"}
+    assert body["thinking"] == {"type": "disabled"}
 
 
 def test_the_style_check_and_other_room_pipeline_calls_use_only_sdk_fields() -> None:
@@ -499,7 +506,7 @@ def test_nothing_sleeps_and_no_real_network_is_used() -> None:
     assert time.monotonic() - started < 5
 
 
-def test_a_rejected_tool_call_falls_back_to_the_rows_format_on_the_one_retry(
+def test_a_rejected_tool_call_is_retried_as_the_same_tool_call_never_as_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wire = Wire()
@@ -507,16 +514,8 @@ def test_a_rejected_tool_call_falls_back_to_the_rows_format_on_the_one_retry(
     def handle(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
         wire.bodies.append(body)
-        if "tools" in body:  # the API rejects the tool schema (say, `strict`): a 400
-            err = {
-                "type": "error",
-                "error": {"type": "invalid_request_error", "message": "bad tool"},
-            }
-            return httpx2.Response(400, json=err)
-        blocks, stop = Wire.default(body)
-        return httpx2.Response(
-            200, content=sse(blocks, stop), headers={"content-type": "text/event-stream"}
-        )
+        err = {"type": "error", "error": {"type": "invalid_request_error", "message": "bad tool"}}
+        return httpx2.Response(400, json=err)
 
     wire.client = anthropic.Anthropic(
         api_key="sk-test-not-a-key",
@@ -526,7 +525,8 @@ def test_a_rejected_tool_call_falls_back_to_the_rows_format_on_the_one_retry(
     wire.install(monkeypatch)
     book = TagBook()
     tag_results(batch(10), book, Budget(live_config()), workers=1)
-    assert book.tagged == 10 and not book.failed and book.calls == 2
-    assert [e["mode"] for e in book.log] == [MODE_TOOL, MODE_ROWS]
+    assert book.failed and book.tagged == 0 and book.calls == 3  # the call, then 2 pieces of 5
+    assert [e["mode"] for e in book.log] == [MODE_TOOL] * 3
+    assert [e["items"] for e in book.log] == [10, 5, 5]  # the same tool call, a smaller batch
+    assert all("tools" in b and "output_config" not in b for b in wire.bodies)
     assert book.log[0]["error"].startswith("BadRequestError (HTTP 400)")
-    assert "tools" in wire.bodies[0] and "tools" not in wire.bodies[1]

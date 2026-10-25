@@ -613,3 +613,45 @@ at most 300 characters, anything that looks like a key, token or Authorization v
 the request, `outcome: FAILED: <class and message>` and the same `raised at:` line. It never prints headers,
 the environment or a request body.
 
+### Fix after the live diagnostic: the model thinks by default (`make shop-diagnose`)
+
+**What the diagnostic found (claude-haiku-5-5).** The rows call (structured output, no tool) came back with
+block types "thinking, text": with `max_tokens` 1480 the thinking used the whole budget (stop reason
+`max_tokens`, no text, usage reported as 0 tokens); with 3400 the thinking plus the answer hit the limit
+(97 of 100 rows parsed). The forced `record_tags` tool call returned only a `tool_use` block, 40 of 40
+items in 7.3 s, with no thinking. So the earlier "no text content" failures were most likely thinking
+that spent the budget, and every Shop Mode call could have been paying for thinking.
+
+**The thinking rule.** What the installed SDK (anthropic 1.8.0) documents: `thinking` is a field of
+`messages.create` and `messages.stream` taking `{"type": "disabled"}`, `{"type": "enabled",
+"budget_tokens": n}` or `{"type": "adaptive"}` (with an optional `display`); `output_config.effort` takes
+`low`, `medium`, `high`, `xhigh` or `max`; a response may report `usage.output_tokens_details.thinking_tokens`.
+The SDK does not say which model ids accept which: that is the API's, so a refusal is handled (below).
+Every Shop Mode model call that returns structured data (parse, rank, preferences, candidate tagging) now
+sends `thinking={"type": "disabled"}` through the one wrapper (`llm.complete(disable_thinking=True)`); the
+calls that already sent `effort` low keep it. If the API refuses the field for a model (an HTTP 400 that
+names thinking) the request is repeated once without it and later calls to that model omit it for the life
+of the process. A response that is only thinking blocks is its own error: "the model used its whole budget
+thinking (stop reason ..., max_tokens N)", with the thinking tokens when the API reports them, instead of
+"no text content". The log of a call says whether a thinking block was present.
+
+**Candidate tagging.** The forced tool call is the primary and the only format (the rows format is no longer
+a retry; its parser stays for old logs and tests, and the diagnostic still runs it as variants A and B for
+comparison). One retry round per batch remains: the same tool call for what is still untagged, in pieces of
+half the batch (40 becomes 20), none when a call came back with no text in under 2 seconds, none past the
+deadline.
+
+**Usage of a failed call.** A response that reports no tokens at all (or zero) is a failed call that is
+still billed. Its usage is recorded as unknown, its cost is estimated for the budget from the request size
+(about 3.5 characters a token) and the WHOLE `max_tokens` as output, and it is labelled "estimated (failed
+call)" in the footer ("failed tagging calls $X (estimated, failed call)"), the trace ("usage unknown (cost
+estimated, failed call)") and the diagnostic. It is never booked as $0.
+
+**The diagnostic** (`make shop-diagnose`) now prints for each call the block types, whether a thinking
+block was present (and the thinking tokens when reported), usage or "unknown" with the estimated cost, and
+for each call that parsed rows a "fields filled" count per field (shape, material, color_finish,
+frame_color, style: how much a title-only tagger can read; `other` and null do not count). To read it: a
+variant with `thinking: yes` and `stop reason: max_tokens` is the thinking-budget failure; with the field
+disabled none of the three should show thinking; `fields filled` far below the batch size for a field says
+titles rarely show it (frame_color is the usual one).
+

@@ -220,11 +220,11 @@ def test_a_cut_off_answer_is_retried_once_for_what_is_still_untagged(
     use_client(monkeypatch, client)
     book = TagBook()
     tag_results(titles(10), book, Budget(config()))
-    assert book.calls == 2 and book.tagged == 10 and not book.failed  # one call, one retry
-    assert [e["retry"] for e in book.log] == [False, True]
-    assert [e["items"] for e in book.log] == [10, 7]  # only the 7 still untagged: no halving
+    assert book.calls == 3 and book.tagged == 10 and not book.failed  # a call, one retry round
+    assert [e["retry"] for e in book.log] == [False, True, True]
+    assert [e["items"] for e in book.log] == [10, 5, 2]  # the 7 untagged, in pieces of half (5)
     assert book.log[0]["stop_reason"] == "max_tokens" and book.log[0]["rows_parsed"] == 3
-    assert [len(rows_in(c)) for c in tag_calls(client)] == [10, 7]
+    assert [len(rows_in(c)) for c in tag_calls(client)] == [10, 5, 2]
 
 
 def test_fewer_than_eighty_percent_of_rows_also_triggers_the_retry(
@@ -253,7 +253,7 @@ def test_a_failure_after_the_retry_keeps_the_reason(monkeypatch: pytest.MonkeyPa
     use_client(monkeypatch, TagClient(lambda n, t: ("Sorry, I cannot do that.", "end_turn")))
     book = TagBook()
     tag_results(titles(10), book, Budget(config()))
-    assert book.failed and book.tagged == 0 and book.calls == 2  # one call and ONE retry
+    assert book.failed and book.tagged == 0 and book.calls == 3  # a call, then ONE retry round
     assert "not valid JSON and had no readable rows" in book.reason
     assert "Sorry, I cannot do that." in book.reason
     use_client(monkeypatch, TagClient(lambda n, t: ('{"rows": ["1|rou', "max_tokens")))

@@ -1176,6 +1176,7 @@ def build_profile(
             schema=to_output_schema(PreferenceTags),
             images=[images[rid] for rid in ordered] or None,
             effort=config.effort_retrieval,
+            disable_thinking=True,
         )
         return parse_model(PreferenceTags, completion.text, what="shop_prefs")
 

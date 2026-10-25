@@ -106,6 +106,7 @@ def parse_request(
             max_tokens=PARSE_MAX_TOKENS,
             schema=to_output_schema(ShopParse),
             effort=config.effort_retrieval,
+            disable_thinking=True,
         )
         parsed = parse_model(ShopParse, completion.text, what="shop_parse")
     except (LLMOutputError, SchemaError) as exc:

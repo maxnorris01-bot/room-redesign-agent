@@ -132,6 +132,7 @@ class TagBook:
     log: list[dict[str, Any]] = field(default_factory=list)  # one entry per model call
     usd: float = 0.0  # every call, failed ones included
     failed_usd: float = 0.0  # what the failed calls cost
+    estimated_usd: float = 0.0  # of `usd`, what is a guess from max_tokens (no usage was reported)
     seconds: float = 0.0  # wall time spent tagging
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -160,6 +161,7 @@ class TagBook:
             "failures": self.failures[:4],
             "usd": round(self.usd, 6),
             "failed_usd": round(self.failed_usd, 6),
+            "estimated_usd": round(self.estimated_usd, 6),
         }
 
 
@@ -296,7 +298,9 @@ def run_call(
         "mode": mode, "items": len(batch), "max_tokens": limit, "stop_reason": "",
         "block_types": [], "json_ok": False, "rows_parsed": 0, "raw": "", "retry": retry,
         "error": "", "where": "", "seconds": 0.0, "usd": 0.0, "timeout_s": timeout_s,
-        "input_tokens": 0, "output_tokens": 0, "model": config.rank_model,
+        "input_tokens": None, "output_tokens": None, "model": config.rank_model,
+        "usage_known": True, "usd_estimated": False, "had_thinking": False,
+        "thinking_tokens": None, "thinking_only": False,
     }  # fmt: skip
     rows: dict[int, dict[str, str | None]] = {}
     common: dict[str, Any] = {
@@ -308,6 +312,7 @@ def run_call(
         "stream": True,
         "keep_truncated": True,
         "timeout_s": timeout_s,
+        "disable_thinking": True,  # thinking would spend the max_tokens budget before any answer
     }
     try:
         if mode == MODE_TOOL:
@@ -327,8 +332,12 @@ def run_call(
         entry["block_types"] = list(completion.block_types)
         entry["raw"] = " ".join(completion.text.split())[:raw_chars]
         entry["usd"] = completion.cost_usd
-        entry["input_tokens"] = completion.input_tokens
-        entry["output_tokens"] = completion.output_tokens
+        entry["usd_estimated"] = completion.cost_estimated
+        entry["usage_known"] = completion.usage_known
+        entry["had_thinking"] = "thinking" in completion.block_types
+        entry["thinking_tokens"] = completion.thinking_tokens
+        entry["input_tokens"] = completion.input_tokens if completion.usage_known else None
+        entry["output_tokens"] = completion.output_tokens if completion.usage_known else None
         if completion.tool_input is not None:
             rows = parse_tool_input(completion.tool_input, len(batch))
             entry["json_ok"] = True
@@ -342,6 +351,11 @@ def run_call(
         entry["stop_reason"] = exc.stop_reason or entry["stop_reason"]
         entry["block_types"] = list(exc.block_types)
         entry["usd"] = exc.cost_usd
+        entry["usd_estimated"] = exc.cost_estimated  # a failed call that reported no usage
+        entry["usage_known"] = not exc.cost_estimated
+        entry["had_thinking"] = "thinking" in exc.block_types
+        entry["thinking_tokens"] = exc.thinking_tokens
+        entry["thinking_only"] = exc.thinking_only
     except anthropic.APIError as exc:  # a timeout, an overload, a rejected request
         entry["error"] = _api_reason(exc)
     except BudgetExceededError:
@@ -357,6 +371,8 @@ def run_call(
         with book.lock:
             book.calls += 1
             book.usd += entry["usd"]
+            if entry["usd_estimated"]:
+                book.estimated_usd += entry["usd"]
             book.seconds += entry["seconds"]
             if len(book.log) < MAX_CALL_LOG:
                 book.log.append(entry)
@@ -366,6 +382,12 @@ def run_call(
 def failure_reason(entry: dict[str, Any]) -> str:
     """The failure in words, from a call's log entry."""
     n = entry["items"]
+    if entry.get("thinking_only"):
+        return (
+            "the model used its whole budget thinking "
+            f"(stop reason {entry['stop_reason'] or 'none'}, max_tokens {entry['max_tokens']}) "
+            f"after {entry['seconds']:.1f} s"
+        )
     if "no text content" in entry["error"]:
         return (
             f"the answer had no text content (stop reason {entry['stop_reason'] or 'none'}, "
@@ -410,9 +432,10 @@ def tag_batch(
     timeout_s: float,
     closed: threading.Event,
 ) -> None:
-    """Tag one batch: a tool call, and at most ONE retry (the text-rows format when the tool call
-    was rejected or had no text, else the same format). No retry when the deadline has passed or
-    when a call came back with no text content in under `FAST_FAIL_S` seconds."""
+    """Tag one batch with the forced tool call, and at most ONE retry round: the same tool call
+    for what is still untagged, in pieces of half the batch size. No retry when the deadline has
+    passed or when a call came back with no text content in under `FAST_FAIL_S` seconds. The
+    text-rows format is no longer a fallback (`MODE_ROWS` stays for the diagnostic)."""
     if clock.now() >= deadline:
         with book.lock:
             book.skipped += len(batch)
@@ -424,15 +447,18 @@ def tag_batch(
     weak = entry["stop_reason"] == "max_tokens" or len(rows) < MIN_PARSED_SHARE * len(batch)
     fast_empty = "no text content" in entry["error"] and entry["seconds"] < FAST_FAIL_S
     if weak and not fast_empty and clock.now() < deadline and not closed.is_set():
+        # ONE retry round: the same tool call, for what is still untagged, in pieces of half the
+        # batch (never a second round, and never another format)
         left = [t for t in batch if book.get(t.id) is None]
-        if left:
-            mode = (
-                MODE_ROWS if (entry["error"] or entry["stop_reason"] != "max_tokens") else MODE_TOOL
-            )
+        size = max(5, len(batch) // 2)
+        for start in range(0, len(left), size):
+            if clock.now() >= deadline or closed.is_set():
+                break
+            piece = left[start : start + size]
             timeout_s = max(1.0, min(timeout_s, deadline - clock.now()))
-            more, entry = run_call(left, book, budget, mode, True, clock, timeout_s)
+            more, entry = run_call(piece, book, budget, MODE_TOOL, True, clock, timeout_s)
             if not closed.is_set():
-                _store(left, more, book)
+                _store(piece, more, book)
     if any(book.get(t.id) is None for t in batch):
         with book.lock:
             book.failures.append(failure_reason(entry))

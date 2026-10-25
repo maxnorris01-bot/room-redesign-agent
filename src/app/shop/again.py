@@ -356,6 +356,7 @@ def run_shop_again(
         "tag_calls": book.calls,
         "tag_usd": round(book.usd, 6),
         "tag_failed_usd": round(book.failed_usd, 6),
+        "tag_estimated_usd": round(book.estimated_usd, 6),
         "tag_skipped": book.skipped,
         "tag_failures": book.failures[:3],
         "tag_reason": book.reason if book.failed else "",
