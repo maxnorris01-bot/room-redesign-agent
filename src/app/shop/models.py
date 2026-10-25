@@ -182,26 +182,32 @@ class PreferenceProfileV2(_Strict):
     query_adjustments: QueryAdjustments
 
 
-Shape = Literal["round", "oval", "rectangular", "square", "other"]
-SizeClass = Literal["small", "medium", "large"]
+VOCAB_NOTE = "a value from the fixed list given in the request, or null when it is not shown"
 
 
 class ItemTags(_Strict):
-    """What the model sees in one rated item (prompt shop_prefs v3). It describes; it never judges
-    preferences. A dimension the title, photo or price do not show is null."""
+    """What the model sees in one rated item (prompt shop_prefs v5). It describes; it never judges
+    preferences. Values come from the fixed vocabularies in `app.shop.vocab` (code folds anything
+    else into them); a dimension the title, photo or price do not show is null."""
 
     id: str = Field(description="The rated result's id, copied exactly")
-    shape: Shape | None
-    material: str | None = Field(description="Main material, e.g. walnut, steel, marble")
-    color_finish: str | None = Field(description="Colour or finish of the main surface")
-    frame_or_legs: str | None = Field(description="Leg or base type, e.g. hairpin legs, pedestal")
-    frame_color: str | None = Field(
-        description="Frame colour, e.g. black metal, brass, natural wood"
-    )
-    style: str | None = Field(description="Style, e.g. modern, mid-century")
-    size_class: SizeClass | None
+    shape: str | None = Field(description=VOCAB_NOTE)
+    material: str | None = Field(description=VOCAB_NOTE)
+    color_finish: str | None = Field(description=VOCAB_NOTE)
+    frame_color: str | None = Field(description=VOCAB_NOTE)
+    style: str | None = Field(description=VOCAB_NOTE)
     quality_cues: list[str] = Field(
         description="Short phrases for build or finish visible in the title, photo or price"
+    )
+
+
+class CandidateTags(_Strict):
+    """What the candidate tagging call returns (prompt shop_candidate_tags v1): one compact row per
+    candidate, `n|shape|material|finish|frame color|style` with `-` for a value the title does not
+    show. Rows are text because a JSON object per candidate would cost four times the tokens."""
+
+    rows: list[str] = Field(
+        description="One row per candidate: n|shape|material|finish|frame|style"
     )
 
 
@@ -233,9 +239,7 @@ class ProfileEntry(BaseModel):
     high: float | None = None
     band: str = ""  # price_band only: "upper" or "lower"
     # stage 2c: entries decided in code from per-item tags (see app.shop.decide)
-    dimension: str = (
-        ""  # shape, material, color_finish, frame_or_legs, frame_color, style, size_class
-    )
+    dimension: str = ""  # shape, material, color_finish, frame_color, style (older files: more)
     status: str = "converged"  # converged | open | mixed (open and mixed chips exert no pressure)
     values: list[str] = []  # converged: the one value; open: the values liked
     detail: str = ""  # shown after the text, e.g. "liked round and rectangular"

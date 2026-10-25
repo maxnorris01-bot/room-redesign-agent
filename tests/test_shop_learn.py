@@ -144,16 +144,14 @@ def brass_scenario(svc: ShopService) -> tuple[str, list[dict[str, Any]]]:
 
 
 def round_scenario(svc: ShopService) -> tuple[str, list[dict[str, Any]]]:
-    """Scenario B: loves two round items from the premium seller, likes two rectangular ones from
-    others, dislikes one. Round carries 75% of the like mass against about a third of what was
-    shown, so shape converges."""
+    """Scenario B: loves two round items from the premium seller, likes one rectangular one from
+    another, dislikes one. Round carries 86% of the like mass against about a third of what was
+    shown, so shape converges (it needs 80%)."""
     view = svc.search(None, COFFEE)
     sid, first = view["session_id"], view["search"]["results"]
     svc.rate(sid, pick(first, "Round Walnut Drum")["id"], "love")
     svc.rate(sid, pick(first, "Round Brushed Brass Drum")["id"], "love")
     svc.rate(sid, pick(first, "Rectangular ", premium=False)["id"], "like")
-    rect2 = [r for r in first if r["seller"] != PREMIUM_SELLER and "Rectangular" in r["title"]][1]
-    svc.rate(sid, rect2["id"], "like")
     svc.rate(sid, pick(first, "Oval ", premium=False)["id"], "dislike")
     return sid, first
 
@@ -175,7 +173,7 @@ def test_two_loved_round_items_converge_shape_with_no_comment(tmp_path: Path) ->
     assert [(e["text"], e["status"], e["polarity"]) for e in shape] == [
         ("round", "converged", "like")
     ]
-    assert shape[0]["share"] == 0.75 and shape[0]["lift"] > 1.3
+    assert shape[0]["share"] == pytest.approx(0.8571, abs=1e-4) and shape[0]["lift"] > 1.3
     assert len(shape[0]["evidence"]) == 2 and shape[0]["weight"] == 6
     assert all("Round" in t for t in shape[0]["evidence_titles"])
     assert "round" in again["profile_summary"]
@@ -967,7 +965,7 @@ def result(rid: str, title: str, seller: str = "S", price: float | None = 100.0)
 def test_alignment_counts_inferred_likes_by_title_seller_or_price_band() -> None:
     profile = StoredProfile(
         inferred=[
-            entry("color_finish", "brass"),
+            entry("color_finish", "metallic"),
             entry("seller", "seller: West Elm"),
             ProfileEntry(
                 text="upper range, about $600 to $1,000",
@@ -1124,10 +1122,12 @@ def test_cost_numbers_for_a_full_shop_again(tmp_path: Path) -> None:
     svc = mock_service(tmp_path)
     sid, first = brass_scenario(svc)
     found = svc.shop_again(sid)["search"]
-    assert found["serper_calls"] == 4 and found["serper_credits"] == 8
-    assert found["provider_usd"] == pytest.approx(0.008)
+    # four calls for the phrasings, up to two more when an open dimension's minority value is thin
+    assert 4 <= found["serper_calls"] <= 6
+    assert found["serper_credits"] == 2 * found["serper_calls"]
+    assert found["provider_usd"] == pytest.approx(0.002 * found["serper_calls"])
     assert 0 < found["anthropic_usd"] < 0.01  # a preference call (with images) plus a rank call
-    assert found["total_usd"] == pytest.approx(found["anthropic_usd"] + 0.008)
+    assert found["total_usd"] == pytest.approx(found["anthropic_usd"] + found["provider_usd"])
     view = svc.session_view(sid)
     assert view["lookups_used"] == 0
     assert view["session_usd"] == pytest.approx(first_total(svc, sid), abs=1e-6)

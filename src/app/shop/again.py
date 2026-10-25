@@ -15,7 +15,8 @@ import time
 
 from app.config import Config
 from app.llm import Budget
-from app.shop.decide import DIMENSIONS, LEXICON_DIMENSIONS, typed_dimensions
+from app.shop.candidates import TagBook, Taggable, tag_results
+from app.shop.decide import build_exposure, typed_dimensions
 from app.shop.models import ShopQuery, StoredProfile
 from app.shop.prefs import (
     alignment_counts,
@@ -33,6 +34,7 @@ from app.shop.search import (
 )
 from app.shop.store import Session, rated_results, sellers_to_deprioritize
 from app.shop.thresholds import CONVERGED_MAX_SHARE, DIVERSITY_MAX_SHARE
+from app.shop.vocab import DIMENSIONS
 from app.shopping import SearchProvider
 from app.shopping_retrieval import seller_key
 from app.thumbnails import Thumbnailer
@@ -64,6 +66,7 @@ def again_context(
     config: Config,
     queries: list[str],
     dropped: list[str] | None = None,
+    book: TagBook | None = None,
 ) -> AgainContext:
     """Exclusions, seller rules, the profile (stated, converged, open, guesses), the phrasings.
 
@@ -86,6 +89,17 @@ def again_context(
         and e.values
     }
     open_dims = {e.dimension: list(e.values) for e in inferred if e.status == "open"}
+    dim_trace = profile.trace.get("dimensions", {}) if profile.trace else {}
+    open_mass = {
+        dim: {
+            v: int(m) for v, m in dim_trace.get(dim, {}).get("like_mass", {}).items() if v in vals
+        }
+        for dim, vals in open_dims.items()
+    }
+    open_loved = {
+        dim: {v for v in dim_trace.get(dim, {}).get("loved", []) if v in vals}
+        for dim, vals in open_dims.items()
+    }
     base = base_query(session)
     typed_dims = typed_dimensions(base) if base is not None else set()
     # shape is always guarded (60%); an open dimension too; a converged one is capped at 80%
@@ -94,7 +108,7 @@ def again_context(
         caps["shape"] = DIVERSITY_MAX_SHARE
     for dim in converged:
         caps[dim] = CONVERGED_MAX_SHARE
-    caps = {d: c for d, c in caps.items() if d not in typed_dims and d in LEXICON_DIMENSIONS}
+    caps = {d: c for d, c in caps.items() if d not in typed_dims and d in DIMENSIONS}
     price_line = ""
     if price is not None:
         price_line = f"mixed ({price.detail})" if price.status == "mixed" else price.text
@@ -124,6 +138,10 @@ def again_context(
         dropped_phrasings=list(dropped or []),
         max_calls=config.shop_again_max_serper_calls,
         skip_pages=pages_fetched(session),
+        tag_book=book,
+        open_mass=open_mass,
+        open_loved=open_loved,
+        max_calls_open=config.shop_again_max_serper_calls_open,
     )
 
 
@@ -146,17 +164,39 @@ def run_shop_again(
         raise LookupError("no typed search in this session")
     budget = Budget(config)
     warnings: list[str] = []
-    profile, warning = build_profile(session, base, budget, thumbnailer)
+    # the model tags everything shown (once per result: cached in the session), so the lift test
+    # compares a like share with what the shopper really saw, not with what titles happen to say
+    book = TagBook(cache=session.tag_cache)
+    shown = list(session.results.values())
+    tag_results([Taggable(r.id, r.title, r.price, r.seller) for r in shown], book, budget)
+    untagged = sum(1 for r in shown if book.get(r.id) is None)
+    exposure = build_exposure(shown, book.merged(), keywords=bool(book.failures) and untagged > 0)
+    profile, warning = build_profile(session, base, budget, thumbnailer, exposure=exposure)
     if warning:
         warnings.append(warning)
     query = apply_adjustments(base, profile)
     queries, dropped = build_phrasings(base, profile, query, config.shop_again_max_serper_calls)
     outcome = run_query(
         query, search, config, budget, warnings, started,
-        again_context(session, profile, config, queries, dropped),
+        again_context(session, profile, config, queries, dropped, book),
     )  # fmt: skip
     outcome.display_query = base  # the request chips keep showing only what the parser read
-    outcome.trace = profile.trace
-    outcome.tagging = profile.tagging
-    outcome.alignment = alignment_counts(outcome.results, profile)
+    if book.failed:
+        outcome.warnings.append(
+            "The shown and candidate results could not be tagged, so no attribute preference was "
+            "applied (only seller, price and what you said)."
+        )
+    pool = outcome.composition.get("pool_after") or outcome.composition.get("pool_before") or {}
+    outcome.trace = {**profile.trace, "batch": outcome.composition}
+    outcome.tagging = {
+        **profile.tagging,
+        "candidates_total": pool.get("size", 0),
+        "candidates_tagged": pool.get("tagged", 0),
+        "shown_total": len(shown),
+        "shown_tagged": len(shown) - untagged,
+        "tag_calls": book.calls,
+        "tag_usd": round(book.usd, 6),
+        "tag_failures": book.failures[:3],
+    }
+    outcome.alignment = alignment_counts(outcome.results, profile, book.merged())
     return outcome, profile, query

@@ -45,7 +45,9 @@ select = ["E", "F", "I", "B", "UP"]
 "tests/test_shop_learn.py" = ["E501"]  # long fixture titles and ids
 "tests/test_shop_decide.py" = ["E501"]
 "tests/test_shop_replay.py" = ["E501"]
+"tests/test_shop_stage2e.py" = ["E501"]
 "src/app/shop/decide.py" = ["E501"]  # the lexicon tables and the module notes
+"src/app/shop/vocab.py" = ["E501"]  # the keyword tables
 
 [tool.mypy]
 python_version = "3.11"

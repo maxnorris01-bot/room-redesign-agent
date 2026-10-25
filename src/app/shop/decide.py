@@ -1,31 +1,31 @@
-"""The model describes; code decides (ADR 0012, stage 2c amendment).
+"""The model describes; code decides (ADR 0012, stage 2c amendment; coverage 2d; vocabularies 2e).
 
 A language model is good at reading one product ("round, walnut, brass frame") and bad at deciding what
 a shopper's mixed ratings mean. Stage 2b let it propose preferences and it over-read: with a liked round
 item and a liked rectangular one it picked round, and a batch that was mostly round made "likes round"
-look true. So here the model only tags each rated item along fixed dimensions (shape, material, color or
-finish, frame or legs, frame color, style, size class, quality cues) and this module decides, from the
-tags of ALL the session's ratings every time:
+look true. So here the model only tags each rated item (shape, material, finish, frame color, style,
+quality cues, from the fixed vocabularies in `app.shop.vocab`) and this module decides, from the tags of
+ALL the session's ratings every time:
 
   * per dimension, the weighted distribution of values among loved (3) and liked (1) items;
-  * an exposure baseline: how common each value is among everything the shopper was shown, by a
-    title-keyword lexicon (no model; titles with no keyword are unknown and left out);
-  * converged (one value holds 70% of the like mass, at least 2 items support it, and its like share
-    beats its exposure share by a lift of 1.3), open (two or more values each hold 30%: a neutral chip,
-    no pressure on search or ranking), or none;
-  * dislikes only when 2 disliked items share a value that no loved or liked item has, with the same
-    lift test; one dislike only excludes that item;
-  * seller affinity (2 loved or liked, no dislike, and the lift test), price as a band or as mixed,
-    quality cues.
+  * an exposure baseline: how common each value is among everything the shopper was shown, from the
+    model's tags of those results (`app.shop.candidates`); a title with no tag is unknown;
+  * converged (one value holds 80% of the like mass for shape, 60% for the soft dimensions, at least 2
+    items support it, and its like share beats its exposure share by a lift of 1.3), open (two or more
+    values each hold 30%: a neutral chip, no pressure on search or ranking), or none;
+  * dislikes only when 2 disliked items share a value that no loved or liked item has, at the same
+    per-dimension share and the same lift test; one dislike only excludes that item;
+  * seller affinity (2 loved or liked items AND 40% of the like mass, no dislike, and the lift test),
+    price as a band or as mixed, quality cues.
 
-Every number is in `app.shop.thresholds`. The lexicon is deliberately small and plain: it is a
-baseline for "what was on the page", not a classifier, and a title it cannot read is simply unknown.
+Every number is in `app.shop.thresholds`. If the candidate tagging call failed, the exposure baseline
+comes from title keywords (poor coverage) and no attribute converges at all.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,7 +38,6 @@ from app.shop.textutil import (
     text_matches,
 )
 from app.shop.thresholds import (
-    CONVERGE_SHARE,
     DISLIKE_MIN_ITEMS,
     KNOWN_COVERAGE_MIN,
     LIFT_MIN,
@@ -54,151 +53,23 @@ from app.shop.thresholds import (
     PRICE_UPPER_PERCENTILE,
     QUALITY_CUE_MIN_ITEMS,
     QUALITY_CUE_MIN_SHARE,
+    SELLER_MIN_LIKE_SHARE,
+    SHAPE_CONVERGE_SHARE,
+    SOFT_CONVERGE_SHARE,
 )
+from app.shop.vocab import DIMENSIONS, LABELS, OTHER, STRUCTURAL, normalize, title_tags, title_value
 
-DIMENSIONS = (
-    "shape", "material", "color_finish", "frame_or_legs", "frame_color", "style", "size_class",
-)  # fmt: skip
-LEXICON_DIMENSIONS = ("shape", "material", "color_finish", "frame_or_legs", "frame_color", "style")
 # features, not build or finish: never a learned quality cue
 FEATURE_WORDS = frozenset(
     {"storage", "drawer", "drawers", "lift", "shelf", "shelves", "adjustable", "foldable", "wheels"}
 )
-DIMENSION_LABELS = {
-    "shape": "Shape", "material": "Material", "color_finish": "Finish", "frame_or_legs": "Legs",
-    "frame_color": "Frame color", "style": "Style", "size_class": "Size",
-}  # fmt: skip
-
-# canonical value -> keywords. A keyword is a whole word or phrase ("-" and " " are interchangeable).
-LEXICON: dict[str, list[tuple[str, tuple[str, ...]]]] = {
-    "shape": [
-        ("round", ("round", "drum", "circular", "cylinder", "cylindrical")),
-        ("oval", ("oval", "elliptical", "ellipse", "racetrack")),
-        ("rectangular", ("rectangular", "rectangle")),
-        ("square", ("square",)),
-    ],
-    "material": [
-        ("wood", ("wood", "wooden", "walnut", "oak", "teak", "pine", "maple", "acacia", "mango", "birch", "ash")),
-        ("metal", ("metal", "steel", "iron", "aluminum", "aluminium", "brass", "bronze", "copper")),
-        ("glass", ("glass",)),
-        ("stone", ("marble", "stone", "travertine", "granite", "concrete", "terrazzo", "slate")),
-        ("rattan", ("rattan", "wicker", "cane", "bamboo", "seagrass")),
-        ("fabric", ("velvet", "linen", "boucle", "chenille", "fabric", "upholstered", "cotton", "wool")),
-        ("leather", ("leather",)),
-    ],
-    "color_finish": [
-        ("warm wood", ("walnut", "oak", "teak", "natural", "honey", "cherry", "mahogany", "cedar")),
-        ("dark", ("black", "ebony", "espresso", "charcoal", "onyx", "dark")),
-        ("light", ("white", "ivory", "cream", "whitewash", "beige")),
-        ("gray", ("gray", "grey")),
-        ("brass", ("brass", "gold", "champagne")),
-        ("silver", ("chrome", "silver", "nickel", "stainless")),
-    ],
-    "frame_color": [
-        (
-            "dark or brass metal",
-            ("black metal", "black steel", "black iron", "black frame", "black legs", "black base",
-             "powder coated", "matte black", "bronze", "gunmetal", "brass", "brushed brass", "gold frame",
-             "gold legs"),
-        ),
-        ("silver metal", ("chrome", "silver", "nickel", "stainless")),
-        ("white", ("white frame", "white legs", "white metal", "white base")),
-        ("wood", ("natural wood", "wood legs", "wooden legs", "wood frame", "wood base")),
-    ],
-    "frame_or_legs": [
-        ("hairpin legs", ("hairpin",)),
-        ("pedestal", ("pedestal",)),
-        ("tapered legs", ("tapered",)),
-        ("sled or tripod", ("sled", "tripod", "trestle")),
-    ],
-    "style": [
-        ("modern", ("modern", "contemporary")),
-        ("mid-century", ("mid century",)),
-        ("industrial", ("industrial",)),
-        ("farmhouse", ("farmhouse", "rustic")),
-        ("boho", ("boho", "bohemian")),
-        ("scandinavian", ("scandinavian", "scandi")),
-        ("minimalist", ("minimalist",)),
-        ("traditional", ("traditional",)),
-        ("glam", ("glam",)),
-    ],
-}  # fmt: skip
+DIMENSION_LABELS = LABELS
+TagMap = Mapping[str, Mapping[str, str | None]]  # result id -> dimension -> vocabulary value
 
 
-def _pattern(keyword: str) -> re.Pattern[str]:
-    words = [re.escape(w) for w in re.split(r"[-\s]+", keyword.strip().lower()) if w]
-    return re.compile(r"(?<![a-z0-9])" + r"[-\s]+".join(words) + r"s?(?![a-z0-9])")
-
-
-_COMPILED: dict[str, list[tuple[str, list[re.Pattern[str]]]]] = {
-    dim: [(value, [_pattern(k) for k in keys]) for value, keys in groups]
-    for dim, groups in LEXICON.items()
-}
-
-
-def lexicon_match(dim: str, text: str) -> tuple[str, str] | None:
-    """(canonical value, the keyword that matched) for `dim` in `text`; the earliest keyword wins."""
-    lowered = text.lower().replace("powder-coated", "powder coated")
-    best: tuple[int, str, str] | None = None
-    for (value, keys), (_, patterns) in zip(
-        LEXICON.get(dim, []), _COMPILED.get(dim, []), strict=True
-    ):
-        for key, pat in zip(keys, patterns, strict=True):
-            m = pat.search(lowered)
-            if m and (best is None or m.start() < best[0]):
-                best = (m.start(), value, key)
-    return (best[1], best[2]) if best else None
-
-
-def lexicon_value(dim: str, text: str) -> str | None:
-    """The canonical value of `dim` that `text` shows (the earliest keyword wins), else None."""
-    found = lexicon_match(dim, text)
-    return found[0] if found else None
-
-
-PHRASE_DIMS = ("shape", "material", "color_finish", "frame_or_legs")  # dimensions search can use
-PHRASE_WORDS = {
-    "color_finish": {"warm wood": "walnut", "dark": "black", "light": "white", "silver": "chrome"},
-    "frame_or_legs": {"sled or tripod": "tripod"},
-}  # fmt: skip
-
-
-def phrase_word(dim: str, value: str) -> str:
-    """The words to put in a search for a canonical value ("warm wood" finish: "walnut")."""
-    return PHRASE_WORDS.get(dim, {}).get(value, value)
-
-
-def lexicon_tags(title: str) -> dict[str, str]:
-    """Every dimension the title shows by keyword. Unknown dimensions are absent."""
-    out: dict[str, str] = {}
-    for dim in LEXICON_DIMENSIONS:
-        value = lexicon_value(dim, title)
-        if value is not None:
-            out[dim] = value
-    return out
-
-
-def canon_value(dim: str, text: str | None) -> str | None:
-    """A model's free-text tag in the lexicon's value space ("walnut" for material is "wood").
-
-    A tag the lexicon does not know stays as normalized text, except a shape outside the fixed set
-    ("other" and anything unreadable) which is dropped, and size class, which is a fixed set.
-    """
-    if text is None or not text.strip():
-        return None
-    low = text.strip().lower()
-    if dim == "shape":
-        value = lexicon_value("shape", low)
-        return (
-            value if value else (low if low in ("round", "oval", "rectangular", "square") else None)
-        )
-    if dim == "size_class":
-        return low if low in ("small", "medium", "large") else None
-    found = lexicon_value(dim, low)
-    if found:
-        return found
-    cleaned = normalize_phrase(low)
-    return cleaned[:30] if cleaned else None
+def converge_share(dim: str) -> float:
+    """The share of the like mass one value needs: shape (structural) 80%, the rest 60%."""
+    return SHAPE_CONVERGE_SHARE if dim in STRUCTURAL else SOFT_CONVERGE_SHARE
 
 
 # ---- the tagged items --------------------------------------------------------------------------------
@@ -218,49 +89,68 @@ class TaggedItem:
 
 
 def tag_item(rated: Rated, model: ItemTags | None) -> TaggedItem:
-    """The item's values from the model's tags only (canonicalized). A dimension the model left
-    null, and every dimension of an item the model did not tag, is unknown: the title lexicon is not
-    used to fill it (only keyword-bearing titles would count, which biased stage 2c)."""
+    """The item's values from the model's tags only, folded into the fixed vocabularies. A dimension
+    the model left null, and every dimension of an item the model did not tag, is unknown: title
+    keywords are never used to fill it."""
     values: dict[str, str] = {}
     cues: list[str] = []
     if model is not None:
         for dim in DIMENSIONS:
-            got = canon_value(dim, getattr(model, dim))
+            got = normalize(dim, getattr(model, dim))
             if got:
                 values[dim] = got
         cues = [normalize_phrase(c) for c in model.quality_cues if normalize_phrase(c)]
     return TaggedItem(rated, values, tuple(dict.fromkeys(cues)))
 
 
-def exposure_shares(shown: list[ShopResult] | list[str]) -> dict[str, dict[str, float]]:
-    """For each lexicon dimension, each value's share of the shown titles that have a value at all.
+@dataclass
+class Exposure:
+    """What the shopper was shown, by value: the baseline the lift test compares a like share to."""
 
-    Titles with no keyword for a dimension are unknown and left out of that dimension's baseline. A
-    dimension with no known title at all is absent (the lift test then cannot run for it).
-    """
+    shares: dict[str, dict[str, float]] = field(default_factory=dict)  # dim -> value -> share
+    coverage: dict[str, float] = field(default_factory=dict)  # dim -> share of shown with a value
+    source: str = "model"  # "model" (candidate tags) or "keywords" (the tagging call failed)
+    tagged: int = 0  # shown results that came with tags
+    total: int = 0  # shown results
+
+    @property
+    def usable(self) -> bool:
+        """Whether attributes may converge: only with the model's tags of what was shown."""
+        return self.source == "model"
+
+
+def build_exposure(
+    shown: list[ShopResult], tags: TagMap | None = None, keywords: bool = False
+) -> Exposure:
+    """Each dimension's value shares over the shown results that have a value for it, and the share
+    of the shown results that have one (coverage). `tags` are the model's (by result id). With
+    `keywords=True` (the candidate tagging call failed) a result with no tags is read by its title's
+    keywords and the baseline is marked as such: no attribute may converge on it."""
+    tags = tags or {}
     counts: dict[str, dict[str, int]] = {}
-    for item in shown:
-        title = item if isinstance(item, str) else item.title
-        for dim, value in lexicon_tags(title).items():
+    known: dict[str, int] = {}
+    tagged = 0
+    for r in shown:
+        got = tags.get(r.id)
+        if got is not None:
+            tagged += 1
+            values = {d: v for d, v in got.items() if v and d in DIMENSIONS}
+        elif keywords:
+            values = title_tags(r.title)
+        else:
+            values = {}
+        for dim, value in values.items():
             counts.setdefault(dim, {}).setdefault(value, 0)
             counts[dim][value] += 1
-    return {
-        dim: {v: n / sum(by.values()) for v, n in by.items()} for dim, by in counts.items() if by
-    }
-
-
-def exposure_coverage(shown: list[ShopResult] | list[str]) -> dict[str, float]:
-    """For each lexicon dimension, the share of the shown titles that have a keyword for it. A
-    dimension with no lexicon (size class) is absent, i.e. coverage 0."""
-    total = len(shown)
-    if not total:
-        return {}
-    known: dict[str, int] = {}
-    for item in shown:
-        title = item if isinstance(item, str) else item.title
-        for dim in lexicon_tags(title):
             known[dim] = known.get(dim, 0) + 1
-    return {dim: n / total for dim, n in known.items()}
+    total = len(shown)
+    return Exposure(
+        {d: {v: n / sum(by.values()) for v, n in by.items()} for d, by in counts.items() if by},
+        {d: n / total for d, n in known.items()} if total else {},
+        "keywords" if keywords else "model",
+        tagged,
+        total,
+    )
 
 
 # ---- one dimension ----------------------------------------------------------------------------------
@@ -296,20 +186,18 @@ def _lift(
 
 
 def classify_dimension(
-    dim: str,
-    positives: list[TaggedItem],
-    exposure: dict[str, dict[str, float]],
-    exposure_cov: dict[str, float] | None = None,
+    dim: str, positives: list[TaggedItem], exposure: Exposure
 ) -> DimensionResult:
     """Converged, open or none for one dimension, from the loved and liked items' values.
 
     Shares are over ALL like mass: an item with no known value counts against every value, so
-    silent items can no longer inflate one value. Converged needs known values on at least
-    `KNOWN_COVERAGE_MIN` of the like mass, one value on `CONVERGE_SHARE` of it, 2 supporting items,
-    keywords for the dimension in at least `KNOWN_COVERAGE_MIN` of what was shown (else the lift
-    test cannot run) and a lift of `LIFT_MIN`. Open needs two values at `OPEN_SHARE` of all mass.
-    `exposure_cov` is the share of shown titles with a keyword per dimension; when omitted, a
-    dimension that has an exposure baseline counts as fully covered.
+    silent items cannot inflate one value. Converged needs known values on at least
+    `KNOWN_COVERAGE_MIN` of the like mass, one value on `converge_share(dim)` of it (80% for shape,
+    60% for the soft dimensions), 2 supporting items, tags for the dimension on at least
+    `KNOWN_COVERAGE_MIN` of what was shown (else the lift test cannot run) and a lift of `LIFT_MIN`.
+    Open needs two values at `OPEN_SHARE` of all mass. `other` is a read value that is never a
+    preference. When the exposure baseline came from title keywords (the candidate tagging call
+    failed) nothing converges.
     """
     mass: dict[str, int] = {}
     ids: dict[str, list[str]] = {}
@@ -320,23 +208,24 @@ def classify_dimension(
             ids.setdefault(value, []).append(item.rated.id)
     total = sum(item.weight for item in positives)
     known = sum(mass.values())
-    exp_cov = (
-        exposure_cov.get(dim, 0.0)
-        if exposure_cov is not None
-        else (1.0 if exposure.get(dim) else 0.0)
-    )
+    exp_cov = exposure.coverage.get(dim, 0.0)
+    need = converge_share(dim)
+    by_rating = {i.rated.id: i.rated.rating for i in positives}
     trace: dict[str, Any] = {
         "like_mass": {**{v: m for v, m in sorted(mass.items(), key=lambda kv: (-kv[1], kv[0]))}, "(unknown)": total - known},
         "total_mass": total,
         "known_coverage": round(known / total, 4) if total else 0.0,
         "exposure_coverage": round(exp_cov, 4),
-        "exposure": {v: round(x, 4) for v, x in sorted(exposure.get(dim, {}).items())},
+        "exposure": {v: round(x, 4) for v, x in sorted(exposure.shares.get(dim, {}).items())},
+        "converge_share": need,
+        "loved": sorted({v for v, i in ids.items() if any(by_rating[x] == "love" for x in i)}),
     }  # fmt: skip
-    if total == 0 or known == 0:
-        trace.update(decision="none", reason="no loved or liked item shows this dimension")
+    usable = {v: m for v, m in mass.items() if v != OTHER}
+    if total == 0 or not usable:
+        trace.update(decision="none", reason="no loved or liked item shows a usable value")
         return DimensionResult(dim, "none", trace=trace)
     shares = {v: m / total for v, m in mass.items()}
-    ordered = sorted(shares, key=lambda v: (-shares[v], v))
+    ordered = sorted(usable, key=lambda v: (-shares[v], v))
     top = ordered[0]
     by_id = {i.rated.id: i.rated for i in positives}
     support = len(ids[top])
@@ -344,30 +233,31 @@ def classify_dimension(
         by_id[i].rating == "love" and mentions(top, by_id[i].comment) for i in ids[top]
     ):
         support = MIN_SUPPORT_ITEMS  # a loved item whose comment names it stands in for a second
-    lift, seen, passes = _lift(shares[top], exposure, dim, top)
+    lift, seen, passes = _lift(shares[top], exposure.shares, dim, top)
     trace.update(top=top, top_share=round(shares[top], 4), support=support, lift=lift)
     why: list[str] = []
     if known / total < KNOWN_COVERAGE_MIN:
         why.append(f"known coverage {known / total:.0%} is under {KNOWN_COVERAGE_MIN:.0%}")
-    if shares[top] < CONVERGE_SHARE:
-        why.append(
-            f"top value {top} holds {shares[top]:.0%} of all like mass, under {CONVERGE_SHARE:.0%}"
-        )
+    if shares[top] < need:
+        why.append(f"top value {top} holds {shares[top]:.0%} of all like mass, under {need:.0%}")
     if support < MIN_SUPPORT_ITEMS:
         why.append(f"{top} has {support} supporting item(s), needs {MIN_SUPPORT_ITEMS}")
-    if exp_cov < KNOWN_COVERAGE_MIN:
+    if not exposure.usable:
+        why.append("the shown results could not be tagged by the model (title keywords only)")
+    elif exp_cov < KNOWN_COVERAGE_MIN:
         why.append(
-            f"only {exp_cov:.0%} of shown titles have a keyword for it (under {KNOWN_COVERAGE_MIN:.0%}): the lift test cannot run"
+            f"only {exp_cov:.0%} of shown results are tagged for it (under {KNOWN_COVERAGE_MIN:.0%}): the lift test cannot run"
         )
     elif not passes:
         why.append(f"lift {lift} for {top} is under {LIFT_MIN}")
+    shares_out = {v: round(x, 4) for v, x in shares.items()}
     if not why:
         trace.update(
             decision="converged", reason=f"{top}: {shares[top]:.0%} of like mass, lift {lift}"
         )
         return DimensionResult(
             dim, "converged", top, [top], round(shares[top], 4), seen, lift, ids[top],
-            {v: round(x, 4) for v, x in shares.items()}, trace,
+            shares_out, trace,
         )  # fmt: skip
     open_values = [v for v in ordered if shares[v] >= OPEN_SHARE]
     if len(open_values) >= 2:
@@ -379,31 +269,29 @@ def classify_dimension(
             + f" each hold at least {OPEN_SHARE:.0%} of all like mass (not converged: {'; '.join(why)})",
         )
         return DimensionResult(
-            dim, "open", None, open_values, None, None, None, support_ids,
-            {v: round(x, 4) for v, x in shares.items()}, trace,
+            dim, "open", None, open_values, None, None, None, support_ids, shares_out, trace
         )  # fmt: skip
     trace.update(decision="none", reason="not converged: " + "; ".join(why))
-    return DimensionResult(
-        dim, "none", shares={v: round(x, 4) for v, x in shares.items()}, trace=trace
-    )
+    return DimensionResult(dim, "none", shares=shares_out, trace=trace)
 
 
 def dislike_values(
     dim: str,
     disliked: list[TaggedItem],
     positives: list[TaggedItem],
-    exposure: dict[str, dict[str, float]],
-    exposure_cov: dict[str, float] | None = None,
+    exposure: Exposure,
 ) -> list[tuple[str, list[str], float, float | None, float | None]]:
-    """Values disliked: at least `DISLIKE_MIN_ITEMS` disliked items share it, no loved or liked item
-    has it, and its dislike share beats its exposure share by the lift (which needs keywords in
-    `KNOWN_COVERAGE_MIN` of what was shown). Returns (value, ids, share, exposure, lift)."""
-    if exposure_cov is not None and exposure_cov.get(dim, 0.0) < KNOWN_COVERAGE_MIN:
+    """Values disliked: at least `DISLIKE_MIN_ITEMS` disliked items share it, its share of ALL the
+    disliked items is at least the dimension's converge share (unknowns count against it), no
+    loved or liked item has it, and its dislike share beats its exposure share by the lift (which
+    needs tags on `KNOWN_COVERAGE_MIN` of what was shown). Returns (value, ids, share, exposure,
+    lift)."""
+    if not exposure.usable or exposure.coverage.get(dim, 0.0) < KNOWN_COVERAGE_MIN:
         return []
     counts: dict[str, list[str]] = {}
     for item in sorted(disliked, key=lambda i: i.rated.id):
         value = item.values.get(dim)
-        if value:
+        if value and value != OTHER:
             counts.setdefault(value, []).append(item.rated.id)
     total = len(disliked)  # unknown values count against every value here too
     liked_values = {i.values.get(dim) for i in positives}
@@ -412,7 +300,9 @@ def dislike_values(
         if len(ids) < DISLIKE_MIN_ITEMS or value in liked_values:
             continue
         share = len(ids) / total
-        lift, seen, passes = _lift(share, exposure, dim, value)
+        if share < converge_share(dim):
+            continue
+        lift, seen, passes = _lift(share, exposure.shares, dim, value)
         if passes:
             out.append((value, ids, round(share, 4), seen, lift))
     return out
@@ -443,8 +333,8 @@ def seller_decision(
 ) -> tuple[ProfileEntry | None, dict[str, Any]]:
     """The seller affinity chip, if any, and the numbers behind the decision for every candidate.
 
-    A seller needs at least 2 loved or liked items, no dislike of it, and a share of the like mass
-    that beats its share of what was shown by `LIFT_MIN`. The trace lists each seller with a loved or
+    A seller needs at least 2 loved or liked items AND at least `SELLER_MIN_LIKE_SHARE` of the like
+    mass, no dislike of it, and a like share that beats its share of what was shown by `LIFT_MIN`. The trace lists each seller with a loved or
     liked item, so a missing chip can be explained.
     """
     groups: dict[str, list[Rated]] = {}
@@ -454,7 +344,7 @@ def seller_decision(
     total_mass = sum(
         LOVE_WEIGHT if r.rating == "love" else LIKE_WEIGHT
         for r in rated.values()
-        if r.rating in ("love", "like") and r.seller
+        if r.rating in ("love", "like")
     )
     exposure = seller_exposure(shown or [])
     best: tuple[int, str, list[Rated], float | None, float | None] | None = None
@@ -468,13 +358,18 @@ def seller_decision(
         seen = exposure.get(key)
         lift = round(share / seen, 3) if seen else None
         dislikes = sum(1 for r in items if r.rating == "dislike")
-        why = ""
+        fails: list[str] = []  # every rule that failed, so the trace explains the missing chip
         if len(positive) < MIN_AFFINITY_ITEMS:
-            why = f"{len(positive)} loved or liked item(s), needs {MIN_AFFINITY_ITEMS}"
-        elif dislikes:
-            why = f"{dislikes} disliked item(s) from this seller"
-        elif lift is not None and lift < LIFT_MIN:
-            why = f"lift {lift} is under {LIFT_MIN} (like share {share:.0%} against {seen:.0%} of what was shown)"
+            fails.append(f"{len(positive)} loved or liked item(s), needs {MIN_AFFINITY_ITEMS}")
+        if share < SELLER_MIN_LIKE_SHARE:
+            fails.append(f"like share {share:.0%} is under {SELLER_MIN_LIKE_SHARE:.0%}")
+        if dislikes:
+            fails.append(f"{dislikes} disliked item(s) from this seller")
+        if lift is not None and lift < LIFT_MIN:
+            fails.append(
+                f"lift {lift} is under {LIFT_MIN} (like share {share:.0%} against {seen:.0%} of what was shown)"
+            )
+        why = "; ".join(fails)
         candidates.append(
             {
                 "seller": " ".join(positive[0].seller.split())[:40], "items": len(positive), "like_mass": weight,
@@ -486,7 +381,7 @@ def seller_decision(
             best = (weight, key, positive, lift, round(seen, 4) if seen else None)
     top = max(candidates, key=lambda c: (c["like_mass"], c["seller"]), default=None)
     trace: dict[str, Any] = {
-        "candidates": sorted(candidates, key=lambda c: -c["like_mass"])[:5],
+        "candidates": sorted(candidates, key=lambda c: (-c["like_mass"], c["seller"]))[:8],
         "decision": "chip" if best else "none",
         "reason": (top["verdict"] if top else "no loved or liked item has a seller")
         if not best
@@ -667,6 +562,7 @@ def decide(
     typed_terms: list[str],
     image_ids: set[str] | None = None,
     fallback: bool = False,
+    exposure: Exposure | None = None,
 ) -> Decisions:
     """The preference entries for the session's ratings, and the trace of how each was decided.
 
@@ -678,33 +574,39 @@ def decide(
     items = {rid: tag_item(r, None if fallback else tags.get(rid)) for rid, r in rated.items()}
     positives = [i for i in items.values() if i.rated.rating in ("love", "like")]
     disliked = [i for i in items.values() if i.rated.rating == "dislike"]
-    exposure = exposure_shares(shown)
-    exposure_cov = exposure_coverage(shown)
+    exposure = exposure or build_exposure(shown, None, keywords=True)
     entries: list[ProfileEntry] = []
     results: dict[str, DimensionResult] = {}
     dim_trace: dict[str, Any] = {}
 
-    def blocked(text: str) -> bool:
+    typed_keys = [normalize_phrase(t) for t in typed_terms]
+
+    def blocked(text: str, dim: str | None = None) -> bool:
+        """Deleted by the shopper, or already said in the request. For shape, finish and frame
+        color only the whole phrase counts ("warm wood" is not the typed "wood")."""
         key = normalize_phrase(text)
-        return bool(key) and (
-            any(phrases_match(key, r) for r in removed)
-            or any(phrases_match(key, normalize_phrase(t)) for t in typed_terms)
-        )
+        if not key:
+            return False
+        if any(phrases_match(key, r) for r in removed):
+            return True
+        if dim in ("shape", "color_finish", "frame_color"):
+            return key in typed_keys
+        return any(phrases_match(key, t) for t in typed_keys)
 
     for dim in DIMENSIONS:
         if fallback:
             results[dim] = DimensionResult(dim, "none")
             dim_trace[dim] = {"decision": "none", "reason": "fallback: item details were not read"}
             continue
-        res = classify_dimension(dim, positives, exposure, exposure_cov)
+        res = classify_dimension(dim, positives, exposure)
         results[dim] = res
         dim_trace[dim] = res.trace
         label = DIMENSION_LABELS[dim].lower()
-        if res.status == "converged" and res.value and blocked(res.value):
+        if res.status == "converged" and res.value and blocked(res.value, dim):
             res.trace["reason"] += (
                 " (not shown: the typed request already says it, or you deleted it)"
             )
-        if res.status == "converged" and res.value and not blocked(res.value):
+        if res.status == "converged" and res.value and not blocked(res.value, dim):
             entries.append(
                 ProfileEntry(
                     text=res.value,
@@ -737,10 +639,8 @@ def decide(
                     weight=sum(items[i].weight for i in res.support),
                 )
             )
-        for value, ids, share, seen, lift in dislike_values(
-            dim, disliked, positives, exposure, exposure_cov
-        ):
-            if blocked(value) or any(i.values.get(dim) == value for i in positives):
+        for value, ids, share, seen, lift in dislike_values(dim, disliked, positives, exposure):
+            if blocked(value, dim) or any(i.values.get(dim) == value for i in positives):
                 continue  # a loved or liked item has it: no dislike chip (the contradiction check)
             entries.append(
                 ProfileEntry(
@@ -774,6 +674,7 @@ def decide(
                   "like": sum(1 for r in rated.values() if r.rating == "like"),
                   "dislike": sum(1 for r in rated.values() if r.rating == "dislike")},
         "shown": len(shown),
+        "shown_tags": {"source": exposure.source, "tagged": exposure.tagged, "total": exposure.total},
         "dimensions": dim_trace,
         "seller": seller_trace,
         "price": price_trace,
@@ -841,8 +742,8 @@ def typed_dimensions(base: ShopQuery) -> set[str]:
     batch guard leaves them alone and never warns about them."""
     typed = {"material"} if base.material_terms else set()
     request = base.request
-    for dim in ("shape", "color_finish", "frame_color", "frame_or_legs"):
-        if lexicon_value(dim, request):
+    for dim in ("shape", "color_finish", "frame_color"):
+        if title_value(dim, request):
             typed.add(dim)
     guesses = {t for t in base.style_terms if not mentions_words(t, request)}
     if any(t not in guesses for t in base.style_terms):
@@ -865,19 +766,24 @@ def typed_terms_of(base: ShopQuery) -> list[str]:
 # ---- exposure and diversity of a result list ---------------------------------------------------------
 
 
-def value_shares(titles: list[str], dims: list[str]) -> dict[str, tuple[str, float] | None]:
-    """For each dimension, the most common known value in `titles` and its share of the titles
-    that have a known value. None when no title shows the dimension."""
-    out: dict[str, tuple[str, float] | None] = {}
+def composition(
+    results: list[ShopResult], tags: TagMap, dims: list[str]
+) -> dict[str, dict[str, int]]:
+    """For each dimension, how many of `results` carry each value ("(unknown)" for no tag)."""
+    out: dict[str, dict[str, int]] = {}
     for dim in dims:
         counts: dict[str, int] = {}
-        for title in titles:
-            value = lexicon_value(dim, title) if dim in LEXICON_DIMENSIONS else None
-            if value:
-                counts[value] = counts.get(value, 0) + 1
-        if not counts:
-            out[dim] = None
-            continue
-        top = max(sorted(counts), key=lambda v: counts[v])
-        out[dim] = (top, round(counts[top] / sum(counts.values()), 4))
+        for r in results:
+            value = (tags.get(r.id) or {}).get(dim) or "(unknown)"
+            counts[value] = counts.get(value, 0) + 1
+        out[dim] = dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
     return out
+
+
+def top_share(counts: dict[str, int]) -> tuple[str, float] | None:
+    """The most common KNOWN value and its share of the results that have a known value."""
+    known = {v: n for v, n in counts.items() if v != "(unknown)"}
+    if not known:
+        return None
+    top = max(sorted(known), key=lambda v: known[v])
+    return top, round(known[top] / sum(known.values()), 4)

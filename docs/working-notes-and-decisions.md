@@ -107,6 +107,15 @@ this choice over the alternatives. Note what's still open or deferred within it,
   shape and open dimensions only, typed dimensions are exempt; every decision gets a visible trace. The
   80% rule on both mass and items was my choice where the brief said mass. See
   `docs/sessions/2026-10-24-shop-mode-stage-2d.md`.
+- **2026-10-24, stage 2e: the model tags what was shown (ADR 0012 amended).** The title lexicon gave
+  10% to 46% coverage of what the shopper saw, so the lift test almost never ran, and synonym splits cut
+  real patterns below their thresholds. Decisions: one cheap call tags shown and candidate titles from fixed
+  vocabularies (cached per result id); shape converges at 80%, soft dimensions at 60%; a seller chip needs
+  40% of the like mass; the pool is searched for an open dimension's thin value instead of only reordering
+  it; a metal frame with no colour named is `other`, not a colour. My choices where the brief was silent:
+  candidate tags come back as text rows, not JSON objects (4x fewer tokens); "other" can never converge or
+  be open; tagging failure means no attribute converges (open can still show); the rank model does the
+  tagging. See `docs/sessions/2026-10-24-shop-mode-stage-2e.md`.
 
 ## See also
 

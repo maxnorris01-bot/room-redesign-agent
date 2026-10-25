@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import BrowserContext, Page, Route, sync_playwright
 
-from app.shop.replay import seed_session
+from app.shop.replay import REPLAY_FILE_2, seed_session
 from app.shop.store import SessionStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -210,7 +210,18 @@ def seed_replays(data_dir: str) -> dict[str, str]:
         comments={"R1": "MOCK_TRUNCATE_ALL"},
         extra_ratings={"X20": ("dislike", "MOCK_TRUNCATE_ALL")},
     )
-    return {"replay": clean.session_id, "fallback": broken.session_id}
+    second = seed_session(store, replay=REPLAY_FILE_2)
+    untagged = seed_session(  # the candidate tagging call fails (a mock-only marker in a title)
+        store,
+        replay=REPLAY_FILE_2,
+        shown_titles={"Y1": "Rectangular Walnut Coffee Table MOCK_TAGS_FAIL"},
+    )
+    return {
+        "replay": clean.session_id,
+        "fallback": broken.session_id,
+        "replay2": second.session_id,
+        "untagged": untagged.session_id,
+    }
 
 
 def open_session(browser: Any, base: str, session_id: str, width: int = 1280) -> tuple[Any, Page]:
@@ -278,6 +289,7 @@ def run_replay(
     check(share <= 0.5, f"no unpinned seller above 50% of the batch ({top} {share:.0%})")
     print("   footer:", lookups_text(page))
     check("tagged 10 of 10 items" in lookups_text(page), "footer shows items tagged 10 of 10")
+    check("candidates tagged" in lookups_text(page), "footer shows candidates tagged N of M")
     page.screenshot(path=str(shots / "12-replay-chips.png"))
 
     toggle = page.locator("#why-toggle")
@@ -289,7 +301,8 @@ def run_replay(
     why = page.locator("#why")
     check(why.is_visible(), "the panel opens")
     names = [t.lower() for t in why.locator(".why-dim h4").all_inner_texts()]
-    check(len(names) >= 9, f"the panel lists {len(names)} decisions")
+    check(len(names) >= 8, f"the panel lists {len(names)} decisions")
+    check(any(n.startswith("batch makeup") for n in names), "the panel lists the batch makeup")
     check(
         any(n.startswith("shape: open") for n in names)
         and any(n.startswith("price: mixed") for n in names),
@@ -318,6 +331,8 @@ def run_replay(
     page.screenshot(path=str(shots / "15-replay-grid.png"))
     context.close()
 
+    run_replay_2(browser, base, shots, ids, console_errors)
+
     print("the same session with the preference call forced to fail")
     context, page = open_session(browser, base, ids["fallback"])
     page.on("pageerror", lambda e: console_errors.append(str(e)))
@@ -343,6 +358,99 @@ def run_replay(
     page.locator("#why-toggle").click()
     check("Mode: fallback" in page.locator("#why").inner_text(), "the panel says fallback")
     page.screenshot(path=str(shots / "16-fallback-banner.png"), full_page=True)
+    context.close()
+
+
+def run_replay_2(
+    browser: Any, base: str, shots: Path, ids: dict[str, str], console_errors: list[str]
+) -> None:
+    print("the owner's second session (Home Depot, 91% rectangular), replayed through the page")
+    context, page = open_session(browser, base, ids["replay2"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    request_chips = chips(page)
+    page.click("#shop-again")
+    wait_for_results(page)
+    page.locator("#prefs").wait_for(state="visible")
+    shape_chip = wait_pref_chip(page, "shape: open")
+    check("liked rectangular and round" in shape_chip.inner_text(), "shape is open")
+    wait_pref_chip(page, "price: mixed")
+    wait_pref_chip(page, "warm wood")
+    check(
+        page.locator("#pref-chips .chip.pref")
+        .filter(has=page.locator(".txt", has_text="seller:"))
+        .count()
+        == 0,
+        "no seller chip (Home Depot is 25% of the like mass, under 40%)",
+    )
+    summary = page.inner_text("#prefs-summary")
+    check("more pieces from" not in summary and "Home Depot" not in summary, f"summary: {summary}")
+    check(chips(page) == request_chips, "the request chips are unchanged")
+    titles = title_texts(page)
+    shapes = [shape_of(t) for t in titles]
+    check(
+        shapes.count("round") >= 6 and shapes.count("rectangular") >= 6,
+        f"both shapes are in the batch ({shapes.count('round')} round, "
+        f"{shapes.count('rectangular')} rectangular)",
+    )
+    check(
+        max_shape_share(page) <= 0.6,
+        f"no shape above 60% of the batch ({max_shape_share(page):.0%})",
+    )
+    top, share = seller_share(page)
+    check(share <= 0.5, f"no seller above 50% of the batch ({top} {share:.0%})")
+    foot = lookups_text(page)
+    print("   footer:", foot)
+    check(
+        "candidates tagged" in foot and "tagged 9 of 9 items" in foot,
+        "footer shows the tagging counts",
+    )
+    page.screenshot(path=str(shots / "17-replay2-chips.png"))
+    page.locator("#why-toggle").click()
+    why = page.locator("#why")
+    check(why.is_visible(), "the panel opens")
+    text = why.inner_text()
+    check("batch makeup (24 results)" in text.lower(), "the panel shows the batch makeup")
+    check(
+        "pool before" in text and "final batch" in text and "slots planned" in text,
+        "pool, slots and batch columns",
+    )
+    check("shown results tagged 35 of 35 (model)" in text, "the shown-result tag coverage is shown")
+    check(
+        "candidates tagged" in text and "Searches used:" in text,
+        "candidate tagging and searches are shown",
+    )
+    check("like share 25% is under 40%" in text, "the Home Depot rule that failed is shown")
+    check("lift 1.25 for wood is under 1.3" in text, "the material lift is shown")
+    page.screenshot(path=str(shots / "18-replay2-trace.png"), full_page=True)
+    page.set_viewport_size({"width": 390, "height": 844})
+    check(
+        page.evaluate("document.documentElement.scrollWidth - window.innerWidth") <= 1,
+        "no sideways scroll at 390 px with the panel open",
+    )
+    page.screenshot(path=str(shots / "20-replay2-mobile.png"), full_page=True)
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.locator("#why-toggle").click()
+    page.screenshot(path=str(shots / "19-replay2-grid.png"))
+    context.close()
+
+    print("the same session with the candidate tagging call failing")
+    context, page = open_session(browser, base, ids["untagged"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    page.click("#shop-again")
+    wait_for_results(page)
+    check(
+        "could not be tagged" in page.inner_text("#status"),
+        "the page says the results could not be tagged",
+    )
+    chip_text = page.inner_text("#pref-chips")
+    check("warm wood" not in chip_text, "no finish chip without the model's tags of what was shown")
+    check(len(title_texts(page)) > 0, "a batch is still shown")
+    page.locator("#why-toggle").click()
+    check(
+        "(keywords)" in page.locator("#why").inner_text(),
+        "the panel says the baseline is title keywords",
+    )
+    page.screenshot(path=str(shots / "21-tagging-failed.png"), full_page=True)
     context.close()
 
 
@@ -457,8 +565,9 @@ def run_checks(base: str, shots: Path, replay_ids: dict[str, str]) -> None:
                 "a converged wood chip",
             )
             check(
-                page.locator("#pref-chips .chip.pref.neutral", has_text="finish").count() >= 1,
-                "a finish chip (open: warm wood and dark)",
+                page.locator("#pref-chips .chip.pref.inferred", has_text="seller: Hartwell").count()
+                == 1,
+                "the premium seller chip (2 loved items, over 40% of the like mass)",
             )
             seller_chip = page.locator("#pref-chips .chip.pref").filter(
                 has=page.locator(".txt", has_text=f"seller: {PREMIUM}")
@@ -566,7 +675,7 @@ def run_checks(base: str, shots: Path, replay_ids: dict[str, str]) -> None:
             check(page.locator("#pref-chips .pinned-tag").count() == 1, "the pin is restored")
             check(chips(page) == request_chips, "the request chips are restored unchanged")
 
-            print("scenario B: two round items loved")
+            print("scenario B: two round items loved, one rectangular liked")
             page.click("#start-over")
             page.click("#start-over-yes")
             search(page, COFFEE)
@@ -577,8 +686,7 @@ def run_checks(base: str, shots: Path, replay_ids: dict[str, str]) -> None:
                 .filter(has=page.locator(".title", has_text="Rectangular"))
                 .filter(has_not=page.locator(".seller", has_text=PREMIUM))
             )
-            rects.nth(0).locator(".rate.like").click()
-            rects.nth(1).locator(".rate.like").click()
+            rects.nth(0).locator(".rate.like").click()  # one rectangular: round holds 86% (>= 80%)
             page.locator("#grid .card").filter(has=page.locator(".title", has_text="Oval")).filter(
                 has_not=page.locator(".seller", has_text=PREMIUM)
             ).first.locator(".rate.dislike").click()

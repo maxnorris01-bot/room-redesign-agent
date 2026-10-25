@@ -37,10 +37,9 @@ from app.schemas import SchemaError, parse_model, to_output_schema
 from app.shop.decide import (
     DIMENSION_LABELS,
     FALLBACK_NOTE,
-    PHRASE_DIMS,
+    Exposure,
+    TagMap,
     decide,
-    lexicon_value,
-    phrase_word,
     typed_terms_of,
 )
 from app.shop.decide import (
@@ -71,6 +70,7 @@ from app.shop.textutil import (
     sig_words,
     text_matches,
 )
+from app.shop.vocab import PHRASE_DIMS, phrase_word, title_value, vocab_text
 from app.shopping_retrieval import seller_key
 from app.thumbnails import Thumbnailer, fetch_traced
 
@@ -486,6 +486,7 @@ def merge_profile_v3(
     images: ImageReport,
     image_ids: set[str],
     tagging: dict[str, Any] | None = None,
+    exposure: Exposure | None = None,
 ) -> StoredProfile:
     """The stored profile after one v3 preference call: the model's per-item tags go to
     `app.shop.decide`, which decides every inferred entry from ALL the session's ratings. The
@@ -523,6 +524,7 @@ def merge_profile_v3(
         typed_terms_of(base),
         image_ids,
         fallback=fallback,
+        exposure=exposure,
     )
     info = dict(tagging or {})
     info.setdefault("items_total", len(rated))
@@ -864,11 +866,14 @@ def profile_summary(profile: StoredProfile | None) -> str:
     return text.strip()
 
 
-def alignment_counts(results: list[ShopResult], profile: StoredProfile | None) -> tuple[int, int]:
+def alignment_counts(
+    results: list[ShopResult], profile: StoredProfile | None, tags: TagMap | None = None
+) -> tuple[int, int]:
     """(results that match, results): a match is a converged inferred like and no dislike.
 
-    A result matches a converged like when its title shows the value (a lexicon value for a
-    dimension such as shape or material; the words of the phrase otherwise), it comes from the
+    A result matches a converged like when its tags (the model's, when `tags` has the result; else
+    the title's keywords) show the value for a dimension such as shape or material, or the words of
+    the phrase otherwise; it comes from the
     affinity seller, or its price is inside the price band. It matches a dislike when its title
     shows an inferred or stated dislike. Guess, open and mixed chips and stated likes do not
     count. A profile with no converged like matches nothing.
@@ -882,7 +887,10 @@ def alignment_counts(results: list[ShopResult], profile: StoredProfile | None) -
 
     def shows(e: ProfileEntry, r: ShopResult) -> bool:
         if e.dimension and e.values and e.attr_kind not in ("seller", "price_band"):
-            got = lexicon_value(e.dimension, r.title)
+            tagged = (tags or {}).get(r.id)
+            got = (
+                tagged.get(e.dimension) if tagged is not None else title_value(e.dimension, r.title)
+            )
             if got is not None or e.dimension in (
                 "shape",
                 "material",
@@ -965,6 +973,9 @@ def prefs_user_text(
         f"must_have={', '.join(adj.must_have) or 'none'}; avoid={', '.join(adj.avoid) or 'none'}",
         f"Removed entries (never bring these back): {'; '.join(profile.removed) or 'none'}",
         "",
+        "Allowed values (shape, material, color_finish, frame_color, style; use these or null):",
+        vocab_text(),
+        "",
         "Rated results (loved first; image N is the Nth attached image, none means title only):",
     ]
     rows = rated_results(session)
@@ -1034,9 +1045,8 @@ def estimate_item_tokens() -> int:
     """Output tokens one tagged item takes, from the schema: a worst-case item (every field filled
     with a long value, three cues, a long id) as compact JSON, at about 3 characters a token."""
     sample = ItemTags(
-        id="5100000000001004736", shape="rectangular", material="walnut wood",
-        color_finish="brushed brass", frame_or_legs="tapered hairpin legs",
-        frame_color="black powder-coated metal", style="mid-century modern", size_class="medium",
+        id="5100000000001004736", shape="rectangular", material="stone",
+        color_finish="warm wood", frame_color="brass or gold", style="mid-century",
         quality_cues=["solid wood construction", "brushed brass finish", "natural stone top"],
     )  # fmt: skip
     return int(len(sample.model_dump_json()) / 3) + 1
@@ -1097,6 +1107,7 @@ def build_profile(
     budget: Budget,
     thumbnailer: Thumbnailer | None = None,
     fetcher: Callable[..., tuple[dict[str, PreparedImage], ImageReport]] = fetch_images,
+    exposure: Exposure | None = None,
 ) -> tuple[StoredProfile, str]:
     """Update the session's profile from its ratings (prompt v4). Returns (profile, warning).
 
@@ -1158,7 +1169,7 @@ def build_profile(
         "failures": failures,
     }
     profile = merge_profile_v3(
-        session.profile, proposed, session, base, report, set(images), tagging
+        session.profile, proposed, session, base, report, set(images), tagging, exposure
     )
     warning = ""
     if profile.tagging.get("fallback"):

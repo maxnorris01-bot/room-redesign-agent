@@ -15,6 +15,7 @@ import pytest
 from app.shop.decide import (
     FALLBACK_NOTE,
     KNOWN_COVERAGE_MIN,
+    Exposure,
     classify_dimension,
     decide,
     typed_dimensions,
@@ -39,6 +40,7 @@ from test_shop import (  # noqa: F401  (the autouse guard must be imported to ap
     use_client,
 )
 from test_shop_decide import (
+    exposure_of,
     make_session,
     model_tags,
     shape_world,
@@ -160,7 +162,7 @@ def test_the_replay_in_title_only_fallback_mode_decides_no_attribute(tmp_path: P
     prof = merge_profile_v3(None, None, session, base, ImageReport(), set())
     kinds = {(e.attr_kind, e.text) for e in prof.inferred}
     assert ("seller", "seller: West Elm") in kinds and ("price_mixed", "price: mixed") in kinds
-    for dim in ("shape", "material", "color_finish", "frame_color", "frame_or_legs", "style"):
+    for dim in ("shape", "material", "color_finish", "frame_color", "style"):
         assert not [e for e in prof.inferred if e.dimension == dim], dim  # no attribute chip at all
     assert not [e for e in prof.inferred if e.attr_kind in ("open", "quality_cue")]
     assert prof.tagging["fallback"] is True and prof.trace["mode"] == "fallback"
@@ -172,12 +174,10 @@ def test_the_old_bias_is_gone_four_keyword_titles_and_four_silent_ones() -> None
     # stage 2c read titles by keyword: 4 titles said round or drum, 4 rectangular titles said nothing
     items = [tagged(f"a{i}", "love" if i < 2 else "like", f"Drum Table {i}") for i in range(4)]
     items += [tagged(f"b{i}", "like", f"Agnelli Table {i}") for i in range(4)]  # silent: no shape
-    res = classify_dimension(
-        "shape", items, {"shape": {"round": 0.4, "rectangular": 0.6}}, {"shape": 0.9}
-    )
+    res = classify_dimension("shape", items, exposure_of(0.4, 0.9))
     assert res.status == "none" and res.trace["like_mass"] == {"round": 8, "(unknown)": 4}
     assert res.trace["known_coverage"] == pytest.approx(0.6667, abs=1e-3)
-    assert "known coverage 67% is under 70%" in res.trace["reason"]
+    assert "round holds 67% of all like mass, under 80%" in res.trace["reason"]
     assert res.shares == {"round": 0.6667}  # a share of ALL mass, not of the known items only
 
 
@@ -199,31 +199,27 @@ def test_title_only_fallback_cannot_converge_even_with_obvious_titles() -> None:
 # ---- coverage: unknowns count against every value --------------------------------------------------------------
 
 
-def test_a_dimension_converges_only_with_known_coverage_of_at_least_seventy_percent() -> None:
-    low = {"shape": {"round": 0.3, "rectangular": 0.7}}
-    cov = {"shape": 1.0}
-    known = [tagged(f"a{i}", "like", f"Round Table {i}") for i in range(7)]
-    silent = [tagged(f"s{i}", "like", f"Plain Table {i}") for i in range(3)]
-    ok = classify_dimension("shape", known + silent, low, cov)  # 7 of 10 known, all round: 70%
-    assert ok.status == "converged" and ok.share == 0.7 and ok.trace["known_coverage"] == 0.7
+def test_a_dimension_converges_only_with_known_coverage_of_at_least_sixty_percent() -> None:
+    low = Exposure(shares={"material": {"wood": 0.3, "glass": 0.7}}, coverage={"material": 1.0})
+    known = [tagged(f"a{i}", "like", "Table", material="wood") for i in range(6)]
+    silent = [tagged(f"s{i}", "like", "Plain Table") for i in range(4)]
+    ok = classify_dimension("material", known + silent, low)  # 6 of 10 known, all wood: 60%
+    assert ok.status == "converged" and ok.share == 0.6 and ok.trace["known_coverage"] == 0.6
     short = classify_dimension(
-        "shape", known[:6] + silent + [tagged("s9", "like", "Plain 9")], low, cov
+        "material", known[:5] + silent + [tagged("s9", "like", "Plain")], low
     )
-    assert short.status == "none" and short.trace["known_coverage"] == 0.6
-    assert KNOWN_COVERAGE_MIN == 0.70
+    assert short.status == "none" and short.trace["known_coverage"] == 0.5
+    assert "known coverage 50% is under 60%" in short.trace["reason"]
+    assert KNOWN_COVERAGE_MIN == 0.60
 
 
-def test_the_lift_test_needs_keywords_in_seventy_percent_of_what_was_shown() -> None:
+def test_the_lift_test_needs_tags_on_sixty_percent_of_what_was_shown() -> None:
     items = [tagged(f"a{i}", "love", f"Round Table {i}") for i in range(3)]
-    thin = classify_dimension(
-        "shape", items, {"shape": {"round": 0.2, "rectangular": 0.8}}, {"shape": 0.69}
-    )
+    thin = classify_dimension("shape", items, exposure_of(0.2, 0.59))
     assert thin.status == "none" and "the lift test cannot run" in thin.trace["reason"]
-    enough = classify_dimension(
-        "shape", items, {"shape": {"round": 0.2, "rectangular": 0.8}}, {"shape": 0.70}
-    )
+    enough = classify_dimension("shape", items, exposure_of(0.2, 0.60))
     assert enough.status == "converged"
-    assert thin.trace["exposure_coverage"] == 0.69 and enough.trace["lift"] == 5.0
+    assert thin.trace["exposure_coverage"] == 0.59 and enough.trace["lift"] == 5.0
 
 
 def test_open_uses_the_same_all_mass_shares() -> None:
@@ -232,13 +228,11 @@ def test_open_uses_the_same_all_mass_shares() -> None:
         tagged("b", "love", "Rectangular B"),
         tagged("c", "love", "Plain C"),
     ]
-    res = classify_dimension(
-        "shape", items, {"shape": {"round": 0.5, "rectangular": 0.5}}, {"shape": 1.0}
-    )
+    res = classify_dimension("shape", items, exposure_of(0.5))
     assert res.status == "open" and res.shares == {"round": 0.3333, "rectangular": 0.3333}
     thin = classify_dimension(
         "shape", [tagged("a", "love", "Round A"), tagged("b", "like", "Rectangular B")] + [tagged(f"p{i}", "love", f"Plain {i}") for i in range(3)],
-        {"shape": {"round": 0.5, "rectangular": 0.5}}, {"shape": 1.0},
+        exposure_of(0.5),
     )  # fmt: skip
     assert thin.status == "none"  # unknowns pull round to 3/13 and rectangular to 1/13
 
@@ -579,11 +573,9 @@ def test_the_trace_has_the_numbers_for_every_dimension_seller_and_price(tmp_path
         "shape",
         "material",
         "color_finish",
-        "frame_or_legs",
         "frame_color",
         "style",
-        "size_class",
-    }
+    }  # size class and legs no longer decide anything
     shape = trace["dimensions"]["shape"]
     for key in (
         "like_mass",
@@ -606,23 +598,27 @@ def test_the_trace_has_the_numbers_for_every_dimension_seller_and_price(tmp_path
         and "top value rectangular holds 57%" in shape["reason"]
     )
     frame = trace["dimensions"]["frame_color"]
-    assert frame["decision"] == "none" and "known coverage 36% is under 70%" in frame["reason"]
-    assert "only 8% of shown titles have a keyword" in frame["reason"]
+    assert frame["decision"] == "none" and "known coverage 36% is under 60%" in frame["reason"]
+    assert "only 10% of shown results are tagged for it" in frame["reason"]
     style = trace["dimensions"]["style"]
     assert style["like_mass"]["industrial"] == 2 and "known coverage 14%" in style["reason"]
     finish = trace["dimensions"]["color_finish"]
-    assert "top value warm wood holds 64% of all like mass, under 70%" in finish["reason"]
+    assert finish["decision"] == "none" and finish["top_share"] == pytest.approx(0.6429, abs=1e-3)
+    assert (
+        "of shown results are tagged for it (under 60%): the lift test cannot run"
+        in finish["reason"]
+    )
     material = trace["dimensions"]["material"]
     assert (
         material["decision"] == "none" and "lift 1.286 for wood is under 1.3" in material["reason"]
     )
     assert trace["seller"]["candidates"][0]["lift"] == pytest.approx(1.714, abs=1e-3)
     assert trace["price"]["decision"] == "mixed"
-    assert view["search"]["trace"] == trace  # the response carries it
+    sent = {k: v for k, v in view["search"]["trace"].items() if k != "batch"}
+    assert sent == trace and "batch" in view["search"]["trace"]  # the response carries both
     session_file = json.loads((tmp_path / "shop-data" / f"{sid}.json").read_text())
-    assert (
-        session_file["profile"]["trace"] == trace and session_file["searches"][-1]["trace"] == trace
-    )
+    saved = {k: v for k, v in session_file["searches"][-1]["trace"].items() if k != "batch"}
+    assert session_file["profile"]["trace"] == trace and saved == trace
     assert session_file["profile"]["tagging"]["items_tagged"] == 10
 
 
@@ -659,7 +655,7 @@ def test_the_panel_is_text_only_closed_by_default_and_remembered() -> None:
     for number in (
         "like mass",
         "known coverage",
-        "of shown titles have a keyword",
+        "of shown results are tagged",
         "lift",
         "mean position",
     ):
