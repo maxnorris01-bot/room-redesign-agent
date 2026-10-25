@@ -593,7 +593,9 @@ def test_slow_failing_tagging_is_bounded_by_the_tagging_budget(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # one worker: calls run one after the other, so the shared fake clock is true elapsed time
-    svc, sid, _, clock = replay4(tmp_path, seconds=0.5, cfg=config(shop_search_workers=1))
+    svc, sid, _, clock = replay4(
+        tmp_path, seconds=0.5, cfg=config(shop_search_workers=1, shop_tag_workers=1)
+    )
 
     def script(n: int, kwargs: dict[str, Any]) -> Any:
         clock.advance(10.0)  # each failure is slow (a timeout): the retry rule applies
@@ -625,7 +627,13 @@ def test_a_job_reports_its_phase_while_running_and_its_result_when_done() -> Non
     job = manager.start("s1", "shop_again", work, lambda e: (500, "x"))
     reached.wait(10)
     running = manager.status(job, "s1")
-    assert running == {"state": "running", "phase": "Tagging results", "kind": "shop_again"}
+    assert running["state"] == "running" and running["phase"] == "Tagging results"
+    assert running["kind"] == "shop_again" and [s["id"] for s in running["steps"]] == [
+        "ratings",
+        "searching",
+        "tagging",
+        "ranking",
+    ]
     gate.set()
     manager.wait(job, 10)
     done = manager.status(job, "s1")
@@ -695,10 +703,10 @@ def test_a_failed_job_reports_a_safe_error_and_finished_jobs_expire() -> None:
 
     a = manager.start("s1", "shop_again", limited, failure)
     manager.wait(a, 10)
-    assert manager.status(a, "s1") == {
-        "state": "error", "phase": "Starting", "kind": "shop_again",
-        "status": 429, "error": "Shop Again limit reached (10 per session)",
-    }  # fmt: skip
+    failed = manager.status(a, "s1")
+    assert failed["state"] == "error" and failed["kind"] == "shop_again" and failed["status"] == 429
+    assert failed["error"] == "Shop Again limit reached (10 per session)"
+    assert "steps" in failed and "elapsed_s" in failed
     b = manager.start("s2", "search", crashed, failure)
     manager.wait(b, 10)
     state = manager.status(b, "s2")

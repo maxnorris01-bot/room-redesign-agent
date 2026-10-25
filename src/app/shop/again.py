@@ -29,6 +29,7 @@ from app.shop.prefs import (
     build_profile,
     seller_name,
 )
+from app.shop.progress import Progress, Timeline
 from app.shop.retailers import (
     AFFINITY_TIERS,
     Retailer,
@@ -260,7 +261,9 @@ def run_shop_again(
     """
     clock = clock or Clock()
     say = progress or (lambda _text: None)
+    steps = progress if isinstance(progress, Progress) else None
     started = clock.now()
+    timeline = Timeline(clock)
     base = base_query(session)
     if base is None:
         raise LookupError("no typed search in this session")
@@ -282,19 +285,24 @@ def run_shop_again(
             book,
             budget,
             clock,
-            workers=config.shop_search_workers,
+            workers=config.shop_tag_workers,
             until=started + config.shop_hard_stop_s,
+            timeline=timeline,
         )
         return clock.now() - t0
 
     def prefetch_typed() -> None:
         text, page = base.search_text, skip_pages.get(query_key(base.search_text), 0) + 1
         try:
-            prefetched[(text, page)] = _search_page(search, text, page, budget, clock)
+            with timeline.span("search", f"{text} (page {page})"):
+                prefetched[(text, page)] = _search_page(search, text, page, budget, clock)
         except ProviderError as exc:
             prefetched[(text, page)] = exc
 
     say("Reading your ratings")
+    if steps is not None:
+        steps.begin("ratings")
+    timeline.phase_start("preferences")
     t_prefs = clock.now()
     if concurrent:
         with ThreadPoolExecutor(max_workers=2) as ex:
@@ -305,7 +313,10 @@ def run_shop_again(
                 f_tag.result()
                 untagged = sum(1 for r in shown if book.get(r.id) is None)
                 return build_exposure(
-                    shown, book.merged(), keywords=bool(book.failures) and untagged > 0
+                    shown,
+                    book.merged(),
+                    keywords=bool(book.failures) and untagged > 0,
+                    tag_source=session.tag_source,
                 )
 
             profile, warning = build_profile(session, base, budget, thumbnailer, exposure=exposure)
@@ -315,10 +326,16 @@ def run_shop_again(
         tag_shown_s = tag_shown()
         untagged_now = sum(1 for r in shown if book.get(r.id) is None)
         exposure_now = build_exposure(
-            shown, book.merged(), keywords=bool(book.failures) and untagged_now > 0
+            shown,
+            book.merged(),
+            keywords=bool(book.failures) and untagged_now > 0,
+            tag_source=session.tag_source,
         )
         profile, warning = build_profile(session, base, budget, thumbnailer, exposure=exposure_now)
     t_prefs_done = clock.now()
+    timeline.phase_end("preferences")
+    if steps is not None:
+        steps.finish("ratings")
     untagged = sum(1 for r in shown if book.get(r.id) is None)
     if warning:
         warnings.append(warning)
@@ -327,6 +344,7 @@ def run_shop_again(
     ctx = again_context(session, profile, config, queries, dropped, book, query)
     ctx.clock, ctx.progress, ctx.hard_stop_at = clock, progress, started + config.shop_hard_stop_s
     ctx.prefetched = prefetched
+    ctx.timeline = timeline
     outcome = run_query(query, search, config, budget, warnings, started, ctx, clock, progress)
     outcome.display_query = base  # the request chips keep showing only what the parser read
     if book.failed:

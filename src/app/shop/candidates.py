@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any
@@ -36,11 +36,13 @@ from typing import Any
 import anthropic
 
 from app.config import BudgetExceededError, Config
+from app.images import PreparedImage
 from app.llm import Budget, LLMOutputError, complete
 from app.prompts import load_prompt
 from app.schemas import to_output_schema
 from app.shop.clock import Clock
 from app.shop.models import CandidateTags
+from app.shop.progress import Timeline
 from app.shop.redact import describe_exception
 from app.shop.thresholds import CANDIDATE_TAG_BATCH
 from app.shop.vocab import DIMENSIONS, normalize, normalize_style, vocab_text
@@ -87,6 +89,22 @@ TAG_TOOL_DEF: dict[str, Any] = {
         "additionalProperties": False,
     },
 }
+
+
+def _photo_tool_def() -> dict[str, Any]:
+    """The tool for a call with photos: the same schema plus the quality cues a photo shows."""
+    import copy
+
+    tool: dict[str, Any] = copy.deepcopy(TAG_TOOL_DEF)
+    item = tool["input_schema"]["properties"]["items"]["items"]
+    item["properties"]["quality_cues"] = {"type": "array", "items": {"type": "string"}}
+    item["required"] = [*item["required"], "quality_cues"]
+    return tool
+
+
+TAG_TOOL_PHOTO_DEF: dict[str, Any] = _photo_tool_def()
+CUES_KEY = "_cues"  # the cues a photo showed, in a tag dict ("solid wood;brushed finish")
+MAX_CUES = 3
 _TOOL_KEYS = {
     "shape": "shape",
     "material": "material",
@@ -116,6 +134,7 @@ class Taggable:
     title: str
     price: float | None
     seller: str
+    thumbnail_url: str = ""  # a photo to read together with the title (preparation only)
 
 
 @dataclass
@@ -169,7 +188,7 @@ def _money(value: float | None) -> str:
     return "no price" if value is None else f"${value:,.0f}"
 
 
-def candidate_user_text(batch: list[Taggable]) -> str:
+def candidate_user_text(batch: list[Taggable], image_numbers: dict[str, int] | None = None) -> str:
     lines = [
         "Allowed values (answer from these only, or null / - when the title does not show it):",
         vocab_text(),
@@ -180,7 +199,14 @@ def candidate_user_text(batch: list[Taggable]) -> str:
     for n, item in enumerate(batch, start=1):
         title = " ".join(item.title.split())[:TITLE_CHARS]
         seller = " ".join(item.seller.split())[:40] or "?"
-        lines.append(f"{n} | {title} | {_money(item.price)} | {seller}")
+        row = f"{n} | {title} | {_money(item.price)} | {seller}"
+        if image_numbers is not None:
+            row += (
+                f" | image {image_numbers[item.id]}"
+                if item.id in image_numbers
+                else " | image none"
+            )
+        lines.append(row)
     return "\n".join(lines)
 
 
@@ -229,6 +255,12 @@ def parse_tool_input(data: Mapping[str, Any], batch_size: int) -> dict[int, dict
                 continue
             raw = item.get(_TOOL_KEYS[dim])
             tags[dim] = _clean_value(dim, raw) if isinstance(raw, str) else None
+        cues = item.get("quality_cues")
+        if isinstance(cues, list):
+            clean = [
+                " ".join(c.lower().split())[:30] for c in cues if isinstance(c, str) and c.strip()
+            ]
+            tags[CUES_KEY] = ";".join(dict.fromkeys(clean[:MAX_CUES])) or None
         out[n] = tags
     return out
 
@@ -288,11 +320,19 @@ def run_call(
     clock: Clock,
     timeout_s: float,
     raw_chars: int = RAW_CHARS,
+    images: dict[str, PreparedImage] | None = None,
+    timeline: Timeline | None = None,
+    queued_at: float | None = None,
 ) -> tuple[dict[int, dict[str, str | None]], dict[str, Any]]:
     """One model call for `batch` in `mode` ("tool" or "rows"): parse what came back, log it, and
-    return (rows, the log entry). The entry always says how the call ended."""
+    return (rows, the log entry). The entry always says how the call ended.
+
+    With `images` (a prepared thumbnail by item id; preparation only) the call is the tool call of
+    prompt v4 with each image attached, the item lines say which image is theirs, and the answer
+    may carry quality cues. Without it the title-only call is the same tool call with no images.
+    `timeline` records the call (start, duration, the wait since `queued_at`)."""
     config: Config = budget.config
-    limit = tag_max_tokens(len(batch), mode)
+    limit = tag_max_tokens(len(batch) + (len(batch) // 2 if images else 0), mode)
     t0 = clock.now()
     entry: dict[str, Any] = {
         "mode": mode, "items": len(batch), "max_tokens": limit, "stop_reason": "",
@@ -303,10 +343,15 @@ def run_call(
         "thinking_tokens": None, "thinking_only": False,
     }  # fmt: skip
     rows: dict[int, dict[str, str | None]] = {}
+    ordered_images = [it.id for it in batch if images and it.id in images]
+    numbers = (
+        {rid: n for n, rid in enumerate(ordered_images, start=1)} if images is not None else None
+    )
     common: dict[str, Any] = {
         "span_name": "llm.shop_candidate_tags",
         "model": config.rank_model,
-        "user_text": candidate_user_text(batch),
+        "user_text": candidate_user_text(batch, numbers),
+        "images": [images[r] for r in ordered_images] or None if images else None,
         "budget": budget,
         "max_tokens": limit,
         "stream": True,
@@ -318,7 +363,7 @@ def run_call(
         if mode == MODE_TOOL:
             completion = complete(
                 prompt=load_prompt("shop_candidate_tags"),
-                tools=[TAG_TOOL_DEF],
+                tools=[TAG_TOOL_PHOTO_DEF if images is not None else TAG_TOOL_DEF],
                 tool_choice={"type": "tool", "name": TAG_TOOL},
                 **common,
             )
@@ -368,6 +413,12 @@ def run_call(
         entry["error"], entry["where"] = describe_exception(exc)
     finally:
         entry["seconds"] = round(clock.now() - t0, 3)
+        if timeline is not None:
+            timeline.event(
+                "model", f"tags {len(batch)} items" + (" + photos" if images else ""), t0,
+                t0 + entry["seconds"], (t0 - queued_at) if queued_at is not None else 0.0,
+                1 if retry else 0, items=len(batch), ok=not entry["error"],
+            )  # fmt: skip
         with book.lock:
             book.calls += 1
             book.usd += entry["usd"]
@@ -431,6 +482,8 @@ def tag_batch(
     deadline: float,
     timeout_s: float,
     closed: threading.Event,
+    timeline: Timeline | None = None,
+    queued_at: float | None = None,
 ) -> None:
     """Tag one batch with the forced tool call, and at most ONE retry round: the same tool call
     for what is still untagged, in pieces of half the batch size. No retry when the deadline has
@@ -441,7 +494,17 @@ def tag_batch(
             book.skipped += len(batch)
         return
     timeout_s = max(1.0, min(timeout_s, deadline - clock.now()))  # never run past the deadline
-    rows, entry = run_call(batch, book, budget, MODE_TOOL, False, clock, timeout_s)
+    rows, entry = run_call(
+        batch,
+        book,
+        budget,
+        MODE_TOOL,
+        False,
+        clock,
+        timeout_s,
+        timeline=timeline,
+        queued_at=queued_at,
+    )
     if not closed.is_set():
         _store(batch, rows, book)
     weak = entry["stop_reason"] == "max_tokens" or len(rows) < MIN_PARSED_SHARE * len(batch)
@@ -456,7 +519,9 @@ def tag_batch(
                 break
             piece = left[start : start + size]
             timeout_s = max(1.0, min(timeout_s, deadline - clock.now()))
-            more, entry = run_call(piece, book, budget, MODE_TOOL, True, clock, timeout_s)
+            more, entry = run_call(
+                piece, book, budget, MODE_TOOL, True, clock, timeout_s, timeline=timeline
+            )
             if not closed.is_set():
                 _store(piece, more, book)
     if any(book.get(t.id) is None for t in batch):
@@ -473,6 +538,8 @@ def tag_results(
     clock: Clock | None = None,
     workers: int = 5,
     until: float | None = None,
+    timeline: Timeline | None = None,
+    on_batch: Callable[[int], None] | None = None,
 ) -> None:
     """Tag the results the book does not have yet, in batches of at most `CANDIDATE_TAG_BATCH`.
 
@@ -493,7 +560,8 @@ def tag_results(
         if item.id not in seen and book.get(item.id) is None:
             seen.add(item.id)
             todo.append(item)
-    book.requested += len(todo)
+    with book.lock:
+        book.requested += len(todo)
     batches = [todo[i : i + CANDIDATE_TAG_BATCH] for i in range(0, len(todo), CANDIDATE_TAG_BATCH)]
     if not batches:
         return
@@ -502,27 +570,21 @@ def tag_results(
     if until is not None:
         deadline = min(deadline, until)
     closed = threading.Event()
+    call_timeout = config.shop_tag_call_timeout_s
+
+    def one(b: list[Taggable], queued_at: float) -> None:
+        tag_batch(b, book, budget, clock, deadline, call_timeout, closed, timeline, queued_at)
+        if on_batch is not None:
+            on_batch(len(b))
+
     try:
         if workers <= 1 or len(batches) == 1:
             for batch in batches:
-                tag_batch(
-                    batch, book, budget, clock, deadline, config.shop_tag_call_timeout_s, closed
-                )
+                one(batch, clock.now())
         else:
             pool = ThreadPoolExecutor(max_workers=min(workers, len(batches)))
-            futures = [
-                pool.submit(
-                    tag_batch,
-                    b,
-                    book,
-                    budget,
-                    clock,
-                    deadline,
-                    config.shop_tag_call_timeout_s,
-                    closed,
-                )
-                for b in batches
-            ]
+            queued = clock.now()
+            futures = [pool.submit(one, b, queued) for b in batches]
             done, pending = wait(futures, timeout=max(1.0, deadline - started) + 1.0)
             closed.set()  # a batch still running is not waited for and its answer is discarded
             pool.shutdown(wait=False, cancel_futures=True)

@@ -655,3 +655,79 @@ variant with `thinking: yes` and `stop reason: max_tokens` is the thinking-budge
 disabled none of the three should show thinking; `fields filled` far below the batch size for a field says
 titles rarely show it (frame_color is the usual one).
 
+
+## Amendment, stage 2h (2026-10-25): prepare while the shopper browses, a shorter live path, a step bar
+
+A live Shop Again took 34.6 s: preferences 8.5 s, tagging what was shown 4.4 s (from titles only, so the
+lift test could not run for shape, finish, frame color or style), tagging 140 candidates 15.9 s (6 calls)
+and rank 4.4 s. Nothing here changes a threshold or the decision rules; this amendment moves model work
+earlier, runs the rest in parallel, and shows where the time goes.
+
+**Background preparation (`app.shop.prep`).** When a batch is stored (a search or a Shop Again), a
+background job tags every item from its title AND its thumbnail with prompt `shop_candidate_tags` v4
+(v1 to v3 stay on disk): the same forced `record_tags` call (strict schema, thinking disabled), with the
+photo fetched by the guarded fetcher (https only, the same size limits, EXIF stripped). Two calls of about
+12 items for a batch of 24. Results are cached in the session file by result id with a source:
+`photo` or `title`. A photo tag replaces a title or keyword tag and is never replaced by one; an item
+already tagged from a photo is skipped. Each rating that has a comment is read as soon as it is written
+(the preference call restricted to that one item) and cached under `item id | sha1(comment)[:12]`, so a
+changed or deleted comment is a different key and the old reading is ignored (and purged). Limits: at most
+4 model calls at once across ALL background jobs (a shared pool), 4 calls for one stored batch, a session's
+preparation stops at `APP_SHOP_PREP_MAX_USD` (default $0.05), Start over cancels what is queued and
+discards what is running (`POST /api/reset`), and every write is one transaction under the store's lock.
+A failure is recorded (redacted, URLs included) and never raised. `APP_SHOP_PREP=0` turns it off.
+
+**What the preferences step reuses.** `cached_readings` finds the rated items covered by a photo tag (or a
+comment reading that carries tags) and, if they have a comment, a reading of that exact comment. If every
+rated item is covered, the preference call is skipped: the answer is built from the cache (tags, likes,
+dislikes, query adjustments from the comment readings, quality cues from the photo tags, contradicted
+guesses computed in code from the tags). If some are missing, only those go to the model and the two parts
+are merged. The trace says exactly what happened: "N of M rated items reused from the background
+preparation; K sent to the model now (or: so no preferences call was needed)".
+
+**The wait and the fallback.** A Shop Again waits for preparation still running for its session for at most
+`APP_SHOP_PREP_WAIT_S` (default 8 s; a bounded timed wait on a condition, ending the moment the last task
+does), showing "Finishing your last ratings (n of m)". After that it proceeds with the live path for
+whatever is not cached. Preparation can never block it forever or make it fail.
+
+**Cost.** Preparation spend is recorded per session (`prep.usd`), added to the session total and shown as
+its own "background preparation $x" in the footer. It is the one place cost rises: every shown item is
+tagged once with a photo, whether or not a Shop Again follows. It is estimated at under $0.005 a batch of 24
+with Haiku, UNMEASURED live; `make shop-live` shows the real number.
+
+**Live path.** (1) Each search's candidates are queued for tagging the moment that search returns, in
+batches of at most 40, up to `APP_SHOP_TAG_WORKERS` (default 6) at once, while the other searches and the
+rank call run. Page 1 of the original request starts with the job; searches that depend on learned
+preferences start as soon as the chips are known. (2) The cause of "6 calls took 15.9 s against 6.5 s for
+one": tagging shared the search worker count (4), so six batches ran in two waves of about 6.5 s, and
+tagging began only after every search had finished. (3) Why 140 candidates were tagged with
+`APP_SHOP_TAG_TOP_N` 60: the cap was applied once per step (initial, each supply search, refill) and again
+for the shown items, not once per Shop Again. Now `TagPipeline` holds ONE cap for the run: the first-come
+work may use the cap minus a 12-title reserve, supply and refill candidates use the rest, and the reserve
+is spent on the next-ranked candidates when no supply is needed. A product id is never tagged twice
+(cached tags are reused; a photo tag is only requested when preparation had none). The tradeoff: tagging
+starts before the rank call, so the first-come titles are not exactly the top by rank; the reserve is
+rank-ordered. (4) The trace carries a timeline: every call (start offset, duration, queue wait, retries)
+and every phase (preferences, searching, ranking, tagging). The 30 s target and 45 s hard stop are
+unchanged.
+
+**Status bar.** `GET /api/job/<id>` returns `steps` (id, label, state pending, active, done or skipped,
+`done_count` of `total`) and `elapsed_s`. Shop Again: "Finishing your last ratings", "Searching (n of m)",
+"Tagging (n of m)", "Ranking"; a first search: Searching, Tagging, Ranking. A step that is not needed shows
+as done at once. The page draws one segment per step (check on finished steps, an animated active segment
+that stops under `prefers-reduced-motion`), the label with counts, an elapsed timer, no percentages and, after
+30 s, "Taking longer than usual; this stops at 45 s". `role="progressbar"` with `aria-valuenow` (steps
+done) and `aria-valuemax`, and the current step text in the polite live region. Strings go in with
+`textContent`; the CSP is unchanged. `APP_SHOP_MOCK_DELAY` (mock only, seconds per mock step, default 0)
+slows the mock so `make shop-check` can screenshot the bar mid-run.
+
+**One seller canonicalization.** `retailers.seller_key` (case, punctuation, "&" and "and", "www.", ".com",
+sub-seller suffixes) maps "west elm", "West Elm", "westelm.com", "Crate & Barrel", "crateandbarrel.com" and
+the other table retailers to one key and one canonical display name; unknown sellers keep a cleaned name and
+no tier. `count_sellers` groups by that key and feeds the seller caps, seller chips, peer exclusion,
+de-duplication and every trace table, so the "pool after" count covers every candidate in the final batch
+(the 2g trace showed Living Spaces at 0 after and 2 in the batch).
+
+**Open.** Live numbers for preparation spend, how often the 8 s wait is used, and the new Shop Again time
+are unmeasured. The mock tags photos by title keywords, so quality cues and photo-over-title overrides are
+tested with fakes, not with real images.

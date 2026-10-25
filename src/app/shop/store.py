@@ -131,6 +131,14 @@ class Session(_Model):
     tag_cache: dict[str, dict[str, str | None]] = Field(default_factory=dict)
     # stage 2f: peer retailers already searched: key -> {name, searches, new, empty}
     searched_peers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # stage 2h: where each cached tag came from ("title" or "photo": a photo tag is never replaced
+    # by a title tag), the quality cues a photo showed, comment readings keyed by item id plus
+    # comment text (a changed or deleted comment makes its entry stale and it is dropped), and the
+    # background preparation's spend
+    tag_source: dict[str, str] = Field(default_factory=dict)
+    quality_cues: dict[str, list[str]] = Field(default_factory=dict)
+    comment_cache: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    prep: dict[str, Any] = Field(default_factory=dict)
 
 
 def valid_session_id(session_id: str) -> bool:

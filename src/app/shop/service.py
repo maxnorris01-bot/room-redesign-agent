@@ -22,7 +22,16 @@ from app.shop.models import (
     clean_comment,
     clean_request,
 )
-from app.shop.prefs import pin_seller, profile_summary, reapply_removed, remove_entry, with_pins
+from app.shop.prefs import (
+    comment_key,
+    pin_seller,
+    profile_summary,
+    reapply_removed,
+    remove_entry,
+    with_pins,
+)
+from app.shop.prep import PrepManager
+from app.shop.progress import Progress
 from app.shop.resolve import UnknownResult, resolve
 from app.shop.search import SearchOutcome, run_search
 from app.shop.store import (
@@ -100,6 +109,7 @@ class ShopService:
         self.store = store
         self.search_provider = search
         self.lookup_provider = lookup
+        self.prep = PrepManager(config, store, self.thumbnailer, self.clock)
 
     # ---- views ----------------------------------------------------------------------------
 
@@ -120,6 +130,7 @@ class ShopService:
             "shop_agains_cap": self.config.shop_agains_per_session,
             "saved": [],
             "session_usd": 0.0,
+            "prep_usd": 0.0,
         }
         if session is None:
             return base
@@ -135,7 +146,20 @@ class ShopService:
             profile_summary=profile_summary(session.profile),
             shop_agains_used=session.shop_agains_used,
             saved=[session.results[rid].model_dump(mode="json") for rid in saved_ids(session)],
-            session_usd=round(sum(r.total_usd for r in session.searches) + session.lookup_usd, 6),
+            session_usd=round(
+                sum(r.total_usd for r in session.searches)
+                + session.lookup_usd
+                + float(session.prep.get("usd", 0.0)),
+                6,
+            ),
+            prep_usd=round(float(session.prep.get("usd", 0.0)), 6),
+            prep={
+                "calls": int(session.prep.get("calls", 0)),
+                "tagged": int(session.prep.get("tagged", 0)),
+                "comments": int(session.prep.get("comments", 0)),
+                "photo_tagged": sum(1 for v in session.tag_source.values() if v == "photo"),
+                "errors": list(session.prep.get("errors", []))[-3:],
+            },
             resolved={rid: r.model_dump(mode="json") for rid, r in session.resolved.items()},
             lookups_used=session.lookups_used,
             search_count=len(session.searches),
@@ -253,7 +277,9 @@ class ShopService:
                 raise ApiError(500, "could not create a session") from None
         with self.store.transaction(session_id) as session:
             self._record(session, cleaned, outcome)
-            return self._view(session)
+            view = self._view(session)
+        self.prep.submit_batch(session_id, outcome.results)  # tag it from photos while you browse
+        return view
 
     def search(self, session_id: Any, request: Any) -> dict[str, Any]:
         cleaned, sid = self._prepare_search(session_id, request)
@@ -369,7 +395,15 @@ class ShopService:
                 session.ratings.pop(result_id, None)
             else:
                 session.ratings[result_id] = record
-            return {"result_id": result_id, "rating": record.rating, "comment": record.comment}
+            # a changed or deleted comment makes the readings cached for it stale
+            current = comment_key(result_id, record.comment) if record.comment.strip() else ""
+            for key in [k for k in session.comment_cache if k.startswith(f"{result_id}|")]:
+                if key != current:
+                    del session.comment_cache[key]
+            answer = {"result_id": result_id, "rating": record.rating, "comment": record.comment}
+        if comment is not UNSET and record.comment.strip():
+            self.prep.submit_comment(session_id, result_id, record.comment)
+        return answer
 
     # ---- resolve --------------------------------------------------------------------------
 
@@ -409,9 +443,37 @@ class ShopService:
             )
         return session
 
+    def _await_prep(
+        self, session_id: str, session: Session, progress: Callable[[str], None] | None
+    ) -> Session:
+        """Give the background preparation up to `shop_prep_wait_s` to finish ("Finishing your
+        last ratings (n of m)"), then carry on with whatever is cached: the live path covers
+        anything missing. Returns the session as the preparation left it; never raises and never
+        blocks longer than that."""
+        done, total = self.prep.outstanding(session_id)
+        if not self.prep.enabled or done >= total:
+            return session
+        steps = progress if isinstance(progress, Progress) else None
+        if steps is not None:
+            steps.begin("ratings", total=total)
+
+        def report(finished: int, submitted: int) -> None:
+            if progress is not None:
+                progress(f"Finishing your last ratings ({finished} of {submitted})")
+            if steps is not None:
+                steps.set_total("ratings", submitted)
+                steps.advance("ratings", max(0, finished - (steps.steps[0].done_count or 0)))
+
+        self.prep.wait(session_id, self.config.shop_prep_wait_s, report)
+        try:
+            return self.store.load(session_id)
+        except SessionError:
+            return session
+
     def _do_again(
         self, session_id: str, session: Session, progress: Callable[[str], None] | None = None
     ) -> dict[str, Any]:
+        session = self._await_prep(session_id, session, progress)
         try:
             outcome, profile, query = run_shop_again(
                 session, self.search_provider, self.config, self.thumbnailer, self.clock, progress
@@ -431,7 +493,10 @@ class ShopService:
                 )
             live.profile = profile
             live.shop_agains_used += 1
-            live.tag_cache.update(outcome.new_tags)  # a result is tagged once, ever
+            for rid, tags in outcome.new_tags.items():  # a result is tagged once; a photo tag stays
+                if live.tag_source.get(rid) != "photo":
+                    live.tag_cache[rid] = tags
+                    live.tag_source[rid] = "title"
             for peer in outcome.peer_log:  # rotate: what was searched is remembered
                 row = live.searched_peers.setdefault(
                     peer["key"], {"name": peer["peer"], "searches": 0, "new": 0, "empty": True}
@@ -441,7 +506,18 @@ class ShopService:
                 row["empty"] = peer["new_candidates"] == 0
             self._record(live, live.searches[-1].request if live.searches else "", outcome,
                          note=profile_summary(profile))  # fmt: skip
-            return self._view(live)
+            view = self._view(live)
+        self.prep.submit_batch(
+            session_id, outcome.results
+        )  # the new batch is prepared as you browse
+        return view
+
+    def reset_session(self, session_id: Any) -> dict[str, Any]:
+        """Start over: stop the background preparation for this session."""
+        if not isinstance(session_id, str) or not self.store.exists(session_id):
+            raise ApiError(404, "unknown session")
+        self.prep.cancel(session_id)
+        return {"ok": True}
 
     def shop_again(self, session_id: Any) -> dict[str, Any]:
         """A fresh set of results shaped by the ratings (see `app.shop.again`)."""

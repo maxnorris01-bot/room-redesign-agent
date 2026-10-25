@@ -120,3 +120,9 @@ session. Sessions are saved
 in `shop-data/` (gitignored). `make shop-check` drives the page in a headless browser in mock mode and
 writes screenshots to `spike-output/shop-screenshots/`. The server listens on 127.0.0.1 only and
 sends a strict Content Security Policy.
+
+Stage 2h: while you browse, each stored batch is tagged in the background from titles and product photos
+and each comment is read as it is written, so a Shop Again reuses them (it waits at most
+`APP_SHOP_PREP_WAIT_S`, 8 s by default, for what is still running). The cost appears in the footer as
+"background preparation". A slow action shows a step bar (Finishing your last ratings, Searching, Tagging,
+Ranking) instead of a spinner; `APP_SHOP_MOCK_DELAY` slows the mock for screenshots. See ADR 0012, stage 2h.

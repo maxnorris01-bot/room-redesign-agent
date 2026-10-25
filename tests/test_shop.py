@@ -190,7 +190,11 @@ class RouterClient:
         )
         if is_tagging_tool:  # candidate tagging
             content = kwargs["messages"][0]["content"]
-            text = content if isinstance(content, str) else str(content)
+            text = (
+                content
+                if isinstance(content, str)
+                else "\n".join(blk["text"] for blk in content if blk.get("type") == "text")
+            )  # photo calls send image blocks and then the text
             if isinstance(self.tags, str):
                 return response([text_block(self.tags)])
             if isinstance(self.tags, dict) and "items" not in self.tags:

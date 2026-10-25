@@ -24,6 +24,7 @@ liked item contradicts them, and deleted chips never coming back.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from collections.abc import Callable
@@ -45,6 +46,7 @@ from app.shop.decide import (
 from app.shop.models import (
     MAX_SEARCH_TEXT_CHARS,
     MAX_TERMS,
+    ContradictedGuess,
     ImageReport,
     InferredAttribute,
     ItemTags,
@@ -69,7 +71,17 @@ from app.shop.textutil import (
     sig_words,
     text_matches,
 )
-from app.shop.vocab import PHRASE_DIMS, phrase_word, tag_values, title_value, vocab_text
+from app.shop.vocab import (
+    PHRASE_DIMS,
+    normalize,
+    normalize_style,
+    phrase_word,
+    style_families,
+    style_leaves,
+    tag_values,
+    title_value,
+    vocab_text,
+)
 from app.thumbnails import Thumbnailer, fetch_traced
 
 MAX_PROFILE_TERMS = 12
@@ -1134,6 +1146,177 @@ def merge_tag_answers(answers: list[PreferenceTags]) -> PreferenceTags:
     )  # fmt: skip
 
 
+# ---- stage 2h: readings prepared in the background (photo tags, comments) ------------------
+
+
+def comment_key(rid: str, comment: str) -> str:
+    """The cache key of one comment's reading: the item id plus the comment text, so a changed or
+    deleted comment never finds an old entry."""
+    digest = hashlib.sha1(" ".join(comment.split()).lower().encode()).hexdigest()[:12]
+    return f"{rid}|{digest}"
+
+
+def reading_entry(answer: PreferenceTags, rid: str) -> dict[str, Any]:
+    """What is cached for one rated item from a preference call restricted to it."""
+    item = next((t for t in answer.items if t.id == rid), None)
+    tags: dict[str, str | None] = {}
+    if item is not None:
+        for dim in ("shape", "material", "color_finish", "frame_color"):
+            tags[dim] = normalize(dim, getattr(item, dim))
+        tags["style"] = normalize_style(item.style)
+    return {
+        "tags": tags,
+        "cues": list(item.quality_cues) if item is not None else [],
+        "likes": list(answer.likes),
+        "dislikes": list(answer.dislikes),
+        "adjustments": answer.query_adjustments.model_dump(mode="json"),
+    }
+
+
+def merge_adjustments(parts: list[QueryAdjustments]) -> QueryAdjustments:
+    """Several items' query adjustments as one: lists united, the lowest price cap asked for."""
+
+    def united(name: str) -> list[str]:
+        out: list[str] = []
+        for part in parts:
+            out += [x for x in getattr(part, name) if x not in out]
+        return out
+
+    caps = [p.price_max for p in parts if p.price_max]
+    notes = [p.price_note for p in parts if p.price_note]
+    searches = [p.search_text for p in parts if p.search_text]
+    return QueryAdjustments(
+        search_text=searches[0] if searches else "",
+        style_terms=united("style_terms"), material_terms=united("material_terms"),
+        must_have=united("must_have"), avoid=united("avoid"),
+        price_max=min(caps) if caps else None, price_note=notes[0] if notes else "",
+    )  # fmt: skip
+
+
+def contradicted_from_tags(
+    base: ShopQuery, tags: dict[str, ItemTags], ratings: dict[str, str]
+) -> list[ContradictedGuess]:
+    """The parser's style guesses that loved or liked items clearly are not, from their tags: a
+    guess is contradicted by an item whose style families are known and do not include the
+    guess's family. The model used to say this; with cached tags code can."""
+    out: list[ContradictedGuess] = []
+    for term in guess_style_terms(base):
+        leaf = normalize("style", term)
+        families = style_families(leaf) if leaf and leaf != "other" else []
+        if not families:
+            continue
+        ids = [
+            rid
+            for rid, t in tags.items()
+            if ratings.get(rid) in ("love", "like")
+            and style_families(normalize_style(t.style))
+            and families[0] not in style_families(normalize_style(t.style))
+        ]
+        if ids:
+            out.append(ContradictedGuess(text=term, evidence=sorted(ids)))
+    return out
+
+
+def cached_readings(
+    session: Session, base: ShopQuery
+) -> tuple[PreferenceTags | None, set[str], set[str]]:
+    """The rated items the background preparation already read: (their reading as one answer, the
+    rated item ids still missing, the ids whose tags came from a photo).
+
+    An item is covered when it has photo tags (or a comment reading that carries tags) and, if it
+    has a comment, a reading of that exact comment. Nothing else is trusted: an item without both
+    is missing and goes to the live preference call."""
+    items: list[ItemTags] = []
+    likes: list[str] = []
+    dislikes: list[str] = []
+    adjustments: list[QueryAdjustments] = []
+    missing: set[str] = set()
+    photo_ids: set[str] = set()
+    ratings: dict[str, str] = {}
+    for rid, rec in session.ratings.items():
+        if rec.rating is None or rid not in session.results:
+            continue
+        comment = rec.comment.strip()
+        reading = session.comment_cache.get(comment_key(rid, comment)) if comment else None
+        tags: dict[str, str | None] | None = None
+        if session.tag_source.get(rid) == "photo" and rid in session.tag_cache:
+            tags = dict(session.tag_cache[rid])
+            photo_ids.add(rid)
+        elif reading is not None and any(reading["tags"].values()):
+            tags = dict(reading["tags"])
+            photo_ids.add(rid)
+        if tags is None or (comment and reading is None):
+            missing.add(rid)
+            continue
+        ratings[rid] = rec.rating
+        cues = session.quality_cues.get(rid) or (reading["cues"] if reading else [])
+        items.append(
+            ItemTags(
+                id=rid,
+                shape=tags.get("shape"),
+                material=tags.get("material"),
+                color_finish=tags.get("color_finish"),
+                frame_color=tags.get("frame_color"),
+                style=style_leaves(tags.get("style")),
+                quality_cues=list(cues)[:3],
+            )  # fmt: skip
+        )
+        if reading is not None:
+            likes += [x for x in reading["likes"] if x not in likes]
+            dislikes += [x for x in reading["dislikes"] if x not in dislikes]
+            adjustments.append(QueryAdjustments.model_validate(reading["adjustments"]))
+    if not items:
+        return None, missing, photo_ids
+    merged = merge_adjustments(adjustments) if adjustments else QueryAdjustments(
+        search_text="", style_terms=[], material_terms=[], must_have=[], avoid=[],
+        price_max=None, price_note="",
+    )  # fmt: skip
+    answer = PreferenceTags(
+        items=items, likes=likes, dislikes=dislikes,
+        contradicted_guesses=contradicted_from_tags(base, {t.id: t for t in items}, ratings),
+        query_adjustments=merged,
+    )  # fmt: skip
+    return answer, missing, photo_ids
+
+
+def read_rated_items(
+    session: Session,
+    base: ShopQuery,
+    only: set[str],
+    budget: Budget,
+    thumbnailer: Thumbnailer | None,
+) -> tuple[PreferenceTags | None, ImageReport, str]:
+    """One preference call (prompt shop_prefs v6) for just the rated items `only`, each with its
+    thumbnail when it can be fetched: (the answer or None, the image report, why it failed). Used
+    by the background preparation to read a comment as it is written."""
+    config = budget.config
+    rated = rated_map(session)
+    rows = [
+        rated[rid]
+        for rid in only
+        if rid in rated and rated[rid].thumbnail_url.startswith("https://")
+    ]
+    images, report = fetch_images(rows, thumbnailer, budget)
+    ordered = [r.id for r in rows if r.id in images]
+    numbers = {rid: n for n, rid in enumerate(ordered, start=1)}
+    try:
+        completion = complete(
+            span_name="llm.shop_prefs",
+            prompt=load_prompt("shop_prefs"),
+            model=config.model_retrieval,
+            user_text=prefs_user_text(session, base, numbers, only),
+            budget=budget,
+            max_tokens=prefs_max_tokens(len(only)),
+            schema=to_output_schema(PreferenceTags),
+            images=[images[rid] for rid in ordered] or None,
+            effort=config.effort_retrieval,
+            disable_thinking=True,
+        )
+        return parse_model(PreferenceTags, completion.text, what="shop_prefs"), report, ""
+    except (LLMOutputError, SchemaError) as exc:
+        return None, report, str(exc)[:120]
+
+
 def build_profile(
     session: Session,
     base: ShopQuery,
@@ -1153,9 +1336,13 @@ def build_profile(
     items tagged of rated, images used, and whether a retry or the fallback happened.
     """
     config = budget.config
-    rows = select_image_rows(session)
-    images, report = fetcher(rows, thumbnailer, budget)
     n_rated = sum(1 for rec in session.ratings.values() if rec.rating is not None)
+    cached, missing, photo_ids = cached_readings(session, base)
+    need: set[str] | None = None  # None: every rated item goes to the call (nothing is cached)
+    if cached is not None:
+        need = missing
+    rows = [r for r in select_image_rows(session) if need is None or r.id in need]
+    images, report = fetcher(rows, thumbnailer, budget) if rows else ({}, ImageReport())
     calls = 0
     failures: list[str] = []
 
@@ -1182,19 +1369,30 @@ def build_profile(
 
     proposed: PreferenceTags | None = None
     retried = False
-    try:
-        proposed = call(None)
-    except (LLMOutputError, SchemaError) as exc:
-        failures.append(str(exc)[:120])
-        retried = True
-        answers: list[PreferenceTags] = []
-        for group in split_groups(session):
-            try:
-                answers.append(call(group))
-            except (LLMOutputError, SchemaError) as again:
-                failures.append(str(again)[:120])
-        proposed = merge_tag_answers(answers) if answers else None
+    if need is not None and not need:
+        proposed = cached  # everything was read in the background: no model call at all
+    else:
+        try:
+            proposed = call(need)
+        except (LLMOutputError, SchemaError) as exc:
+            failures.append(str(exc)[:120])
+            retried = True
+            answers: list[PreferenceTags] = []
+            for group in split_groups(session):
+                if need is not None:
+                    group = group & need
+                if not group:
+                    continue
+                try:
+                    answers.append(call(group))
+                except (LLMOutputError, SchemaError) as again:
+                    failures.append(str(again)[:120])
+            proposed = merge_tag_answers(answers) if answers else None
+        if cached is not None:  # the cached part and the live part are one answer
+            proposed = merge_tag_answers([cached, proposed]) if proposed is not None else cached
     tagging: dict[str, Any] = {
+        "from_cache": len(cached.items) if cached is not None else 0,
+        "model_items": n_rated - (len(cached.items) if cached is not None else 0),
         "items_total": n_rated,
         "images_offered": report.offered,
         "images_used": report.used,
@@ -1208,7 +1406,7 @@ def build_profile(
         session,
         base,
         report,
-        set(images),
+        set(images) | photo_ids,
         tagging,
         exposure() if callable(exposure) else exposure,
     )
