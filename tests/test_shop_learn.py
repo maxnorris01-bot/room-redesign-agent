@@ -24,6 +24,7 @@ from app.shop.models import (
 from app.shop.prefs import (
     Rated,
     alignment_counts,
+    alignment_signals,
     apply_adjustments,
     build_queries,
     guess_style_terms,
@@ -994,8 +995,12 @@ def test_alignment_counts_inferred_likes_by_title_seller_or_price_band() -> None
 
 def test_alignment_ignores_guesses_stated_likes_and_empty_profiles() -> None:
     results = [result("1", "Industrial Walnut Table")]
-    only_stated = StoredProfile(likes=["walnut"], guesses=["industrial"])
-    assert alignment_counts(results, only_stated) == (0, 1)
+    only_guess = StoredProfile(guesses=["industrial"])
+    assert alignment_counts(results, only_guess) == (0, 1)  # a guess is no signal
+    assert alignment_signals(only_guess) == 0
+    stated = StoredProfile(likes=["walnut"], guesses=["industrial"])
+    assert alignment_counts(results, stated) == (1, 1)  # the shopper's own words are a signal
+    assert alignment_signals(stated) == 1
     assert preference_alignment([], StoredProfile(inferred=[entry("material", "walnut")])) == 0.0
     assert preference_alignment(results, None) == 0.0
     assert alignment_counts([], None) == (0, 0)

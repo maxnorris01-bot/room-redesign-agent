@@ -111,6 +111,7 @@ class Completion:
     web_searches: int = 0
     cost_usd: float = 0.0
     steps: int = 0
+    stop_reason: str = ""  # the last request's stop reason (set on every return)
     # Seconds from sending the first request to its first streamed content delta; None when the
     # call was not streamed. First request only (a pause_turn resume does not reset it).
     time_to_first_token_s: float | None = None
@@ -192,8 +193,12 @@ def complete(
     images: list[PreparedImage] | None = None,
     effort: str | None = None,
     stream: bool = False,
+    keep_truncated: bool = False,
 ) -> Completion:
     """Run one logical model call (resuming `pause_turn`) and return the final text.
+
+    `keep_truncated=True` returns whatever text a call that ended with `max_tokens` produced (with
+    `stop_reason` set) instead of raising, for callers that can use a partial answer.
 
     Pass `stream=True` for calls that can run long (research/tool-heavy calls) - see
     `_create_message`. Leave it `False` (default) for short calls with nothing to fix.
@@ -268,7 +273,10 @@ def complete(
             # Long server-tool turn: re-send with the assistant content appended to resume.
             messages.append({"role": "assistant", "content": response.content})
             continue
-        if response.stop_reason in ("max_tokens", "refusal"):
+        done.stop_reason = str(response.stop_reason)
+        if response.stop_reason == "refusal" or (
+            response.stop_reason == "max_tokens" and not keep_truncated
+        ):
             raise LLMOutputError(f"{span_name}: response ended with {response.stop_reason}")
         # If every call here passes a schema, structured output guarantees the *first* text block
         # is the valid JSON - take only that one. Joining every text block together can silently

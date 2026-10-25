@@ -342,7 +342,7 @@ def test_when_every_part_fails_the_profile_falls_back_to_seller_and_price(tmp_pa
     assert FALLBACK_NOTE in view["search"]["warnings"]
     assert FALLBACK_NOTE == "Could not read item details; only seller and price were learned."
     kinds = {e["attr_kind"] for e in view["profile"]["inferred"]}
-    assert kinds <= {"seller", "price_mixed", "price_band"} and "seller" in kinds
+    assert kinds <= {"seller", "tier", "price_mixed", "price_band"} and "seller" in kinds
     assert view["profile"]["trace"]["mode"] == "fallback"
     assert view["search"]["kind"] == "shop_again" and view["search"]["results"]  # still searched
 
@@ -601,7 +601,11 @@ def test_the_trace_has_the_numbers_for_every_dimension_seller_and_price(tmp_path
     assert frame["decision"] == "none" and "known coverage 36% is under 60%" in frame["reason"]
     assert "only 10% of shown results are tagged for it" in frame["reason"]
     style = trace["dimensions"]["style"]
-    assert style["like_mass"]["industrial"] == 2 and "known coverage 14%" in style["reason"]
+    assert (
+        style["like_mass"]["modern_leaning"] == 2
+        and style["leaves"]["industrial"] == 2
+        and "known coverage 14%" in style["reason"]
+    )
     finish = trace["dimensions"]["color_finish"]
     assert finish["decision"] == "none" and finish["top_share"] == pytest.approx(0.6429, abs=1e-3)
     assert (
@@ -614,10 +618,14 @@ def test_the_trace_has_the_numbers_for_every_dimension_seller_and_price(tmp_path
     )
     assert trace["seller"]["candidates"][0]["lift"] == pytest.approx(1.714, abs=1e-3)
     assert trace["price"]["decision"] == "mixed"
-    sent = {k: v for k, v in view["search"]["trace"].items() if k != "batch"}
+    sent = {k: v for k, v in view["search"]["trace"].items() if k not in ("batch", "tag_calls")}
     assert sent == trace and "batch" in view["search"]["trace"]  # the response carries both
     session_file = json.loads((tmp_path / "shop-data" / f"{sid}.json").read_text())
-    saved = {k: v for k, v in session_file["searches"][-1]["trace"].items() if k != "batch"}
+    saved = {
+        k: v
+        for k, v in session_file["searches"][-1]["trace"].items()
+        if k not in ("batch", "tag_calls")
+    }
     assert session_file["profile"]["trace"] == trace and saved == trace
     assert session_file["profile"]["tagging"]["items_tagged"] == 10
 

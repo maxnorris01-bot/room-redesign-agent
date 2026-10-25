@@ -195,7 +195,9 @@ class ItemTags(_Strict):
     material: str | None = Field(description=VOCAB_NOTE)
     color_finish: str | None = Field(description=VOCAB_NOTE)
     frame_color: str | None = Field(description=VOCAB_NOTE)
-    style: str | None = Field(description=VOCAB_NOTE)
+    style: list[str] = Field(
+        description="Up to two style values from the fixed list, or an empty list when not shown"
+    )
     quality_cues: list[str] = Field(
         description="Short phrases for build or finish visible in the title, photo or price"
     )

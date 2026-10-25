@@ -1,0 +1,792 @@
+{
+ "request": "coffee tables with wood and metal with storage",
+ "rated": [
+  {
+   "id": "Z1",
+   "title": "West Elm Industrial Storage Coffee Table",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "love",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "wood",
+    "color_finish": "warm wood",
+    "frame_color": "black metal",
+    "style": "industrial"
+   }
+  },
+  {
+   "id": "Z2",
+   "title": "West Elm Drum Storage 32\" Coffee Table",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "love",
+   "comment": "",
+   "attrs": {
+    "shape": "round",
+    "material": "metal",
+    "color_finish": "brushed brass",
+    "frame_color": "brass",
+    "style": "glam"
+   }
+  },
+  {
+   "id": "Z3",
+   "title": "World Market Khalani Wood and Metal Fluted Coffee Table",
+   "price": 449.99,
+   "seller": "World Market",
+   "rating": "love",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "wood",
+    "color_finish": "warm wood",
+    "frame_color": "black metal",
+    "style": "mid-century"
+   }
+  },
+  {
+   "id": "Z4",
+   "title": "West Elm Agnelli 44\" Coffee Table",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "wood",
+    "color_finish": "warm wood",
+    "frame_color": null,
+    "style": "modern"
+   }
+  },
+  {
+   "id": "Z5",
+   "title": "West Elm Volume 36\" Storage Coffee Table",
+   "price": 699.0,
+   "seller": "West Elm",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "round",
+    "material": "wood",
+    "color_finish": "warm wood",
+    "frame_color": null,
+    "style": "modern"
+   }
+  },
+  {
+   "id": "Z6",
+   "title": "Baxton Studio Franklin Oak Brown Finished Wood and Black Finished Metal Coffee Table",
+   "price": 143.99,
+   "seller": "Lowe's",
+   "rating": "like",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "wood",
+    "color_finish": "oak",
+    "frame_color": "black metal",
+    "style": "modern"
+   }
+  },
+  {
+   "id": "Z7",
+   "title": "West Elm Wire Frame Glass Top Coffee Table",
+   "price": 599.0,
+   "seller": "West Elm",
+   "rating": "dislike",
+   "comment": "",
+   "attrs": {
+    "shape": "rectangular",
+    "material": "glass",
+    "color_finish": "glass",
+    "frame_color": "metal frame",
+    "style": "modern"
+   }
+  }
+ ],
+ "shown_extras": [
+  {
+   "id": "S1",
+   "title": "Glam Rectangular Whitewashed Nesting Coffee Table Set 44in",
+   "price": 153,
+   "seller": "Etsy"
+  },
+  {
+   "id": "S2",
+   "title": "Farmhouse Rectangular Teak Nesting Coffee Table Set 48in",
+   "price": 309,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "S3",
+   "title": "Farmhouse Rectangular Espresso Nesting Coffee Table Set 48in",
+   "price": 309,
+   "seller": "Target"
+  },
+  {
+   "id": "S4",
+   "title": "Rectangular Whitewashed Lift Top Coffee Table 50in",
+   "price": 788,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "S5",
+   "title": "Rustic Rectangular Natural Coffee Table with Storage 32in",
+   "price": 228,
+   "seller": "Target"
+  },
+  {
+   "id": "S6",
+   "title": "Industrial Rectangular Natural Coffee Table with Storage 32in",
+   "price": 473,
+   "seller": "Walmart"
+  },
+  {
+   "id": "S7",
+   "title": "Rectangular Black Metal Coffee Table with Storage 40in",
+   "price": 312,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "S8",
+   "title": "Rectangular Espresso Nesting Coffee Table Set 48in",
+   "price": 381,
+   "seller": "IKEA"
+  },
+  {
+   "id": "S9",
+   "title": "Round Black Metal Lift Top Coffee Table 36in",
+   "price": 635,
+   "seller": "Etsy"
+  },
+  {
+   "id": "S10",
+   "title": "Traditional Round Honey Coffee Table with Shelf 50in",
+   "price": 624,
+   "seller": "Home Depot"
+  },
+  {
+   "id": "S11",
+   "title": "Rustic Round Walnut Nesting Coffee Table Set 50in",
+   "price": 720,
+   "seller": "Walmart"
+  },
+  {
+   "id": "S12",
+   "title": "Mid-Century Round Whitewashed Nesting Coffee Table Set 44in",
+   "price": 401,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "S13",
+   "title": "Round Teak Nesting Coffee Table Set 32in",
+   "price": 240,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "S14",
+   "title": "Traditional Oval Natural Nesting Coffee Table Set 36in",
+   "price": 176,
+   "seller": "Walmart"
+  },
+  {
+   "id": "S15",
+   "title": "Mid-Century Square Black Metal Coffee Table 32in",
+   "price": 89,
+   "seller": "IKEA"
+  },
+  {
+   "id": "S16",
+   "title": "Boho Espresso Coffee Table with Shelf 32in",
+   "price": 840,
+   "seller": "Walmart"
+  },
+  {
+   "id": "S17",
+   "title": "Modern Black Metal Coffee Table 32in",
+   "price": 781,
+   "seller": "Overstock"
+  },
+  {
+   "id": "S18",
+   "title": "Modern Black Metal Nesting Coffee Table Set 36in",
+   "price": 591,
+   "seller": "Overstock"
+  },
+  {
+   "id": "S19",
+   "title": "Modern Rectangular Brass Coffee Table with Shelf 40in",
+   "price": 464,
+   "seller": "West Elm"
+  },
+  {
+   "id": "S20",
+   "title": "Rectangular Oak Nesting Coffee Table Set 44in",
+   "price": 469,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "S21",
+   "title": "Farmhouse Rectangular Glass Top Coffee Table 36in",
+   "price": 170,
+   "seller": "Overstock"
+  },
+  {
+   "id": "S22",
+   "title": "Farmhouse Rectangular Brass Lift Top Coffee Table 44in",
+   "price": 745,
+   "seller": "Amazon"
+  },
+  {
+   "id": "S23",
+   "title": "Mid-Century Rectangular Espresso Coffee Table with Shelf 32in",
+   "price": 251,
+   "seller": "Amazon"
+  },
+  {
+   "id": "S24",
+   "title": "Modern Rectangular Honey Lift Top Coffee Table 36in",
+   "price": 635,
+   "seller": "Target"
+  },
+  {
+   "id": "S25",
+   "title": "Farmhouse Rectangular Walnut Coffee Table with Shelf 40in",
+   "price": 863,
+   "seller": "Walmart"
+  },
+  {
+   "id": "S26",
+   "title": "Modern Rectangular Oak Lift Top Coffee Table 48in",
+   "price": 379,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "S27",
+   "title": "Farmhouse Rectangular Espresso Lift Top Coffee Table 36in",
+   "price": 510,
+   "seller": "West Elm"
+  },
+  {
+   "id": "S28",
+   "title": "Traditional Round Honey Lift Top Coffee Table 50in",
+   "price": 265,
+   "seller": "West Elm"
+  },
+  {
+   "id": "S29",
+   "title": "Farmhouse Round Natural Coffee Table with Storage 44in",
+   "price": 674,
+   "seller": "Target"
+  },
+  {
+   "id": "S30",
+   "title": "Round Natural Coffee Table with Storage 48in",
+   "price": 479,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "S31",
+   "title": "Round Walnut Coffee Table 40in",
+   "price": 463,
+   "seller": "IKEA"
+  },
+  {
+   "id": "S32",
+   "title": "Modern Round Natural Coffee Table with Shelf 40in",
+   "price": 443,
+   "seller": "West Elm"
+  },
+  {
+   "id": "S33",
+   "title": "Modern Oval Brass Lift Top Coffee Table 32in",
+   "price": 263,
+   "seller": "Home Depot"
+  },
+  {
+   "id": "S34",
+   "title": "Square Natural Nesting Coffee Table Set 36in",
+   "price": 356,
+   "seller": "Home Depot"
+  },
+  {
+   "id": "S35",
+   "title": "Rustic Teak Coffee Table with Shelf 48in",
+   "price": 754,
+   "seller": "IKEA"
+  },
+  {
+   "id": "S36",
+   "title": "Glam Teak Lift Top Coffee Table 50in",
+   "price": 156,
+   "seller": "Etsy"
+  },
+  {
+   "id": "S37",
+   "title": "Industrial Oak Nesting Coffee Table Set 50in",
+   "price": 682,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "S38",
+   "title": "Glam Rectangular Teak Coffee Table with Storage 44in",
+   "price": 713,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "S39",
+   "title": "Rectangular Brass Coffee Table 50in",
+   "price": 402,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "S40",
+   "title": "Rustic Rectangular Whitewashed Coffee Table 50in",
+   "price": 215,
+   "seller": "Amazon"
+  },
+  {
+   "id": "S41",
+   "title": "Rectangular Espresso Coffee Table 36in",
+   "price": 556,
+   "seller": "Walmart"
+  }
+ ],
+ "pool": [
+  {
+   "id": "P1",
+   "title": "Mid-Century Rectangular Oak Coffee Table with Storage 32in",
+   "price": 136,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P2",
+   "title": "Industrial Round Glass Top Coffee Table with Storage 44in",
+   "price": 658,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P3",
+   "title": "Oval Glass Top Nesting Coffee Table Set 36in",
+   "price": 444,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P4",
+   "title": "Traditional Round Brass Coffee Table 40in",
+   "price": 118,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P5",
+   "title": "Whitewashed Coffee Table 40in",
+   "price": 718,
+   "seller": "Overstock"
+  },
+  {
+   "id": "P6",
+   "title": "Rectangular Glass Top Coffee Table 48in",
+   "price": 662,
+   "seller": "Walmart - Cozy Castle"
+  },
+  {
+   "id": "P7",
+   "title": "Mid-Century Round Teak Coffee Table 40in",
+   "price": 756,
+   "seller": "Walmart - Cozy Castle"
+  },
+  {
+   "id": "P8",
+   "title": "Farmhouse Rectangular Black Metal Coffee Table with Storage 32in",
+   "price": 438,
+   "seller": "Walmart - Tangkula"
+  },
+  {
+   "id": "P9",
+   "title": "Mid-Century Rectangular Espresso Lift Top Coffee Table 32in",
+   "price": 202,
+   "seller": "Walmart - Hommoo"
+  },
+  {
+   "id": "P10",
+   "title": "Round Glass Top Coffee Table with Shelf 36in",
+   "price": 276,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P11",
+   "title": "Industrial Rectangular Glass Top Lift Top Coffee Table 32in",
+   "price": 756,
+   "seller": "Walmart - Hommoo"
+  },
+  {
+   "id": "P12",
+   "title": "Modern Honey Coffee Table with Shelf 36in",
+   "price": 429,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P13",
+   "title": "Traditional Oval Oak Nesting Coffee Table Set 50in",
+   "price": 416,
+   "seller": "Walmart - HOMCOM"
+  },
+  {
+   "id": "P14",
+   "title": "Whitewashed Coffee Table with Shelf 40in",
+   "price": 547,
+   "seller": "Overstock"
+  },
+  {
+   "id": "P15",
+   "title": "Round Brass Coffee Table with Storage 50in",
+   "price": 575,
+   "seller": "Target"
+  },
+  {
+   "id": "P16",
+   "title": "Rustic Rectangular Walnut Coffee Table with Storage 32in",
+   "price": 127,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P17",
+   "title": "Rectangular Glass Top Nesting Coffee Table Set 36in",
+   "price": 117,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P18",
+   "title": "Rectangular Whitewashed Coffee Table with Shelf 50in",
+   "price": 740,
+   "seller": "Target"
+  },
+  {
+   "id": "P19",
+   "title": "Farmhouse Round Walnut Nesting Coffee Table Set 36in",
+   "price": 186,
+   "seller": "Overstock"
+  },
+  {
+   "id": "P20",
+   "title": "Farmhouse Round Brass Lift Top Coffee Table 48in",
+   "price": 299,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P21",
+   "title": "Farmhouse Oval Natural Lift Top Coffee Table 36in",
+   "price": 80,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P22",
+   "title": "Traditional Rectangular Glass Top Coffee Table with Shelf 50in",
+   "price": 216,
+   "seller": "Target"
+  },
+  {
+   "id": "P23",
+   "title": "Modern Rectangular Oak Lift Top Coffee Table 32in",
+   "price": 177,
+   "seller": "Walmart - Tangkula"
+  },
+  {
+   "id": "P24",
+   "title": "Boho Rectangular Walnut Lift Top Coffee Table 40in",
+   "price": 508,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P25",
+   "title": "Industrial Rectangular Black Metal Nesting Coffee Table Set 40in",
+   "price": 570,
+   "seller": "World Market"
+  },
+  {
+   "id": "P26",
+   "title": "Farmhouse Rectangular Black Metal Coffee Table with Storage 32in",
+   "price": 641,
+   "seller": "Etsy"
+  },
+  {
+   "id": "P27",
+   "title": "Honey Nesting Coffee Table Set 50in",
+   "price": 556,
+   "seller": "Costway"
+  },
+  {
+   "id": "P28",
+   "title": "Modern Rectangular Black Metal Coffee Table with Storage 32in",
+   "price": 100,
+   "seller": "Etsy"
+  },
+  {
+   "id": "P29",
+   "title": "Rustic Rectangular Oak Nesting Coffee Table Set 44in",
+   "price": 459,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P30",
+   "title": "Rectangular Honey Coffee Table with Storage 44in",
+   "price": 259,
+   "seller": "Walmart - JerFit Life"
+  },
+  {
+   "id": "P31",
+   "title": "Mid-Century Honey Coffee Table with Shelf 32in",
+   "price": 528,
+   "seller": "Etsy"
+  },
+  {
+   "id": "P32",
+   "title": "Traditional Square Glass Top Coffee Table 40in",
+   "price": 239,
+   "seller": "Amazon"
+  },
+  {
+   "id": "P33",
+   "title": "Rectangular Natural Nesting Coffee Table Set 44in",
+   "price": 655,
+   "seller": "Amazon"
+  },
+  {
+   "id": "P34",
+   "title": "Farmhouse Rectangular Walnut Coffee Table with Shelf 50in",
+   "price": 517,
+   "seller": "Amazon"
+  },
+  {
+   "id": "P35",
+   "title": "Industrial Round Brass Lift Top Coffee Table 50in",
+   "price": 585,
+   "seller": "Walmart - Tangkula"
+  },
+  {
+   "id": "P36",
+   "title": "Industrial Oval Walnut Nesting Coffee Table Set 32in",
+   "price": 410,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P37",
+   "title": "Round Oak Coffee Table with Storage 50in",
+   "price": 412,
+   "seller": "Target"
+  },
+  {
+   "id": "P38",
+   "title": "Glass Top Nesting Coffee Table Set 44in",
+   "price": 397,
+   "seller": "Walmart - Hommoo"
+  },
+  {
+   "id": "P39",
+   "title": "Glam Glass Top Coffee Table 44in",
+   "price": 91,
+   "seller": "Walmart - JerFit Life"
+  },
+  {
+   "id": "P40",
+   "title": "Traditional Rectangular Glass Top Nesting Coffee Table Set 36in",
+   "price": 703,
+   "seller": "Home Depot"
+  },
+  {
+   "id": "P41",
+   "title": "Rectangular Oak Coffee Table with Shelf 32in",
+   "price": 176,
+   "seller": "Walmart - HOMCOM"
+  },
+  {
+   "id": "P42",
+   "title": "Rustic Rectangular Espresso Coffee Table with Shelf 50in",
+   "price": 425,
+   "seller": "World Market"
+  },
+  {
+   "id": "P43",
+   "title": "Brass Coffee Table with Storage 44in",
+   "price": 690,
+   "seller": "Home Depot"
+  },
+  {
+   "id": "P44",
+   "title": "Modern Rectangular Espresso Coffee Table 44in",
+   "price": 543,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P45",
+   "title": "Industrial Rectangular Whitewashed Lift Top Coffee Table 44in",
+   "price": 294,
+   "seller": "Walmart - Tangkula"
+  },
+  {
+   "id": "P46",
+   "title": "Walnut Lift Top Coffee Table 40in",
+   "price": 650,
+   "seller": "Amazon"
+  },
+  {
+   "id": "P47",
+   "title": "Glam Rectangular Walnut Lift Top Coffee Table 40in",
+   "price": 332,
+   "seller": "World Market"
+  },
+  {
+   "id": "P48",
+   "title": "Mid-Century Round Brass Nesting Coffee Table Set 40in",
+   "price": 661,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P49",
+   "title": "Modern Rectangular Glass Top Coffee Table with Storage 36in",
+   "price": 740,
+   "seller": "Walmart - HOMCOM"
+  },
+  {
+   "id": "P50",
+   "title": "Rustic Rectangular Natural Lift Top Coffee Table 44in",
+   "price": 681,
+   "seller": "Costway"
+  },
+  {
+   "id": "P51",
+   "title": "Whitewashed Coffee Table with Shelf 48in",
+   "price": 218,
+   "seller": "IKEA"
+  },
+  {
+   "id": "P52",
+   "title": "Boho Square Teak Coffee Table with Shelf 36in",
+   "price": 518,
+   "seller": "Walmart - JerFit Life"
+  },
+  {
+   "id": "P53",
+   "title": "Modern Honey Coffee Table with Storage 36in",
+   "price": 401,
+   "seller": "IKEA"
+  },
+  {
+   "id": "P54",
+   "title": "Farmhouse Glass Top Lift Top Coffee Table 44in",
+   "price": 526,
+   "seller": "Walmart - Hommoo"
+  },
+  {
+   "id": "P55",
+   "title": "Boho Oak Coffee Table with Storage 50in",
+   "price": 189,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P56",
+   "title": "Traditional Square Honey Coffee Table with Storage 44in",
+   "price": 696,
+   "seller": "Home Depot"
+  },
+  {
+   "id": "P57",
+   "title": "Rectangular Teak Nesting Coffee Table Set 36in",
+   "price": 452,
+   "seller": "Walmart - JerFit Life"
+  },
+  {
+   "id": "P58",
+   "title": "Industrial Square Brass Coffee Table with Shelf 32in",
+   "price": 296,
+   "seller": "Etsy"
+  },
+  {
+   "id": "P59",
+   "title": "Glam Rectangular Walnut Nesting Coffee Table Set 44in",
+   "price": 361,
+   "seller": "Walmart - Cozy Castle"
+  },
+  {
+   "id": "P60",
+   "title": "Boho Rectangular Glass Top Lift Top Coffee Table 32in",
+   "price": 418,
+   "seller": "Amazon"
+  },
+  {
+   "id": "P61",
+   "title": "Rustic Espresso Coffee Table with Shelf 48in",
+   "price": 508,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P62",
+   "title": "Round Natural Coffee Table 40in",
+   "price": 690,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P63",
+   "title": "Traditional Rectangular Whitewashed Lift Top Coffee Table 32in",
+   "price": 166,
+   "seller": "Walmart - Cozy Castle"
+  },
+  {
+   "id": "P64",
+   "title": "Traditional Rectangular Black Metal Nesting Coffee Table Set 32in",
+   "price": 129,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P65",
+   "title": "Rectangular Honey Nesting Coffee Table Set 44in",
+   "price": 248,
+   "seller": "Walmart - HOMCOM"
+  },
+  {
+   "id": "P66",
+   "title": "Industrial Rectangular Espresso Coffee Table with Shelf 50in",
+   "price": 153,
+   "seller": "IKEA"
+  },
+  {
+   "id": "P67",
+   "title": "Rectangular Teak Coffee Table 48in",
+   "price": 608,
+   "seller": "IKEA"
+  },
+  {
+   "id": "P68",
+   "title": "Industrial Rectangular Natural Coffee Table with Shelf 32in",
+   "price": 519,
+   "seller": "Wayfair"
+  },
+  {
+   "id": "P69",
+   "title": "Industrial Round Glass Top Coffee Table with Shelf 50in",
+   "price": 377,
+   "seller": "Overstock"
+  },
+  {
+   "id": "P70",
+   "title": "Oak Coffee Table 40in",
+   "price": 436,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P71",
+   "title": "Boho Rectangular Glass Top Coffee Table with Storage 48in",
+   "price": 80,
+   "seller": "Lowe's"
+  },
+  {
+   "id": "P72",
+   "title": "Traditional Glass Top Lift Top Coffee Table 50in",
+   "price": 651,
+   "seller": "Costway"
+  }
+ ]
+}

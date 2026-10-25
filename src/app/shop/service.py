@@ -140,7 +140,11 @@ class ShopService:
                 "tagging": last.tagging,
                 "queries": last.queries,
                 "alignment": (
-                    {"matches": last.alignment_matches, "total": last.alignment_total}
+                    {
+                        "matches": last.alignment_matches,
+                        "total": last.alignment_total,
+                        "signals": last.alignment_signals,
+                    }
                     if last.alignment_matches is not None
                     else None
                 ),
@@ -246,6 +250,7 @@ class ShopService:
                 pages=outcome.pages,
                 alignment_matches=outcome.alignment[0] if outcome.alignment else None,
                 alignment_total=outcome.alignment[1] if outcome.alignment else None,
+                alignment_signals=outcome.alignment_signals if outcome.alignment else None,
             )
         )
 
@@ -345,6 +350,13 @@ class ShopService:
             live.profile = profile
             live.shop_agains_used += 1
             live.tag_cache.update(outcome.new_tags)  # a result is tagged once, ever
+            for peer in outcome.peer_log:  # rotate: what was searched is remembered
+                row = live.searched_peers.setdefault(
+                    peer["key"], {"name": peer["peer"], "searches": 0, "new": 0, "empty": True}
+                )
+                row["searches"] += 1
+                row["new"] += peer["new_candidates"]
+                row["empty"] = peer["new_candidates"] == 0
             self._record(live, live.searches[-1].request if live.searches else "", outcome,
                          note=profile_summary(profile))  # fmt: skip
             return self._view(live)

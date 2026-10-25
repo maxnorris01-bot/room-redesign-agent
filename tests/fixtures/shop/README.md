@@ -38,3 +38,13 @@ that are AUTHORED to be plausible (the owner's real shown list was not recorded)
 (warm wood 50% of tagged shown finishes, wood 80% of shown materials) are a fixture's, not a measurement.
 Ids are `Q1` to `Q9` and `Y1` to `Y26`; the mock preference call reads the attributes by id. The mock
 candidate tagger reads only title keywords, so coverage in the replays is the keyword coverage.
+
+Stage 2f: `owner_session_replay_3.json` is the owner's third real session: the seven rated items (three
+loved, three liked, one disliked West Elm item whose title is invented) with the attributes a model would
+tag them with, 41 shown extras (48 shown with the rated) and a 72-candidate `pool`, all AUTHORED to look
+like the real session (Lowe's 12, Walmart sub-sellers 20, Wayfair 10, Home Depot 3, no design premium
+retailer) because the real lists were not recorded. Ids are `Z1` to `Z7`, `S1` to `S41` and `P1` to `P72`.
+The pool is served by `app.shop.providers.ReplayPoolSearch` (set `APP_SHOP_MOCK_POOL=owner_session_replay_3.json`
+for a mock server, as `make shop-check` does for its second server); a query that begins with a retailer
+name gets that retailer's synthetic catalogue, which is what the peer step finds.
+
