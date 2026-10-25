@@ -139,6 +139,9 @@ class Session(_Model):
     quality_cues: dict[str, list[str]] = Field(default_factory=dict)
     comment_cache: dict[str, dict[str, Any]] = Field(default_factory=dict)
     prep: dict[str, Any] = Field(default_factory=dict)
+    # stage 2i: a compact copy of each round's candidate pool (at most 100 items: title, price,
+    # seller, thumbnail, tags, tag source), for replay fixtures (`scripts/shop_export_replay.py`)
+    pool_snapshots: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def valid_session_id(session_id: str) -> bool:

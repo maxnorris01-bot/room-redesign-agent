@@ -376,7 +376,7 @@ def test_sellers_are_deprioritized_only_with_two_dislikes_and_no_like(
     assert flagged == set() and order == ["bad0", "bad1", "ok0", "ok1"]  # a like from it saves it
 
 
-def test_fewer_than_24_unseen_results_stop_at_four_calls_with_a_message(
+def test_fewer_than_24_unseen_results_stop_at_page_three_with_a_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     svc, search, _, first = start(tmp_path, monkeypatch, [items("a", 6), []])
@@ -386,49 +386,46 @@ def test_fewer_than_24_unseen_results_stop_at_four_calls_with_a_message(
     search.sequence = [items("p", 5), items("q", 3), items("r", 2), items("s", 9), items("t", 9)]
     again = svc.shop_again(sid)
     found = again["search"]
-    assert len(found["results"]) == 19 and found["serper_calls"] == 4  # never a 5th call
-    assert len(search.sequence) == 1  # the fifth page was not fetched
-    again_pages = [p for _, p in search.calls][-4:]
-    assert again_pages == [typed_pages + 1, typed_pages + 2, typed_pages + 3, typed_pages + 4]
+    # stage 2i: the base query is paged to page 2 normally, page 3 as a last resort, never page 4
+    assert len(found["results"]) == 5 and found["serper_calls"] == 1
+    assert len(search.sequence) == 4  # only page 3 was fetched
+    assert [p for _, p in search.calls][-1:] == [typed_pages + 1] == [3]
     assert (
-        "Only 19 new results found: 0 seen or rated, 0 duplicates, 0 filtered out. Try changing the request."
+        "Only 5 new results found: 0 seen or rated, 0 duplicates, 0 filtered out. Try changing the request."
         in found["warnings"]
     )
-    assert found["serper_credits"] == 8 and found["provider_usd"] == pytest.approx(0.008)
+    assert found["serper_credits"] == 2 and found["provider_usd"] == pytest.approx(0.002)
 
 
 def test_an_empty_page_stops_the_paging_and_zero_results_say_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    svc, search, _, first = start(tmp_path, monkeypatch, [items("a", 6), []])
+    svc, search, _, first = start(tmp_path, monkeypatch, [items("a", 30)])
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[0], "love")
     search.sequence = [items("p", 4), [], items("never", 9)]
     again = svc.shop_again(sid)
-    assert again["search"]["serper_calls"] == 2  # an empty page ends that phrasing
+    assert again["search"]["serper_calls"] == 2  # page 2 found 4; the empty page 3 ends it
     assert (
         "Only 4 new results found: 0 seen or rated, 0 duplicates, 0 filtered out. Try changing the request."
         in again["search"]["warnings"]
     )
-    search.sequence = [items("a", 6), []]  # nothing but what was already shown
-    nothing = svc.shop_again(sid)
-    assert nothing["search"]["results"] == []
-    assert (
-        "No new results found: 6 seen or rated, 0 duplicates, 0 filtered out. Try changing the request."
-        in nothing["search"]["warnings"]
-    )
+    assert len(search.sequence) == 1  # page 4 is never fetched
+    nothing = svc.shop_again(sid)  # the base query is used up: no page past 3
+    assert nothing["search"]["results"] == [] and nothing["search"]["serper_calls"] == 0
+    assert any("No new results found" in w for w in nothing["search"]["warnings"])
 
 
 def test_a_later_page_failing_keeps_what_was_found(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    svc, search, _, first = start(tmp_path, monkeypatch, [items("a", 6), []])
+    svc, search, _, first = start(tmp_path, monkeypatch, [items("a", 30)])
     sid = first["session_id"]
     svc.rate(sid, ids_of(first)[0], "love")
     search.sequence = [items("p", 5), ProviderError("serper", "HTTP 429")]
     again = svc.shop_again(sid)
     assert len(again["search"]["results"]) == 5
-    assert any("Search page 4 unavailable" in w for w in again["search"]["warnings"])
+    assert any("Search page 3 unavailable" in w for w in again["search"]["warnings"])
     search.sequence = [ProviderError("serper", "HTTP 402")]
     with pytest.raises(ApiError) as err:
         svc.shop_again(sid)
@@ -638,11 +635,11 @@ def test_shop_again_cost_includes_the_preference_call(
     svc.rate(sid, ids_of(first)[0], "love")
     search.sequence = [items("p", 5), items("q", 4), items("r", 3)]
     again = svc.shop_again(sid)["search"]
-    assert again["serper_calls"] == 4 and again["serper_credits"] == 8  # the 4th found nothing
-    assert again["provider_usd"] == pytest.approx(0.008)
+    assert again["serper_calls"] == 2 and again["serper_credits"] == 4  # pages 2 and 3, never 4
+    assert again["provider_usd"] == pytest.approx(0.004)
     # the mock bills 900/150 tokens for the profile call and 900/80 for the rank call
     assert again["anthropic_usd"] > first["search"]["anthropic_usd"] * 0.5
-    assert again["total_usd"] == pytest.approx(again["anthropic_usd"] + 0.008)
+    assert again["total_usd"] == pytest.approx(again["anthropic_usd"] + 0.004)
     view = svc.session_view(sid)
     assert view["session_usd"] == pytest.approx(
         first["search"]["total_usd"] + again["total_usd"], abs=1e-6

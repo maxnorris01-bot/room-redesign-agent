@@ -83,6 +83,7 @@ class FilterCounts(BaseModel):
     seen_excluded: int = 0  # Shop Again: already shown earlier in the session
     rated_excluded: int = 0  # of those, how many were rated (stage 2g; seen_excluded counts both)
     dedupe: dict[str, Any] = {}  # stage 2g: what each de-duplication rule removed
+    marketplace_excluded: int = 0  # stage 2i: candidates dropped by the exclude-marketplace chip
 
 
 def result_id(product_id: str) -> str:
@@ -283,6 +284,9 @@ class StoredProfile(BaseModel):
     dropped_guesses: list[str] = []  # guesses a loved or liked item contradicted
     images: ImageReport = ImageReport()
     pinned_sellers: list[str] = []  # seller keys the visitor pinned (stage 2c)
+    # stage 2i: chips the visitor deleted that may come back: key -> the rated items at the
+    # deletion (the marketplace exclusion returns after 8 more if the evidence still holds)
+    dismissed: dict[str, int] = {}
     trace: dict[str, Any] = {}  # how every entry was decided: numbers and reasons (stage 2d)
     tagging: dict[str, Any] = {}  # items tagged N of M, images, retry, fallback (stage 2d)
 

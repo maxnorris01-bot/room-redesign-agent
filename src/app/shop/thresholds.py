@@ -32,12 +32,33 @@ SELLER_DISLIKES_TO_DEPRIORITIZE = 2  # unchanged from stage 2
 
 # seller affinity
 MIN_AFFINITY_ITEMS = 2  # loved or liked items from one seller, and no dislike of it
-SELLER_MIN_LIKE_SHARE = 0.40  # and the seller holds at least this share of the like mass (2e)
-SELLER_NET_DISLIKE_RATIO = 3  # liked mass must be at least this times the disliked mass (2f)
-TIER_MIN_LIKE_SHARE = 0.50  # a retailer tier needs this share of the like mass (2f)
 TIER_BATCH_SHARE = 0.50  # most of a batch the affinity tier may take (0.80 when pinned) (2f)
 MAX_PEER_SEARCHES = 3  # peer retailers searched per Shop Again (2f)
 ALIGNMENT_NOTE = "n/a (nothing decided yet)"
+
+# stage 2i: group like-rate evidence. These are judgment from a handful of live sessions (one owner,
+# about 48 ratings), not measurements; the stage 3 eval should tune them.
+GROUP_MIN_RATED = 4  # a seller, tier or value needs this many rated items before it says anything
+GROUP_MIN_LIKED = 2  # and this many liked (loved or liked, one each)
+GROUP_RATE_RATIO = 1.5  # its like rate must be this many times the baseline like rate
+GROUP_MIN_RATE = 0.35  # and at least this, so a low baseline cannot make a weak group a chip
+MAX_SELLER_CHIPS = 3  # seller chips (highest like rate first); each also gets a seller search
+TABLE_MIN_RATED = 2  # rated items a group needs to appear in the evidence table
+LEAN_AWAY_MIN_RATED = 6  # a value needs this many rated items before the page leans away from it
+LEAN_AWAY_MAX_RATIO = 0.5  # ... and a like rate of at most this times the baseline
+LEAN_TOWARD_MIN_SHARE = 0.30  # a value leaned toward gets at least this share of the batch
+LEAN_AWAY_MAX_SHARE = 0.30  # a value leaned away from gets at most this share of the batch
+MARKET_MIN_RATED = 8  # marketplace and budget items rated before the exclusion chip can appear
+MARKET_MAX_RATIO = 0.5  # ... like rate at most this times the baseline
+MARKET_MAX_RATE = 0.20  # ... and at most this
+MARKET_MIN_RESULTS = 12  # fewer results than this without marketplaces gets a banner
+MARKET_REDISMISS_RATED = 8  # a deleted exclusion chip returns only after this many more ratings
+SELLER_SEARCHES = 3  # seller searches per Shop Again (liked sellers first, then peers)
+MODEL_QUERIES = 2  # model-written search queries per Shop Again
+QUERY_MAX_WORDS = 8  # words in a model-written query
+QUERY_LIKED_TITLES = 6  # liked titles shown to the query writer
+QUERY_DISLIKED_TITLES = 4  # disliked titles shown to the query writer
+BASE_PAGE_MAX = 2  # the base query is paged no deeper than this, page 3 only as a last resort
 
 # quality cues (non-exclusive phrases such as "solid wood"): share of the positive items showing it
 QUALITY_CUE_MIN_SHARE = 0.50
@@ -78,11 +99,29 @@ def all_thresholds() -> dict[str, float | int]:
         "DISLIKE_MIN_ITEMS": DISLIKE_MIN_ITEMS,
         "SELLER_DISLIKES_TO_DEPRIORITIZE": SELLER_DISLIKES_TO_DEPRIORITIZE,
         "MIN_AFFINITY_ITEMS": MIN_AFFINITY_ITEMS,
-        "SELLER_MIN_LIKE_SHARE": SELLER_MIN_LIKE_SHARE,
-        "SELLER_NET_DISLIKE_RATIO": SELLER_NET_DISLIKE_RATIO,
-        "TIER_MIN_LIKE_SHARE": TIER_MIN_LIKE_SHARE,
         "TIER_BATCH_SHARE": TIER_BATCH_SHARE,
         "MAX_PEER_SEARCHES": MAX_PEER_SEARCHES,
+        "GROUP_MIN_RATED": GROUP_MIN_RATED,
+        "GROUP_MIN_LIKED": GROUP_MIN_LIKED,
+        "GROUP_RATE_RATIO": GROUP_RATE_RATIO,
+        "GROUP_MIN_RATE": GROUP_MIN_RATE,
+        "MAX_SELLER_CHIPS": MAX_SELLER_CHIPS,
+        "TABLE_MIN_RATED": TABLE_MIN_RATED,
+        "LEAN_AWAY_MIN_RATED": LEAN_AWAY_MIN_RATED,
+        "LEAN_AWAY_MAX_RATIO": LEAN_AWAY_MAX_RATIO,
+        "LEAN_TOWARD_MIN_SHARE": LEAN_TOWARD_MIN_SHARE,
+        "LEAN_AWAY_MAX_SHARE": LEAN_AWAY_MAX_SHARE,
+        "MARKET_MIN_RATED": MARKET_MIN_RATED,
+        "MARKET_MAX_RATIO": MARKET_MAX_RATIO,
+        "MARKET_MAX_RATE": MARKET_MAX_RATE,
+        "MARKET_MIN_RESULTS": MARKET_MIN_RESULTS,
+        "MARKET_REDISMISS_RATED": MARKET_REDISMISS_RATED,
+        "SELLER_SEARCHES": SELLER_SEARCHES,
+        "MODEL_QUERIES": MODEL_QUERIES,
+        "QUERY_MAX_WORDS": QUERY_MAX_WORDS,
+        "QUERY_LIKED_TITLES": QUERY_LIKED_TITLES,
+        "QUERY_DISLIKED_TITLES": QUERY_DISLIKED_TITLES,
+        "BASE_PAGE_MAX": BASE_PAGE_MAX,
         "QUALITY_CUE_MIN_SHARE": QUALITY_CUE_MIN_SHARE,
         "QUALITY_CUE_MIN_ITEMS": QUALITY_CUE_MIN_ITEMS,
         "PRICE_BAND_MIN_MASS": PRICE_BAND_MIN_MASS,

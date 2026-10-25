@@ -238,13 +238,13 @@ def test_replay_two_shape_open_no_home_depot_chip_and_a_warm_wood_finish(tmp_pat
         dims["shape"]["like_mass"]["rectangular"] == 11 and dims["shape"]["like_mass"]["round"] == 5
     )
     assert ("open", "shape: open") in chips  # about 69/31
-    # Home Depot is 2 items but 25% of the like mass: under the 40% rule, so no seller chip
+    # Home Depot is 2 rated items, both liked: under the 4 rated a seller needs, so no seller chip
     assert not [e for e in view["profile"]["inferred"] if e["attr_kind"] == "seller"]
     home = next(
         c for c in view["profile"]["trace"]["seller"]["candidates"] if c["seller"] == "Home Depot"
     )
-    assert home["items"] == 2 and home["like_share"] == 0.25
-    assert "like share 25% is under 40%" in home["verdict"]
+    assert home["rated"] == 2 and home["liked"] == 2
+    assert "rated 2, needs 4" in home["verdict"]
     assert "more pieces from" not in view["profile_summary"]
     assert "Home Depot" not in view["profile_summary"]
     # finish: warm wood holds 81% of the like mass, 54% of what was shown, and the lift passes
@@ -339,9 +339,11 @@ def test_the_first_replay_still_decides_what_it_did(tmp_path: Path) -> None:
     view = svc.shop_again(seed_session(store).session_id)
     chips = {(e["attr_kind"], e["text"]) for e in view["profile"]["inferred"]}
     assert ("open", "shape: open") in chips and ("price_mixed", "price: mixed") in chips
-    assert ("seller", "seller: West Elm") in chips
+    # stage 2i: all ten rated items were liked, so the baseline like rate is 100% and no seller can
+    # beat it by 1.5 times: the session says nothing about West Elm that the evidence can prove
+    assert not [e for e in view["profile"]["inferred"] if e["attr_kind"] in ("seller", "tier")]
     assert not [e for e in view["profile"]["inferred"] if e["attr_kind"] in ("style", "shape")]
-    assert "Looking for more pieces from West Elm and similar retailers." in view["profile_summary"]
+    assert "West Elm" not in view["profile_summary"]
     dims = view["profile"]["trace"]["dimensions"]
     assert all(d["decision"] in ("open", "none") for d in dims.values())  # nothing guessed
 
@@ -380,70 +382,49 @@ def shown_sellers(counts: dict[str, int]) -> list[ShopResult]:
     return out
 
 
-def test_a_seller_needs_two_items_and_forty_percent_of_the_like_mass() -> None:
-    shown = shown_sellers({"A": 5, "B": 30, "C": 30, "D": 30})
-    # 2 of 5 like items (40% of the like mass): passes, and the lift (0.4 / 5%) is high
-    ok = rated_sellers(
-        [
-            ("like", "A", "1"),
-            ("like", "A", "2"),
-            ("like", "B", "3"),
-            ("like", "C", "4"),
-            ("like", "D", "5"),
-        ]
+def test_a_seller_needs_four_rated_two_liked_and_a_like_rate_over_the_baseline() -> None:
+    # stage 2i: the group like-rate rule replaces "2 items and 40% of the like mass" and the lift test
+    # A: 2 liked of 4 rated (50%) against a baseline of 5 liked of 12 (42%): 1.2 times, under 1.5
+    mixed = rated_sellers(
+        [("like", "A", "1"), ("like", "A", "2"), ("dislike", "A", "3"), ("dislike", "A", "4")]
+        + [("like", "B", f"b{i}") for i in range(3)]
+        + [("dislike", "C", f"c{i}") for i in range(5)]
     )
-    entry, trace = seller_decision(ok, shown)
-    assert entry is not None and entry.text == "seller: A" and entry.share == 0.4
-    # 2 of 6 (33%): two items but under 40%
-    under = rated_sellers(
-        [("like", "A", "1"), ("like", "A", "2")]
-        + [("like", s, f"x{i}") for i, s in enumerate("BCDB")]
-    )
-    entry, trace = seller_decision(under, shown)
-    assert entry is None
+    entry, trace = seller_decision(mixed)
     row = next(c for c in trace["candidates"] if c["seller"] == "A")
-    assert row["like_share"] == pytest.approx(0.3333, abs=1e-3)
-    assert row["verdict"] == "no chip: like share 33% is under 40%"
-    # one loved item is 3 of 4 = 75% of the mass, but one item is not enough
+    assert entry is None and row["rated"] == 4 and row["liked"] == 2
+    assert row["like_rate"] == 0.5 and "under 62%" in row["verdict"]
+    # A: 3 liked of 4 (75%) against 6 of 14: 43%: 1.75 times and over 35%
+    strong = rated_sellers(
+        [("like", "A", "1"), ("like", "A", "2"), ("like", "A", "3"), ("dislike", "A", "4")]
+        + [("like", "B", f"b{i}") for i in range(3)]
+        + [("dislike", "C", f"c{i}") for i in range(7)]
+    )
+    entry, trace = seller_decision(strong)
+    assert entry is not None and entry.text == "seller: A" and entry.dimension == "seller"
+    assert entry.detail == "liked 3 of 4 (75%) against 43% overall"
+    # one loved item is not enough: a seller needs 4 rated and 2 liked
     one = rated_sellers([("love", "A", "1"), ("like", "B", "2")])
-    entry, trace = seller_decision(one, shown)
-    assert (
-        entry is None and "1 loved or liked item(s), needs 2" in trace["candidates"][0]["verdict"]
-    )
-    # two likes against one dislike (net 2 against 1, under 3 to 1) still blocks it
-    both = rated_sellers(
-        [("like", "A", "1"), ("like", "A", "2"), ("dislike", "A", "3"), ("like", "B", "4")]
-    )
-    entry, trace = seller_decision(both, shown)
-    verdict = next(c for c in trace["candidates"] if c["seller"] == "A")["verdict"]
-    assert entry is None and "1 disliked item(s) against liked mass 2" in verdict
-    # the lift test is unchanged: 40% of the like mass but 70% of what was shown is no signal
-    flooded = shown_sellers({"A": 70, "B": 10, "C": 10, "D": 10})
-    entry, trace = seller_decision(ok, flooded)
-    assert entry is None and "lift 0.571 is under 1.3" in trace["candidates"][0]["verdict"]
+    entry, trace = seller_decision(one)
+    assert entry is None and "rated 1, needs 4" in trace["candidates"][0]["verdict"]
+    assert "liked 1, needs 2" in trace["candidates"][0]["verdict"]
+    # how often a seller was shown no longer matters: a flooded page changes nothing
+    flooded = shown_sellers({"A": 70, "B": 10, "C": 10})
+    assert seller_decision(strong, flooded)[0] is not None
 
 
-def test_the_trace_lists_every_sellers_like_share_and_the_failed_rule() -> None:
+def test_the_trace_lists_every_sellers_like_rate_and_the_failed_rule() -> None:
     rated = rated_sellers(
-        [
-            ("love", "A", "1"),
-            ("like", "A", "2"),
-            ("like", "B", "3"),
-            ("like", "C", "4"),
-            ("dislike", "C", "5"),
-        ]
-    )
+        [("love", "A", "1"), ("like", "A", "2"), ("like", "B", "3"), ("like", "C", "4"),
+         ("dislike", "C", "5"), ("dislike", "D", "6")]
+    )  # fmt: skip
     _, trace = seller_decision(rated, shown_sellers({"A": 4, "B": 4, "C": 4}))
     by = {c["seller"]: c for c in trace["candidates"]}
-    assert set(by) == {"A", "B", "C"}
-    assert by["A"]["like_share"] == pytest.approx(0.6667, abs=1e-3) and by["A"]["verdict"] == "chip"
-    assert by["B"]["verdict"].startswith(
-        "no chip: 1 loved or liked item(s), needs 2; like share 17% is under 40%"
+    assert set(by) == {"A", "B", "C", "D"}
+    assert by["A"]["like_rate"] == 1.0 and by["A"]["verdict"].startswith(
+        "no chip: rated 2, needs 4"
     )
-    assert "disliked" in by["C"]["verdict"]
-
-
-# ---- the pool: supply for the minority value of an open dimension ------------------------------------------------
+    assert by["C"]["rated"] == 2 and by["C"]["liked"] == 1 and trace["baseline"] == 0.6667
 
 
 def make_again(book: TagBook, max_calls: int = 1, max_total: int = 6, **kw: Any) -> AgainContext:

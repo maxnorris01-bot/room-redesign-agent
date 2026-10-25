@@ -126,3 +126,10 @@ and each comment is read as it is written, so a Shop Again reuses them (it waits
 `APP_SHOP_PREP_WAIT_S`, 8 s by default, for what is still running). The cost appears in the footer as
 "background preparation". A slow action shows a step bar (Finishing your last ratings, Searching, Tagging,
 Ranking) instead of a spinner; `APP_SHOP_MOCK_DELAY` slows the mock for screenshots. See ADR 0012, stage 2h.
+
+Stage 2i: Shop Again tailors from like rates. A seller, retailer tier or soft-dimension value that was
+liked at least 1.5 times as often as everything else (and at least 35%, from 4 rated and 2 liked) earns a
+chip or a "leaning"; marketplace and budget retailers are left out when they were rated at least 8 times and
+almost never liked (a deletable chip, with a banner under 12 results); liked sellers are searched by name,
+the model writes one or two validated queries, and the base query is paged no deeper than page 2 (page 3 as
+a last resort, never page 4). See ADR 0012, stage 2i.

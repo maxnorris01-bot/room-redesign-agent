@@ -261,10 +261,28 @@ eval to tune):
 | LIFT_MIN | 1.3 | like share over exposure share needed to call a value preferred |
 | DISLIKE_MIN_ITEMS | 2 | disliked items sharing a value before a dislike chip |
 | SELLER_DISLIKES_TO_DEPRIORITIZE | 2 | dislikes (and no love or like) before a seller is ranked last |
-| MIN_AFFINITY_ITEMS | 2 | loved or liked items (and no dislike) for a seller affinity |
-| SELLER_MIN_LIKE_SHARE | 0.40 | and the seller holds at least this share of the like mass (stage 2e) |
-| SELLER_NET_DISLIKE_RATIO | 3 | a seller's (or tier's) liked mass must be at least this many times its disliked items (stage 2f; replaces "no dislike from that seller") |
-| TIER_MIN_LIKE_SHARE | 0.50 | share of the like mass a retailer tier needs for a "retailers like X" chip, with 2 items (stage 2f) |
+| MIN_AFFINITY_ITEMS | 2 | priced loved or liked items before a price signal (stage 2i: no longer the seller rule; `SELLER_MIN_LIKE_SHARE`, `SELLER_NET_DISLIKE_RATIO` and `TIER_MIN_LIKE_SHARE` were removed, replaced by the group like-rate rows below) |
+| GROUP_MIN_RATED | 4 | rated items a seller, tier or soft-dimension value needs before it earns a chip or a leaning (stage 2i; judgment from a handful of live sessions) |
+| GROUP_MIN_LIKED | 2 | liked items (loved or liked, one each) it needs (stage 2i) |
+| GROUP_RATE_RATIO | 1.5 | its like rate must be this many times the baseline like rate over all rated items (stage 2i; this replaces the exposure lift test for sellers and tiers) |
+| GROUP_MIN_RATE | 0.35 | and its like rate must be at least this, so a low baseline cannot promote a weak group (stage 2i) |
+| MAX_SELLER_CHIPS | 3 | seller chips at once, highest like rate first (stage 2i) |
+| TABLE_MIN_RATED | 2 | rated items a group needs to appear in the like-rate evidence table (stage 2i) |
+| LEAN_AWAY_MIN_RATED | 6 | rated items a value needs before the page leans away from it (stage 2i) |
+| LEAN_AWAY_MAX_RATIO | 0.5 | a value is leaned away from when its like rate is at most this times the baseline (stage 2i) |
+| LEAN_TOWARD_MIN_SHARE | 0.30 | a value leaned toward gets at least this share of a batch where the pool has it (stage 2i) |
+| LEAN_AWAY_MAX_SHARE | 0.30 | a value leaned away from gets at most this share of a batch (stage 2i) |
+| MARKET_MIN_RATED | 8 | marketplace and budget items rated before the "exclude marketplace retailers" chip can appear (stage 2i) |
+| MARKET_MAX_RATIO | 0.5 | ... their like rate at most this times the baseline (stage 2i) |
+| MARKET_MAX_RATE | 0.20 | ... and at most this (stage 2i) |
+| MARKET_MIN_RESULTS | 12 | fewer results than this without marketplaces shows the "Only n results without marketplace retailers" banner (stage 2i) |
+| MARKET_REDISMISS_RATED | 8 | a deleted exclusion chip returns only after this many more ratings, and only if the evidence still holds (stage 2i) |
+| SELLER_SEARCHES | 3 | seller searches per Shop Again: liked sellers by like rate, then peers of the same tier (stage 2i) |
+| MODEL_QUERIES | 2 | model-written search queries per Shop Again (stage 2i) |
+| QUERY_MAX_WORDS | 8 | words in a model-written query (stage 2i) |
+| QUERY_LIKED_TITLES | 6 | liked titles shown to the query writer (stage 2i) |
+| QUERY_DISLIKED_TITLES | 4 | disliked titles shown to the query writer (stage 2i) |
+| BASE_PAGE_MAX | 2 | the base query is paged no deeper than this; page 3 only as a last resort, page 4 never (stage 2i) |
 | TIER_BATCH_SHARE | 0.50 | most of a batch the affinity tier may take, 0.80 when pinned (stage 2f) |
 | MAX_PEER_SEARCHES | 3 | peer retailer searches per Shop Again (stage 2f) |
 | QUALITY_CUE_MIN_SHARE | 0.50 | share of loved and liked items showing a quality cue |
@@ -731,3 +749,75 @@ de-duplication and every trace table, so the "pool after" count covers every can
 **Open.** Live numbers for preparation spend, how often the 8 s wait is used, and the new Shop Again time
 are unmeasured. The mock tags photos by title keywords, so quality cues and photo-over-title overrides are
 tested with fakes, not with real images.
+
+## Amendment, stage 2i (2026-10-25): tailoring from like rates, leanings, no marketplaces, better searches
+
+Speed was fixed (13.7 s live). The next live Shop Again learned nothing: every rule said "not enough
+evidence", so the batch was pages 3 and 4 of the original query, 10 of 22 results came from Walmart and
+Lowe's and none from West Elm, Article or CB2, although 7 of the 15 liked items (of 48 rated, a 31% like
+rate) came from those three and 1 from Walmart and Lowe's. The premium tier had 7 liked of 12 rated, the
+marketplace and budget tier 1 of 11. The seller and tier chips were blocked by "liked mass at least 3 times
+disliked mass", which ignores hit rates. All the numbers below are judgment from a handful of live sessions,
+not measurements; they are in `thresholds.py` and the table above.
+
+**Group like-rate evidence (`app.shop.evidence`).** One function counts, for any group (a seller, a retailer
+tier, or one value of shape, material, finish, frame color or style, at the label level), the items rated,
+the items liked (loved or liked, one each), the group's like rate and the baseline like rate over all rated
+items in the session. It does not depend on how often the group was shown, so it removes the exposure bias
+without the lift test. Tags are the best available: photo, else the title model, else title keywords (the
+rest of the decisions still use the model's tags only).
+
+**Seller and tier chips** (replacing "3 times the disliked mass" and "40%/50% of the like mass"): rated at
+least 4, liked at least 2, like rate at least 1.5 times the baseline and at least 35%. Marketplace and budget
+retailers never earn a positive chip. Up to 3 seller chips (highest like rate first) and one tier chip; the
+pin behaviour and the caps are unchanged (tier up to 50% of a batch, a seller 50%, 80% pinned, 4 otherwise).
+`SELLER_MIN_LIKE_SHARE`, `SELLER_NET_DISLIKE_RATIO` and `TIER_MIN_LIKE_SHARE` were removed. Consequence worth
+knowing: when almost everything was liked (baseline above 67%) no group can be 1.5 times the baseline, so
+such a session (the owner's first three real sessions liked 10 of 10, 8 of 9 and 6 of 7) decides no seller
+or tier chip; the replay tests dislike extra results to get one.
+
+**Leaning layer.** A soft-dimension value is *leaning toward* with the same test (4 rated, 2 liked, 1.5 times
+the baseline, 35%) unless its dimension already converged on it, and *leaning away* with at least 6 rated and
+a like rate of at most half the baseline. Toward: a soft preference line for the ranker (`shop_rank` v5, v4
+kept) and a soft share of at least 30% of the batch where the pool has the value (a pass after the tier and
+the strata, never over a converged cap, skipped for the open dimension that owns the strata). Away: a soft
+avoid line and at most 30% of the batch. A leaning is never written to the typed-request chips, never
+overrides a hard filter, and is skipped for a value the request typed or the shopper deleted. The converged
+and open logic is unchanged. On the evidence run: natural wood frame (7 of 10) leans toward, black frame
+(4 of 31) leans away, rectangular and wood earn nothing.
+
+**Marketplace exclusion.** At least 8 marketplace and budget items rated, a like rate at most half the
+baseline and at most 20%: an "exclude marketplace retailers" chip (deletable, "liked 1 of 11"). While it
+exists, marketplace sellers leave the candidate pool before ranking, tagging and the seller caps; fewer than
+12 results shows the banner "Only n results without marketplace retailers. Remove the chip to include
+them." and nothing is re-added silently. Deleting it dismisses it (`StoredProfile.dismissed`); it returns
+only after 8 more ratings if the evidence still holds. Typed searches are unaffected.
+
+**Seller searches and written queries.** After the preferences step, up to 3 sellers chosen by the evidence
+(highest like rate, never a marketplace, not one whose chip was deleted or whose last search found nothing
+new) are searched as "<seller> <request search text>", the next page not yet fetched, with no chip needed;
+free slots go to peers of the same tier as before. A forced `record_queries` tool call (`shop_queries` v1,
+strict schema, thinking disabled, about 300 tokens) writes one or two queries from the typed constraints,
+the leanings, the settled values, the liked sellers and up to 6 liked and 4 disliked titles; it runs beside
+the first search wave. Code validates each query (category word, every must-have and typed material, at most
+8 words, no URL, no price word, no retailer that was not liked, not a repeat) and notes drops in the trace.
+Accepted queries run as page-1 searches; the cost is in the footer's Anthropic figure. `APP_SHOP_MODEL_QUERIES=0`
+turns it off. The Serper cap stays 9 per Shop Again (one call is always kept for the supply search).
+
+**Page depth.** The base query is paged to page 2; page 3 only as a last resort when the filtered pool is
+under a batch plus the reserve (36); page 4 never. The pool target dropped from 60 to 36. After the supply
+step, whatever the tagging cap has left tags the next-ranked candidates (the cap of 60 is still one cap per
+run).
+
+**Display and trace.** Chip kinds "leaning toward", "leaning away" (dashed outlines) and the exclusion chip;
+the footer "matches your preferences" counts converged attributes, seller or tier chips and leanings toward,
+says what it counted, and never says "nothing decided yet" when any chip exists; How I decided has a table of
+like-rate evidence (every seller, tier and soft value with at least 2 rated: rated, liked, rate, baseline,
+verdict, reason), the written queries (accepted and dropped) and the excluded count; card sellers show the
+canonical name. Each round keeps a compact pool snapshot (at most 100 items) in the session file, and
+`scripts/shop_export_replay.py` turns a session into a redacted replay fixture; `tailoring_evidence.json`
+is a synthetic fixture with the numbers above.
+
+**Open.** Unmeasured live: how the batches feel, the cost of the query writer (a fraction of a cent), and
+whether 1.5 times, 35% and 30% are right. A like-rate baseline over the session treats an unrated result as
+unseen, not as disliked.

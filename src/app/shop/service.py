@@ -326,6 +326,11 @@ class ShopService:
         for result in outcome.results:
             session.results[result.id] = result
             session.first_seen.setdefault(result.id, index)
+        if outcome.pool_snapshot:
+            session.pool_snapshots = [
+                *session.pool_snapshots,
+                {"index": index, "kind": outcome.kind, "items": outcome.pool_snapshot[:100]},
+            ][-10:]
         session.searches.append(
             SearchRecord(
                 index=index,
@@ -489,7 +494,8 @@ class ShopService:
             # that entries deleted meanwhile stay deleted
             if live.profile is not None:
                 profile = with_pins(
-                    reapply_removed(profile, live.profile.removed), live.profile.pinned_sellers
+                    reapply_removed(profile, live.profile.removed, live.profile.dismissed),
+                    live.profile.pinned_sellers,
                 )
             live.profile = profile
             live.shop_agains_used += 1
@@ -545,7 +551,14 @@ class ShopService:
         assert isinstance(session_id, str)
         with self.store.transaction(session_id) as session:
             updated: StoredProfile | None = (
-                remove_entry(session.profile, kind, phrase) if session.profile else None
+                remove_entry(
+                    session.profile,
+                    kind,
+                    phrase,
+                    sum(1 for rec in session.ratings.values() if rec.rating is not None),
+                )
+                if session.profile
+                else None
             )
             if updated is None:
                 raise ApiError(404, "no such preference")

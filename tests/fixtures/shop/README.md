@@ -58,3 +58,9 @@ JerFit Life") and copies of shown and rated items, so the de-duplication has rea
 (a mock server only). Pool titles are as authored, with no "[FIXTURE]" prefix, so a copy of a shown item
 has the same title.
 
+Stage 2i: `tailoring_evidence.json` is synthetic (generated, not recorded): 48 rated items with the
+numbers of the owner's fifth live Shop Again (15 liked, a 31% baseline; the premium tier 7 liked of 13
+rated, West Elm 3 of 5, Article 2 of 4, CB2 2 of 4; marketplace and budget 1 of 11; natural wood frame 7 of
+10, black frame 4 of 31) and 136 authored candidates from West Elm, Article, CB2, marketplaces and others.
+Real sessions are exported with `scripts/shop_export_replay.py` (redacted, thumbnails replaced).
+
