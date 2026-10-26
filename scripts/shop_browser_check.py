@@ -572,8 +572,8 @@ def run_replay_3(
 
     m = _re.search(r"candidates tagged (\d+) of (\d+)", foot)
     check(
-        m is not None and 60 <= int(m.group(1)) <= int(m.group(2)),
-        "the top 60 candidates by rank are tagged by the model",
+        m is not None and min(48, int(m.group(2))) <= int(m.group(1)) <= int(m.group(2)),
+        "most of the 60 tagged candidates (some are collapsed after tagging) are kept and tagged",
     )
     page.screenshot(path=str(shots / "22-replay3-chips.png"))
 
@@ -759,6 +759,7 @@ def run_checks(
     base6: str,
     id6: str,
     id7: str,
+    base7: str,
 ) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
@@ -1030,6 +1031,7 @@ def run_checks(
             run_progress(browser, base5, shots, ids5, console_errors)
             run_tailoring(browser, base6, shots, id6, console_errors)
             run_batch(browser, base, base6, id7, shots, console_errors)
+            run_fixes(browser, base7, shots, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -1196,6 +1198,100 @@ def new_page(browser: Any, base: str, width: int = 1280) -> tuple[Any, Page]:
 
 def rate_nth(page: Page, n: int, rating: str) -> None:
     page.locator("#grid .card").nth(n).locator(f".rate.{rating}").click()
+
+
+def run_fixes(browser: Any, base: str, shots: Path, console_errors: list[str]) -> None:
+    """Stage 2n on a server with mock same-product vendors and one-photo products."""
+    print("stage 2n: duplicate vendors, one-photo products, meta comments, small wording")
+    context, page = new_page(browser, base)
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, COFFEE)
+    lines = page.locator("#grid .card .also-at")
+    check(
+        lines.count() >= 1,
+        f"{lines.count()} cards carry an Also at line (one product, many vendors)",
+    )
+    text = lines.first.inner_text()
+    check(
+        re.match(r"Also at: .+ \$[\d,]+\.\d\d", text) is not None and "http" not in text,
+        f"the line is text with seller and price: {text!r}",
+    )
+    check(
+        lines.first.locator("a").count() == 0,
+        "the Also at line has no links",
+    )
+    titles = title_texts(page)
+    check(len(titles) == len(set(titles)), "no title is shown twice in the batch")
+    card = lines.first.locator("xpath=ancestor::*[contains(@class,'card')][1]")
+    card.screenshot(path=str(shots / "60-also-at.png"))
+    page.emulate_media(color_scheme="dark")
+    card.screenshot(path=str(shots / "61-also-at-dark.png"))
+    page.emulate_media(color_scheme="light")
+    page.set_viewport_size({"width": 390, "height": 844})
+    card.scroll_into_view_if_needed()
+    card.screenshot(path=str(shots / "62-also-at-mobile.png"))
+    box = page.locator("#refine-input")
+    check(box.get_attribute("placeholder") == "e.g. no Walmart", "the refine placeholder is short")
+    check(
+        "focus on cream" in (box.get_attribute("title") or "")
+        and "focus on cream" in (box.get_attribute("aria-label") or ""),
+        "the full examples stay in the title and the accessible label",
+    )
+    page.locator("#refine-form").screenshot(path=str(shots / "63-refine-mobile.png"))
+    check(
+        page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+        "no sideways scroll at 390 px (duplicates)",
+    )
+    page.set_viewport_size({"width": 1280, "height": 900})
+
+    # a product with one photo has no gallery
+    first = page.locator("#grid .card").first
+    button = first.locator(".photos")
+    button.click()
+    page.wait_for_function(
+        "el => el.textContent === 'No more photos available'",
+        arg=button.element_handle(),
+        timeout=10000,
+    )
+    check(button.is_disabled(), "No more photos available is a disabled button")
+    check(
+        first.locator(".gallery").count() == 0 or first.locator(".gallery").is_hidden(),
+        "no gallery",
+    )
+    check("link lookups 1 of 12" in lookups_text(page), "the footer counts that lookup once")
+    first.screenshot(path=str(shots / "64-no-more-photos.png"))
+
+    # a comment about the listing makes no chip
+    for n, kind in enumerate(("love", "love", "like")):
+        rate_nth(page, n + 1, kind)
+    flagged = page.locator("#grid .card").nth(4)
+    flagged.locator(".rate.dislike").click()
+    note = flagged.locator(".note")
+    note.fill("duplicate")
+    note.press("Tab")
+    page.wait_for_load_state("networkidle")
+    page.click("#shop-again")
+    wait_for_results(page)
+    page.locator("#prefs").wait_for(state="visible")
+    chip_text = page.locator("#pref-chips").inner_text().lower()
+    check("duplicate" not in chip_text, f"no chip from the comment 'duplicate': {chip_text[:80]!r}")
+    page.click("#why-toggle")
+    why = page.locator("#why")
+    why.wait_for(state="visible")
+    why_text = why.inner_text()
+    check("flagged duplicate by you" in why_text, "How I decided says the item was flagged")
+    check("Comments about the listing, not your taste" in why_text, "the meta items have a heading")
+    check(
+        "would have caught it" in why_text or "would not have caught it" in why_text,
+        "it says whether the automatic check would have caught it",
+    )
+    foot = lookups_text(page)
+    check("matches your preferences" in foot, f"the footer wording: {foot[:120]!r}")
+    why.screenshot(path=str(shots / "65-meta-comment-trace.png"))
+    page.emulate_media(color_scheme="dark")
+    why.screenshot(path=str(shots / "66-meta-comment-trace-dark.png"))
+    page.emulate_media(color_scheme="light")
+    context.close()
 
 
 def run_batch(
@@ -1469,6 +1565,7 @@ def main() -> int:
         tempfile.TemporaryDirectory() as data_dir4,
         tempfile.TemporaryDirectory() as data_dir5,
         tempfile.TemporaryDirectory() as data_dir6,
+        tempfile.TemporaryDirectory() as data_dir7,
     ):
         try:
             first, port = start_server(data_dir)
@@ -1484,6 +1581,10 @@ def main() -> int:
             servers.append(fifth)
             sixth, port6 = start_server(data_dir6, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_EVIDENCE})
             servers.append(sixth)
+            seventh, port7 = start_server(
+                data_dir7, {"APP_SHOP_MOCK_DUPLICATES": "1", "APP_SHOP_MOCK_ONE_PHOTO": "1"}
+            )
+            servers.append(seventh)
             tailoring = seed_session(
                 SessionStore(Path(data_dir6)), replay=REPLAY_FILE_EVIDENCE
             ).session_id
@@ -1496,6 +1597,7 @@ def main() -> int:
                 f"http://127.0.0.1:{port4}/", seed_replays_4(data_dir4),
                 f"http://127.0.0.1:{port5}/", seed_replays_4(data_dir5),
                 f"http://127.0.0.1:{port6}/", tailoring, second_evidence,
+                f"http://127.0.0.1:{port7}/",
             )  # fmt: skip
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

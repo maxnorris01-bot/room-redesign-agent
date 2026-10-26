@@ -171,6 +171,12 @@ this choice over the alternatives. Note what's still open or deferred within it,
   unchanged); a refinement that cannot be read does not stop a Shop Again; a mock-only deterministic reader
   stands in for the three new model calls; the ranker's candidate line still shows ratings (as since stage 1).
   See `docs/sessions/2026-10-25-shop-batch.md`.
+- **2026-10-25, stage 2n (ADR 0012 amended): fixes from the first live run.** Decisions: the gallery reads `thumbnails`
+  then `media` (the documented field); near-duplicates use either of two signals (image hash, title) with price windows
+  and keep one representative; a comment labelled as about the listing is never taste and its rating is excluded from
+  every taste calculation but the item stays in seen memory; an unknown label from the reader is ignored. Mock-only
+  switches `APP_SHOP_MOCK_DUPLICATES` and `APP_SHOP_MOCK_ONE_PHOTO` exist for the browser check. Existing tests edited:
+  the prompt-version asserts (6 to 7) and the footer wording assert. See `docs/sessions/2026-10-25-shop-fixes.md`.
 
 ## See also
 

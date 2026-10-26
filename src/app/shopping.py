@@ -101,9 +101,10 @@ class ProductDetails:
     # when the lookup returned stores. (An HTTP failure raises `ProviderError` instead.)
     note: str = ""
     # stage 2m: what a google_product lookup also carries (nothing here is estimated or invented)
-    images: list[str] = field(
-        default_factory=list
-    )  # https product photos (`product_results.media`)
+    images: list[str] = field(default_factory=list)  # https product photos (thumbnails, then media)
+    # which response fields held images and how many each held (names and counts only, no URLs):
+    # `thumbnails`, `media` and `reviews_images` (customer photos: counted, never in the gallery)
+    image_fields: dict[str, int] = field(default_factory=dict)
     rating: float | None = None
     rating_count: int | None = None
 
@@ -374,18 +375,47 @@ def parse_shipping(store: dict[str, Any], price: float | None) -> tuple[float | 
 MAX_GALLERY = 12
 
 
-def _gallery(media: Any) -> list[str]:
-    """The https image links of a `media` list, each once, at most `MAX_GALLERY`."""
+GALLERY_SHOWN = 6
+
+
+def _image_links(entries: Any) -> list[str]:
+    """The https image links of a list that holds URLs (`thumbnails`) or objects with a `link` or
+    `src` and an optional `type` (`media`); anything that is not an image, a duplicate or not https
+    is ignored; the order is kept."""
     out: list[str] = []
-    for item in media if isinstance(media, list) else []:
-        link = item.get("link") if isinstance(item, dict) else None
-        kind = item.get("type") if isinstance(item, dict) else None
+    for item in entries if isinstance(entries, list) else []:
+        link: str | None
+        kind: Any = None
+        if isinstance(item, str):
+            link = item
+        elif isinstance(item, dict):
+            raw = item.get("link") or item.get("src") or item.get("url")
+            link, kind = (raw if isinstance(raw, str) else None), item.get("type")
+        else:
+            continue
         if (
             isinstance(link, str) and kind in (None, "image") and link.startswith("https://")
             and len(link) <= 2000 and not any(ch.isspace() for ch in link) and link not in out
         ):  # fmt: skip
             out.append(link)
     return out[:MAX_GALLERY]
+
+
+def _gallery(product: dict[str, Any]) -> tuple[list[str], dict[str, int]]:
+    """The gallery of a `product_results` object and the per-field image counts. SerpApi documents
+    `thumbnails` (an array of image URLs) for google_product; `media` is read too when present;
+    `reviews_images` (customer photos) is counted but never part of the gallery."""
+    fields: dict[str, int] = {}
+    gallery: list[str] = []
+    for name in ("thumbnails", "media"):
+        links = _image_links(product.get(name))
+        if links:
+            fields[name] = len(links)
+        gallery += [u for u in links if u not in gallery]
+    customer = _image_links(product.get("reviews_images"))
+    if customer:
+        fields["reviews_images"] = len(customer)
+    return gallery[:GALLERY_SHOWN], fields
 
 
 def _rating(value: Any) -> float | None:
@@ -431,12 +461,14 @@ def parse_product_details(payload: dict[str, Any]) -> ProductDetails:
     features = about.get("features") if isinstance(about, dict) else None
     product_results_missing = not isinstance(payload.get("product_results"), dict) or not product
     note = "no product_results" if product_results_missing else "" if stores else "no stores"
+    images, image_fields = _gallery(product)
     return ProductDetails(
         stores=stores,
         attributes=attributes,
         dimensions=parse_dimensions(features, product.get("product_attributes")),
         note=note,
-        images=_gallery(product.get("media")),
+        images=images,
+        image_fields=image_fields,
         rating=_rating(product.get("rating")),
         rating_count=_as_int(product.get("reviews")),
     )

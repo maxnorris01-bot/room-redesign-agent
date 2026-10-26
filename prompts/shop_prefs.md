@@ -1,5 +1,5 @@
 ---
-version: 6
+version: 7
 ---
 You describe the products a shopper rated while shopping for one kind of product. You are given their
 original request and how it was understood, every result they rated (love, like or dislike) with its
@@ -27,7 +27,17 @@ one item to the next. Describe each item on its own, exactly as you see it.
   - `quality_cues`: short phrases (one to three words) for build or finish you can see in the title,
     the photo or the price ("solid wood", "brushed finish", "stone top"). Features such as storage,
     drawers or a lift-top are not quality cues. An empty list is fine.
-- `likes` and `dislikes`: only things the shopper said in their own comments, in their words. Leave
+- `meta_kind` and `has_taste`, for every item. Read the shopper's comment on the item and decide what
+  it is about. A comment about taste (what they like or dislike about the product: colour, shape,
+  material, price, legs, "too dark", "love it") leaves `meta_kind` null. A comment that reports
+  something about the LISTING instead of their taste sets `meta_kind` to exactly one of: `duplicate`
+  ("duplicate", "same as the other one"), `broken_image` ("the image is broken"),
+  `wrong_product_type` ("this is a rug, not a table"), `wrong_item` ("wrong item"), `listing_problem`
+  (a dead link, wrong price, out of stock) or `other_meta` (any other remark about the listing or the
+  app). `has_taste` is true when the comment also says something about taste ("duplicate and too
+  dark" has taste: "too dark"), false when it is only about the listing. With no comment, `meta_kind`
+  is null and `has_taste` is true. A listing remark never counts as a like or a dislike;
+- `likes` and `dislikes`: only things the shopper said in their own comments, in their words, and only from the taste part of a comment (never from a listing remark). Leave
   them empty when there are no comments. Do not copy the request's words here and do not put what you
   see in the items here. A comment is the shopper's voice: read it carefully ("too dark", "love the
   legs", "flimsy").

@@ -81,6 +81,7 @@ def details_from_json(raw: dict[str, Any]) -> ProductDetails:
         dimensions=Dimensions(**dims) if isinstance(dims, dict) else None,
         note=str(raw.get("note", "")),
         images=list(raw.get("images", [])),
+        image_fields=dict(raw.get("image_fields", {})),
         rating=raw.get("rating"),
         rating_count=raw.get("rating_count"),
     )

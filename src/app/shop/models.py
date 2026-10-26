@@ -152,6 +152,13 @@ class RefineChip(_Strict):
     text: str = ""  # the instruction it came from (bounded, URLs stripped)
 
 
+class AlsoAt(_Strict):
+    """The same product from another seller, collapsed under the card that is shown (stage 2n)."""
+
+    seller: str
+    price: float | None = None
+
+
 class ShopResult(_Strict):
     id: str
     title: str
@@ -170,6 +177,7 @@ class ShopResult(_Strict):
     # source gave none. Display only: they never enter ranking, evidence or caps.
     rating: float | None = None
     rating_count: int | None = None
+    also_at: list[AlsoAt] = []  # stage 2n: the same product from other sellers (text only)
 
 
 class FilterCounts(BaseModel):
@@ -307,6 +315,19 @@ class ItemTags(_Strict):
     )
     quality_cues: list[str] = Field(
         description="Short phrases for build or finish visible in the title, photo or price"
+    )
+    meta_kind: str | None = Field(
+        default=None,
+        description=(
+            "Null when the shopper's comment is about taste or there is no comment. Otherwise what"
+            " the comment reports about the listing: duplicate, broken_image, wrong_product_type,"
+            " wrong_item, listing_problem or other_meta"
+        ),
+    )
+    has_taste: bool = Field(
+        default=True,
+        description="True when the comment also says something about taste (false for a pure"
+        " meta comment)",
     )
 
 

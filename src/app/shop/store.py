@@ -12,6 +12,7 @@ Again will use. No Shop Again logic lives here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -162,6 +163,11 @@ class Session(_Model):
     # stage 2m: one SerpApi product lookup per result, shared by Open and "More photos": its photos,
     # rating and review count, or why there are none. `lookups_used` counts it once.
     product_cache: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # stage 2n: thumbnail fingerprints by result id (None: it could not be hashed), and the
+    # listings hidden as duplicates of a shown one (id -> title, seller, price, thumbnail,
+    # fingerprint, kept): both are part of the seen memory, so a duplicate never comes back
+    fingerprints: dict[str, int | None] = Field(default_factory=dict)
+    hidden: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # stage 2i: a compact copy of each round's candidate pool (at most 100 items: title, price,
     # seller, thumbnail, tags, tag source), for replay fixtures (`scripts/shop_export_replay.py`)
     pool_snapshots: list[dict[str, Any]] = Field(default_factory=list)
@@ -266,6 +272,25 @@ def ensure_topics(session: Session) -> Session:
     return session
 
 
+def comment_key(rid: str, comment: str) -> str:
+    """The cache key of one comment's reading: the item id plus the comment text, so a changed or
+    deleted comment never finds an old entry."""
+    digest = hashlib.sha1(" ".join(comment.split()).lower().encode()).hexdigest()[:12]
+    return f"{rid}|{digest}"
+
+
+def meta_kind_of(session: Session, rid: str, rec: RatingRecord) -> str | None:
+    """The meta class the comment reader gave this item's comment (duplicate, broken_image, ...),
+    or None for a taste comment, no comment, or a comment not read yet. A rating on such an item
+    says nothing about taste and is left out of every taste calculation."""
+    comment = rec.comment.strip()
+    if not comment:
+        return None
+    reading = session.comment_cache.get(comment_key(rid, comment))
+    kind = reading.get("meta") if reading else None
+    return kind if isinstance(kind, str) and kind else None
+
+
 def in_topic(rec: RatingRecord, session: Session) -> bool:
     """Whether a rating counts toward what is learned now: it is stamped with the current topic (an
     unstamped one, from a session built in memory, counts too)."""
@@ -273,8 +298,13 @@ def in_topic(rec: RatingRecord, session: Session) -> bool:
 
 
 def topic_ratings(session: Session) -> dict[str, RatingRecord]:
-    """The ratings that count toward the current topic."""
-    return {rid: rec for rid, rec in session.ratings.items() if in_topic(rec, session)}
+    """The ratings that count toward the current topic's taste: not another topic's, and not an
+    item whose comment reported a listing problem (a duplicate, a broken image, the wrong item)."""
+    return {
+        rid: rec
+        for rid, rec in session.ratings.items()
+        if in_topic(rec, session) and meta_kind_of(session, rid, rec) is None
+    }
 
 
 def rated_count(session: Session) -> int:
@@ -359,7 +389,10 @@ def rated_results(session: Session) -> list[dict[str, Any]]:
             "rated_at": rec.rated_at,
         }
         for rid, rec in session.ratings.items()
-        if rec.rating is not None and rid in session.results and in_topic(rec, session)
+        if rec.rating is not None
+        and rid in session.results
+        and in_topic(rec, session)
+        and meta_kind_of(session, rid, rec) is None
     ]
     return sorted(rows, key=lambda r: r["rated_at"] or "", reverse=True)
 
@@ -374,7 +407,10 @@ def disliked_sellers(session: Session) -> list[str]:
     names = {
         session.results[rid].seller
         for rid, rec in session.ratings.items()
-        if rec.rating == "dislike" and rid in session.results and session.results[rid].seller
+        if rec.rating == "dislike"
+        and rid in session.results
+        and session.results[rid].seller
+        and meta_kind_of(session, rid, rec) is None
     }
     return sorted(names)
 
@@ -387,6 +423,8 @@ def sellers_to_deprioritize(session: Session, min_dislikes: int = 2) -> set[str]
     for rid, rec in session.ratings.items():
         shown = session.results.get(rid)
         if shown is None or rec.rating is None or not in_topic(rec, session):
+            continue
+        if meta_kind_of(session, rid, rec) is not None:
             continue
         key = seller_key(shown.seller)
         if rec.rating == "dislike":

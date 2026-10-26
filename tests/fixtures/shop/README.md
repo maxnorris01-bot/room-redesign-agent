@@ -69,4 +69,8 @@ suggestions and avoid colours have something to separate); the mock search puts 
 Stage 2m: `tests/fixtures/shopping/serpapi_product_article.json` now has `rating` 4.6, `reviews` 1203 and a
 `media` list (six https images and one video, which is ignored); a lookup for a product id ending in 9 still
 returns nothing.
+Stage 2n: that fixture now has the live shape (`product_results.thumbnails` with six https images, and
+`reviews_images` with customer photos that are not the gallery); `serpapi_product_article_media.json` keeps the old
+`media` shape. In mock mode `APP_SHOP_MOCK_DUPLICATES=1` adds same-product listings from eBay, Lowe's and Overstock and
+`APP_SHOP_MOCK_ONE_PHOTO=1` makes every product lookup return one photo.
 

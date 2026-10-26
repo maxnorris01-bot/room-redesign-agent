@@ -32,9 +32,10 @@ from app.shop.again import base_query
 from app.shop.candidates import CUES_KEY, MODE_TOOL, TagBook, Taggable, run_call
 from app.shop.clock import Clock
 from app.shop.models import ShopResult
-from app.shop.prefs import comment_key, read_rated_items, reading_entry
+from app.shop.nearby import Fingerprinter
+from app.shop.prefs import read_rated_items, reading_entry
 from app.shop.redact import describe_exception
-from app.shop.store import SessionError, SessionStore
+from app.shop.store import SessionError, SessionStore, comment_key
 from app.thumbnails import Thumbnailer, fetch_traced
 
 MAX_ERRORS_KEPT = 5
@@ -55,7 +56,9 @@ class PrepManager:
         store: SessionStore,
         thumbnailer: Thumbnailer | None,
         clock: Clock | None = None,
+        fingerprinter: Fingerprinter | None = None,
     ) -> None:
+        self.fingerprinter = fingerprinter
         self.config = config
         self.store = store
         self.thumbnailer = thumbnailer
@@ -228,6 +231,12 @@ class PrepManager:
         if state is not None and state.cancelled.is_set():
             return  # Start over while this ran: discard it
         with self.store.transaction(sid) as live:
+            if self.fingerprinter is not None:  # the thumbnails are already here: hash them too
+                for it in items:
+                    if it.id in images and it.id not in live.fingerprints:
+                        live.fingerprints[it.id] = self.fingerprinter.from_prepared(
+                            it.thumbnail_url, images[it.id]
+                        )
             for n, tags in rows.items():
                 item = items[n - 1]
                 cues = tags.pop(CUES_KEY, None)

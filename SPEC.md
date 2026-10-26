@@ -141,3 +141,7 @@ Again" box turns plain instructions ("no Walmart", "focus on cream", "under $400
 what was inferred. Cards show star ratings and review counts where the source gave them, and a "More photos"
 gallery shares the product lookup (and the cap of 12) with Open. See ADR 0012, stages 2j to 2m.
 
+Stage 2n: the gallery reads the product lookup's `thumbnails` field first; the same product listed by several vendors
+is shown once with an "Also at" line (image hash and title similarity); a comment that reports a duplicate, a broken
+image or a wrong item is not taste and teaches nothing. See ADR 0012, stage 2n.
+

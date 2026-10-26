@@ -680,7 +680,7 @@ def test_nothing_decided_yet_is_not_said_when_any_leaning_or_chip_exists() -> No
     assert alignment_detail(away_only)["other_chips"] == 1  # ...but a chip exists: the page says so
     assert alignment_counts([], away_only) == (0, 0)
     js = (STATIC / "app.js").read_text()
-    assert "nothing to match against yet" in js and "c.other_chips > 0" in js
+    assert "matches your preferences: none yet (" in js and "c.other_chips > 0" in js
     assert (
         alignment_detail(StoredProfile())["other_chips"] == 0
     )  # the old text stays for an empty one

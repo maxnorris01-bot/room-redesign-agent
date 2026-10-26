@@ -34,6 +34,7 @@ from app.shop.decide import composition, top_share
 from app.shop.dedupe import Dedupe, Index, Listing
 from app.shop.models import (
     MAX_SEARCH_TEXT_CHARS,
+    AlsoAt,
     FilterCounts,
     LinkKind,
     ShopQuery,
@@ -41,6 +42,14 @@ from app.shop.models import (
     clean_request,
     is_https_url,
     result_id,
+)
+from app.shop.nearby import (
+    Fingerprinter,
+    NearItem,
+    collapse,
+    fingerprint_many,
+    preferred_seller,
+    seen_items,
 )
 from app.shop.parse import color_word, parse_request
 from app.shop.progress import Progress, Timeline
@@ -53,6 +62,7 @@ from app.shop.retailers import (
     seller_key,
     tier_of,
 )
+from app.shop.store import Session
 from app.shop.thresholds import (
     BASE_PAGE_MAX,
     CANDIDATE_TAG_BATCH,
@@ -63,6 +73,9 @@ from app.shop.thresholds import (
     LEAN_TOWARD_MIN_SHARE,
     MARKET_MIN_RESULTS,
     MINORITY_POOL_SHARE,
+    NEAR_FP_BUDGET_S,
+    NEAR_FP_TOP,
+    NEAR_FP_WORKERS,
     OPEN_STRATUM_FLOOR,
     REFINE_FOCUS_MIN_SHARE,
     SELLER_MAX_SHARE,
@@ -170,6 +183,36 @@ class AgainContext:
 
 
 @dataclass
+class NearContext:
+    """What the near-duplicate step needs (stage 2n): everything already shown, rated or hidden as a
+    duplicate (the seen memory), the fingerprints known so far, the fingerprint fetcher, and which
+    sellers are preferred as the one to show (chip sellers and the chip tier)."""
+
+    seen: list[NearItem] = field(default_factory=list)
+    fingerprinter: Fingerprinter | None = None
+    fingerprints: dict[str, int | None] = field(default_factory=dict)
+    chip_sellers: set[str] = field(default_factory=set)
+    chip_tier: str = ""
+    top: int = NEAR_FP_TOP
+    workers: int = NEAR_FP_WORKERS
+    budget_s: float = NEAR_FP_BUDGET_S
+
+
+def near_context(
+    session: Session | None, fingerprinter: Fingerprinter | None, config: Config
+) -> NearContext | None:
+    """The near-duplicate step's inputs for a session (None when the feature is off)."""
+    if not config.shop_near_duplicates:
+        return None
+    if session is None:
+        return NearContext(fingerprinter=fingerprinter)
+    return NearContext(
+        seen=seen_items(session), fingerprinter=fingerprinter,
+        fingerprints=dict(session.fingerprints),
+    )  # fmt: skip
+
+
+@dataclass
 class SearchOutcome:
     query: ShopQuery
     results: list[ShopResult]
@@ -200,6 +243,9 @@ class SearchOutcome:
     request_trace: dict[str, Any] = field(
         default_factory=dict
     )  # stage 2k: how the request was split
+    duplicate_trace: dict[str, Any] = field(default_factory=dict)  # stage 2n: near-duplicates
+    hidden: list[dict[str, Any]] = field(default_factory=list)  # stage 2n: hidden as duplicates
+    fingerprints: dict[str, int | None] = field(default_factory=dict)  # stage 2n: by result id
     alignment_signals: int = 0  # decided signals the match was measured against
     alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
 
@@ -477,6 +523,21 @@ def order_pool(
     return ordered, ""
 
 
+def _also_at(members: list[SearchCandidate], shown_seller: str = "") -> list[AlsoAt]:
+    """The other sellers of a collapsed product, one entry per seller, cheapest first (never the
+    seller of the card itself)."""
+    seen: set[str] = {seller_key(shown_seller)} if shown_seller else set()
+    out: list[AlsoAt] = []
+    for m in sorted(members, key=lambda c: (c.price is None, c.price or 0.0)):
+        key = seller_key(m.seller)
+        if key in seen:
+            continue
+        seen.add(key)
+        name = canonical_name(m.seller) if m.seller else "Seller not listed"
+        out.append(AlsoAt(seller=name, price=m.price))
+    return out
+
+
 def _valid_rating(value: float | None) -> float | None:
     return round(value, 2) if value is not None and 0 < value <= 5 else None
 
@@ -531,6 +592,7 @@ def build_results(
     leanings: tuple[list[tuple[str, str]], list[tuple[str, str]]] | None = None,
     colors: tuple[list[str], list[str]] | None = None,
     focus: list[tuple[str, str]] | None = None,
+    groups: dict[str, list[SearchCandidate]] | None = None,
 ) -> tuple[list[ShopResult], int, int]:
     """Walk the ranked order, up to `RESULT_COUNT`, keeping:
 
@@ -734,6 +796,9 @@ def build_results(
                 rank_reason=reason,
                 rating=_valid_rating(candidate.rating),
                 rating_count=_valid_count(candidate.rating_count),
+                also_at=_also_at(
+                    groups.get(candidate.product_id, []) if groups else [], candidate.seller
+                ),
             )
         )
     return results, len(seller_skipped - taken), len(diversity_skipped - taken)
@@ -948,6 +1013,7 @@ def run_query(
     again: AgainContext | None = None,
     clock: Clock | None = None,
     progress: Callable[[str], None] | None = None,
+    near: NearContext | None = None,
 ) -> SearchOutcome:
     """Search, filter, de-duplicate, rank, (tag), cap and return the results for a parsed `query`.
 
@@ -1325,6 +1391,17 @@ def run_query(
         steps.finish("ranking")
     timeline.phase_end("ranking")
 
+    # ---- stage 2n: the same product from other vendors is shown once ----
+    groups_by_pid: dict[str, list[SearchCandidate]] = {}
+    duplicate_trace: dict[str, Any] = {}
+    hidden_out: list[dict[str, Any]] = []
+    fingerprints_out: dict[str, int | None] = {}
+    if near is not None and ordered:
+        ordered, groups_by_pid, duplicate_trace, hidden_out, fingerprints_out = _collapse_near(
+            ordered, near, again, hard_stop_at - clock.now()
+        )
+        duplicate_trace["exact"] = dict(counts.dedupe.get("by_rule", {})) if counts.dedupe else {}
+
     # ---- stage 2e/2g/2h: tag (the pipeline already did the searches' candidates), then find the
     # minority value ----
     composition_info: dict[str, Any] = {}
@@ -1458,6 +1535,7 @@ def run_query(
             (again.lean_toward, again.lean_away) if again is not None else None,
             (query.suggested_colors, query.avoid_colors),
             again.refine.focus_pairs() if again is not None and again.refine else None,
+            groups_by_pid,
         )
 
     if again is not None and again.refine is not None and again.refine.exclude_values:
@@ -1704,12 +1782,78 @@ def run_query(
         new_tags=dict(book.new) if book is not None else {},
         peer_log=list(peer_log),
         request_trace=request_trace,
+        duplicate_trace=duplicate_trace,
+        hidden=hidden_out,
+        fingerprints=fingerprints_out,
         pool_snapshot=snapshot_of(
             ordered,
             (lambda c: tag_of(c)) if tag_of is not None else (lambda c: title_tags(c.title)),
             again.tag_source if again is not None else {},
         ),
     )
+
+
+def _collapse_near(
+    ordered: list[tuple[SearchCandidate, str]],
+    near: NearContext,
+    again: AgainContext | None,
+    time_left_s: float,
+) -> tuple[
+    list[tuple[SearchCandidate, str]],
+    dict[str, list[SearchCandidate]],
+    dict[str, Any],
+    list[dict[str, Any]],
+    dict[str, int | None],
+]:
+    """Fingerprint the best ranked thumbnails (bounded), then drop what repeats a shown or rated
+    item and collapse the rest to one representative per product. Returns the new ordered list, the
+    hidden members by representative product id, the trace, what was hidden (for the seen memory)
+    and the fingerprints known."""
+    items = [
+        NearItem(
+            key=result_id(c.product_id), title=c.title, seller=c.seller, price=c.price,
+            rating=c.rating, thumbnail=c.thumbnail_url or "",
+            fingerprint=near.fingerprints.get(result_id(c.product_id)),
+        )
+        for c, _ in ordered
+    ]  # fmt: skip
+    report = None
+    if near.fingerprinter is not None:
+        budget = max(0.0, min(near.budget_s, time_left_s))  # never past the hard stop
+        report = fingerprint_many(
+            items[: near.top], near.fingerprinter, near.fingerprints, near.workers, budget
+        )
+    sellers = set(near.chip_sellers) | (again.affinity_sellers if again is not None else set())
+    tier = near.chip_tier or (again.affinity_tier if again is not None else "")
+    result = collapse(items, near.seen, preferred_seller(sellers, tier))
+    kept = [ordered[i] for i in result.kept]
+    groups = {
+        ordered[k][0].product_id: [ordered[m][0] for m in members]
+        for k, members in result.groups.items()
+    }
+    hidden: list[dict[str, Any]] = []
+    for k, members in result.groups.items():
+        for m in members:
+            hidden.append(_hidden_row(items[m], "group", items[k].key))
+    for n, seen_key, reason in result.seen_hits:
+        hidden.append(_hidden_row(items[n], reason, seen_key))
+    trace: dict[str, Any] = {
+        "before": len(items), "after": len(kept), "by_reason": result.by_reason,
+        "examples": result.examples, "hidden": len(hidden),
+        "fingerprints": report.as_dict() if report is not None else {"wanted": 0, "off": True},
+    }  # fmt: skip
+    known: dict[str, int | None] = {
+        i.key: i.fingerprint for i in items if i.fingerprint is not None
+    }
+    return kept, groups, trace, hidden, known
+
+
+def _hidden_row(item: NearItem, reason: str, kept: str) -> dict[str, Any]:
+    return {
+        "key": item.key, "title": item.title[:140], "seller": canonical_name(item.seller),
+        "price": item.price, "thumbnail": item.thumbnail, "fingerprint": item.fingerprint,
+        "reason": reason, "kept": kept,
+    }  # fmt: skip
 
 
 def _focus_holds(
@@ -1854,6 +1998,7 @@ def run_search(
     config: Config,
     progress: Callable[[str], None] | None = None,
     clock: Clock | None = None,
+    near: NearContext | None = None,
 ) -> SearchOutcome:
     """Parse `request`, search, filter, rank and cap. Raises `ProviderError` when page 1 fails
     (nothing to show) and `BudgetExceededError` past a cap; page 2 and ranking degrade."""
@@ -1866,4 +2011,4 @@ def run_search(
     query, _, parse_warning = parse_request(clean_request(request), budget)
     if parse_warning:
         warnings.append(parse_warning)
-    return run_query(query, search, config, budget, warnings, t0, None, clock, progress)
+    return run_query(query, search, config, budget, warnings, t0, None, clock, progress, near)

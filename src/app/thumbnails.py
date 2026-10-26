@@ -20,6 +20,7 @@ style check for that item and counts the failure in the trace. Mock mode never t
 
 from __future__ import annotations
 
+import io
 import ipaddress
 import socket
 import time
@@ -29,6 +30,7 @@ from typing import Protocol
 from urllib.parse import urljoin, urlsplit
 
 import httpx2 as httpx
+from PIL import Image
 
 from app.config import Config
 from app.images import PreparedImage, prepare_image, synthetic_room_image
@@ -37,6 +39,7 @@ from app.tracing import span
 TIMEOUT_S = 3.0
 MAX_BYTES = 1_000_000
 MAX_REDIRECTS = 3
+MAX_PIXELS = 24_000_000  # a thumbnail with more pixels than this is refused before decoding
 THUMB_MAX_EDGE = 256
 
 
@@ -90,10 +93,14 @@ class HttpThumbnailer:
     """Fetches thumbnails over https. `client` and `resolver` can be injected (tests)."""
 
     def __init__(
-        self, client: httpx.Client | None = None, resolver: Resolver | None = None
+        self,
+        client: httpx.Client | None = None,
+        resolver: Resolver | None = None,
+        max_bytes: int = MAX_BYTES,
     ) -> None:
         self._client = client or httpx.Client(timeout=TIMEOUT_S, follow_redirects=False)
         self._resolver = resolver or system_resolver
+        self._max_bytes = max_bytes  # a fingerprint fetcher reads at most 500 KB
 
     def _check_host(self, url: str) -> str | None:
         """None when the URL is acceptable, else a short reason."""
@@ -141,13 +148,13 @@ class HttpThumbnailer:
                     if not kind.startswith("image/") or "svg" in kind:
                         return ThumbResult(False, "not an image", host)
                     declared = response.headers.get("content-length", "")
-                    if declared.isdigit() and int(declared) > MAX_BYTES:
+                    if declared.isdigit() and int(declared) > self._max_bytes:
                         return ThumbResult(False, "too large", host)
                     chunks: list[bytes] = []
                     total = 0
                     for chunk in response.iter_bytes():
                         total += len(chunk)
-                        if total > MAX_BYTES:
+                        if total > self._max_bytes:
                             return ThumbResult(False, "too large", host)
                         if time.monotonic() > deadline:
                             return ThumbResult(False, "timed out", host)
@@ -162,7 +169,12 @@ class HttpThumbnailer:
 
 def _decode(data: bytes, host: str) -> ThumbResult:
     try:
-        image = prepare_image(data, max_edge=THUMB_MAX_EDGE)
+        with Image.open(
+            io.BytesIO(data)
+        ) as header:  # the header only: a decompression bomb is refused
+            if header.width * header.height > MAX_PIXELS:
+                return ThumbResult(False, "too many pixels", host, n_bytes=len(data))
+        image = prepare_image(data, max_edge=THUMB_MAX_EDGE, draft=True)
     except Exception:  # Pillow raises several types for bad data; all mean "not usable"
         return ThumbResult(False, "not a decodable image", host, n_bytes=len(data))
     return ThumbResult(True, "ok", host, image, len(data))

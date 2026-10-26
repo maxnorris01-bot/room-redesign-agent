@@ -68,6 +68,33 @@ def _retailer_in(query: str) -> Retailer | None:
     return best
 
 
+DUPLICATE_SELLERS = ("eBay", "Lowe's", "Overstock")
+
+
+def mock_duplicates(window: list[SearchCandidate]) -> list[SearchCandidate]:
+    """For every sixth result a listing of the SAME product from another vendor (stage 2n, mock
+    only, `APP_SHOP_MOCK_DUPLICATES=1`): a new id, the seller's name in the title, a slightly
+    different price and a thumbnail URL that differs but points at the same image (the mock
+    fingerprint reads the image id from the path)."""
+    out: list[SearchCandidate] = []
+    for n, c in enumerate(window):
+        if n % 6 != 2:
+            continue
+        seller = DUPLICATE_SELLERS[(n // 6) % len(DUPLICATE_SELLERS)]
+        thumb = (c.thumbnail_url or "").replace(".jpg", f".jpg?v={seller_key(seller)}")
+        out.append(
+            replace(
+                c,
+                product_id=f"{c.product_id}-dup",
+                title=f"{c.title} by {seller}",
+                seller=seller,
+                price=round(c.price * 1.08, 2) if c.price is not None else None,
+                thumbnail_url=thumb or None,
+            )
+        )
+    return out
+
+
 class ShopFixtureSearch:
     """Fake Serper for Shop Mode: pages of 20 synthetic results per topic.
 
@@ -117,6 +144,10 @@ class ShopFixtureSearch:
         if retailer is not None:  # a query that begins with a retailer: that retailer's catalogue
             start = (page - 1) * PEER_PAGE_SIZE
             tag = seller_key(retailer.name)
+            # each retailer's catalogue starts at its own place in the fixture: two retailers
+            # selling the very same products would be one product from two vendors (stage 2n)
+            shift = (sum(map(ord, tag)) * 7) % max(1, len(everything))
+            everything = everything[shift:] + everything[:shift]
             return [
                 replace(
                     c,
@@ -132,7 +163,12 @@ class ShopFixtureSearch:
                 for c in everything[start : start + PEER_PAGE_SIZE]
             ]
         window = everything[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
-        return [replace(c, title=FIXTURE_TITLE_PREFIX + c.title) for c in window]
+        out = [replace(c, title=FIXTURE_TITLE_PREFIX + c.title) for c in window]
+        if os.environ.get(
+            "APP_SHOP_MOCK_DUPLICATES"
+        ):  # mock only: the same product from other vendors
+            out += mock_duplicates(out)
+        return out
 
 
 class ReplayPoolSearch(ShopFixtureSearch):
@@ -175,7 +211,8 @@ class ReplayPoolSearch(ShopFixtureSearch):
 
 
 class ShopFixtureLookup:
-    """Fake SerpApi lookup: the Article fixture's stores, nothing for ids ending in 9."""
+    """Fake SerpApi lookup: the Article fixture's stores, nothing for ids ending in 9, every id
+    when APP_SHOP_MOCK_ONE_PHOTO is set (one photo only: no gallery to show)."""
 
     name = "serpapi"
 
@@ -186,6 +223,10 @@ class ShopFixtureLookup:
         self.product_ids.append(product_id)
         if product_id.endswith("9"):
             return ProductDetails(note="no product_results")
+        if os.environ.get("APP_SHOP_MOCK_ONE_PHOTO"):  # mock only: products with one photo
+            return parse_product_details(
+                {"product_results": {"title": "One photo", "thumbnails": ["https://m.test/1.jpg"]}}
+            )
         return parse_product_details(_load_fixture("serpapi_product_article.json"))
 
 

@@ -48,13 +48,17 @@ class PreparedImage:
         }
 
 
-def prepare_image(source: Path | str | bytes, *, max_edge: int = 1568) -> PreparedImage:
+def prepare_image(
+    source: Path | str | bytes, *, max_edge: int = 1568, draft: bool = False
+) -> PreparedImage:
     """Strip metadata, fix orientation, downscale to `max_edge` on the long side, re-encode."""
     if max_edge < 16:
         raise ValueError(f"max_edge must be >= 16, got {max_edge}")
     raw = source if isinstance(source, bytes) else Path(source).read_bytes()
     with Image.open(io.BytesIO(raw)) as opened:
         original_width, original_height = opened.size
+        if draft:  # decode a JPEG at a reduced size when only a small result is wanted
+            opened.draft("RGB", (max_edge * 2, max_edge * 2))
         upright = ImageOps.exif_transpose(opened)  # bakes in orientation, drops the tag
         rgb = _flatten_to_rgb(upright)
     # Rebuild from raw pixels so no metadata (EXIF/GPS/XMP/ICC) can ride along in .info.

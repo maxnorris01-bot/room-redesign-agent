@@ -24,7 +24,6 @@ liked item contradicts them, and deleted chips never coming back.
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 from collections.abc import Callable
@@ -63,7 +62,7 @@ from app.shop.models import (
 from app.shop.parse import strip_price_words
 from app.shop.retailers import seller_key, tier_of
 from app.shop.retailers import seller_key as decide_seller_key
-from app.shop.store import Session, in_topic, now_iso, rated_results
+from app.shop.store import Session, comment_key, in_topic, now_iso, rated_results
 from app.shop.store import rated_count as rated_count_of
 from app.shop.textutil import (
     Rated,
@@ -1230,11 +1229,35 @@ def merge_tag_answers(answers: list[PreferenceTags]) -> PreferenceTags:
 # ---- stage 2h: readings prepared in the background (photo tags, comments) ------------------
 
 
-def comment_key(rid: str, comment: str) -> str:
-    """The cache key of one comment's reading: the item id plus the comment text, so a changed or
-    deleted comment never finds an old entry."""
-    digest = hashlib.sha1(" ".join(comment.split()).lower().encode()).hexdigest()[:12]
-    return f"{rid}|{digest}"
+META_KINDS = (
+    "duplicate",
+    "broken_image",
+    "wrong_product_type",
+    "wrong_item",
+    "listing_problem",
+    "other_meta",
+)  # what a comment can report about the listing instead of the shopper's taste
+META_LABELS = {
+    "duplicate": "duplicate",
+    "broken_image": "broken image",
+    "wrong_product_type": "wrong product type",
+    "wrong_item": "wrong item",
+    "listing_problem": "listing problem",
+    "other_meta": "other",
+}
+_META_WORDS = re.compile(
+    r"duplicate|same as|broken|wrong (item|product)|listing|doesn.t load|not loading|out of stock"
+)  # a stated like or dislike that is really about the listing is never kept as taste
+
+
+def normalize_meta(kind: str | None) -> str | None:
+    """A meta class from the fixed `META_KINDS` list, or None: the reader's value is looked up
+    case-insensitively with spaces and hyphens as underscores; anything else is not trusted, so an
+    unknown value never takes a rating out of the taste evidence."""
+    if not kind:
+        return None
+    key = "_".join(kind.lower().replace("-", " ").split())
+    return key if key in META_KINDS else None
 
 
 def reading_entry(answer: PreferenceTags, rid: str) -> dict[str, Any]:
@@ -1245,12 +1268,22 @@ def reading_entry(answer: PreferenceTags, rid: str) -> dict[str, Any]:
         for dim in ("shape", "material", "color_finish", "frame_color"):
             tags[dim] = normalize(dim, getattr(item, dim))
         tags["style"] = normalize_style(item.style)
+    meta = normalize_meta(item.meta_kind) if item is not None else None
+    likes, dislikes = list(answer.likes), list(answer.dislikes)
+    adjustments = answer.query_adjustments
+    if meta is not None:
+        likes = [x for x in likes if not _META_WORDS.search(x.lower())]
+        dislikes = [x for x in dislikes if not _META_WORDS.search(x.lower())]
+        if item is not None and not item.has_taste:  # a pure meta comment teaches nothing
+            likes, dislikes = [], []
+            adjustments = merge_adjustments([])
     return {
         "tags": tags,
         "cues": list(item.quality_cues) if item is not None else [],
-        "likes": list(answer.likes),
-        "dislikes": list(answer.dislikes),
-        "adjustments": answer.query_adjustments.model_dump(mode="json"),
+        "likes": likes,
+        "dislikes": dislikes,
+        "adjustments": adjustments.model_dump(mode="json"),
+        "meta": meta,
     }
 
 
@@ -1319,6 +1352,13 @@ def cached_readings(
             continue
         comment = rec.comment.strip()
         reading = session.comment_cache.get(comment_key(rid, comment)) if comment else None
+        if reading is not None and reading.get("meta"):
+            # the comment reported a listing problem: no tags and no rating evidence from this
+            # item; only what the reader found to be taste in the same comment is kept
+            likes += [x for x in reading["likes"] if x not in likes]
+            dislikes += [x for x in reading["dislikes"] if x not in dislikes]
+            adjustments.append(QueryAdjustments.model_validate(reading["adjustments"]))
+            continue
         tags: dict[str, str | None] | None = None
         if session.tag_source.get(rid) == "photo" and rid in session.tag_cache:
             tags = dict(session.tag_cache[rid])
@@ -1346,7 +1386,7 @@ def cached_readings(
             likes += [x for x in reading["likes"] if x not in likes]
             dislikes += [x for x in reading["dislikes"] if x not in dislikes]
             adjustments.append(QueryAdjustments.model_validate(reading["adjustments"]))
-    if not items:
+    if not items and not (likes or dislikes):
         return None, missing, photo_ids
     merged = merge_adjustments(adjustments) if adjustments else QueryAdjustments(
         search_text="", style_terms=[], material_terms=[], must_have=[], avoid=[],
@@ -1471,7 +1511,26 @@ def build_profile(
             proposed = merge_tag_answers(answers) if answers else None
         if cached is not None:  # the cached part and the live part are one answer
             proposed = merge_tag_answers([cached, proposed]) if proposed is not None else cached
+    flagged: dict[str, str] = {}
+    if proposed is not None:  # a comment read just now may report a listing problem too
+        for tag in proposed.items:
+            kind = normalize_meta(tag.meta_kind)
+            rec = session.ratings.get(tag.id)
+            if kind is not None and rec is not None and rec.comment.strip():
+                flagged[tag.id] = kind
+                session.comment_cache[comment_key(tag.id, rec.comment.strip())] = reading_entry(
+                    PreferenceTags(
+                        items=[tag], likes=proposed.likes, dislikes=proposed.dislikes,
+                        contradicted_guesses=[], query_adjustments=proposed.query_adjustments,
+                    ), tag.id,
+                )  # fmt: skip
+        if flagged:
+            proposed = proposed.model_copy(
+                update={"items": [t for t in proposed.items if t.id not in flagged]}
+            )
+            n_rated = rated_count_of(session)
     tagging: dict[str, Any] = {
+        "meta_flagged": flagged,
         "from_cache": len(cached.items) if cached is not None else 0,
         "model_items": n_rated - (len(cached.items) if cached is not None else 0),
         "items_total": n_rated,
