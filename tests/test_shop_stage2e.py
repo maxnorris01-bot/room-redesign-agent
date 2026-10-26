@@ -764,8 +764,8 @@ def test_candidate_tagging_cost_is_in_the_shop_again_total_and_under_a_cent(tmp_
 def test_the_prompts_are_versioned_and_the_old_ones_kept() -> None:
     from app.prompts import load_prompt
 
-    assert load_prompt("shop_prefs").version == "6"
-    for v in ("1", "2", "3", "4", "5"):
+    assert load_prompt("shop_prefs").version == "7"
+    for v in ("1", "2", "3", "4", "5", "6"):
         assert load_prompt("shop_prefs", v).version == v
     tags = load_prompt("shop_candidate_tags")
     assert tags.version == "5" and "Allowed values" in tags.text and "photo" in tags.text

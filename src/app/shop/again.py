@@ -25,6 +25,7 @@ from app.shop.clock import Clock
 from app.shop.decide import Exposure, build_exposure, typed_dimensions
 from app.shop.evidence import seller_entries
 from app.shop.models import MAX_SEARCH_TEXT_CHARS, ShopQuery, StoredProfile
+from app.shop.nearby import Fingerprinter, meta_trace
 from app.shop.prefs import (
     alignment_counts,
     alignment_detail,
@@ -59,6 +60,7 @@ from app.shop.search import (
     SearchOutcome,
     _holds,
     _search_page,
+    near_context,
     normalized_title_key,
     query_key,
     run_query,
@@ -402,6 +404,7 @@ def run_shop_again(
     thumbnailer: Thumbnailer | None = None,
     clock: Clock | None = None,
     progress: Callable[[str], None] | None = None,
+    fingerprinter: Fingerprinter | None = None,
 ) -> tuple[SearchOutcome, StoredProfile, ShopQuery]:
     """Build the profile and search again. Returns (outcome, new profile, the query used).
 
@@ -521,7 +524,10 @@ def run_shop_again(
     ctx.clock, ctx.progress, ctx.hard_stop_at = clock, progress, started + config.shop_hard_stop_s
     ctx.prefetched = prefetched
     ctx.timeline = timeline
-    outcome = run_query(query, search, config, budget, warnings, started, ctx, clock, progress)
+    near = near_context(session, fingerprinter, config)
+    outcome = run_query(
+        query, search, config, budget, warnings, started, ctx, clock, progress, near
+    )
     # the request chips keep showing only what the parser read, and a refined price
     outcome.display_query = (
         base.model_copy(update={"price_min": query.price_min, "price_max": query.price_max})
@@ -550,6 +556,9 @@ def run_shop_again(
         "tag_calls": book.log,
         "alignment_counted": ctx_counts,
     }
+    flagged_comments = meta_trace(session)
+    if flagged_comments:
+        outcome.trace["meta_comments"] = flagged_comments
     if rs.active:
         outcome.trace["refine"] = refine_trace(rs, ctx, outcome, suppressed)
     if ctx.query_result is not None:

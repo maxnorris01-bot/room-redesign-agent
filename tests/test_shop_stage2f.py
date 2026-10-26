@@ -1145,8 +1145,8 @@ def test_replays_one_and_two_keep_their_decisions_with_the_new_rules(tmp_path: P
 def test_prompts_are_versioned_and_the_old_ones_kept() -> None:
     from app.prompts import load_prompt
 
-    assert load_prompt("shop_prefs").version == "6"
-    for v in ("1", "2", "3", "4", "5"):
+    assert load_prompt("shop_prefs").version == "7"
+    for v in ("1", "2", "3", "4", "5", "6"):
         assert load_prompt("shop_prefs", v).version == v
     assert load_prompt("shop_candidate_tags").version == "5"
     assert load_prompt("shop_candidate_tags", "4").version == "4"

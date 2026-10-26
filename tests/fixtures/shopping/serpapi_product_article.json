@@ -54,35 +54,18 @@
     ],
     "rating": 4.6,
     "reviews": 1203,
-    "media": [
-      {
-        "type": "image",
-        "link": "https://mock.example/gallery/article-1.jpg"
-      },
-      {
-        "type": "image",
-        "link": "https://mock.example/gallery/article-2.jpg"
-      },
-      {
-        "type": "image",
-        "link": "https://mock.example/gallery/article-3.jpg"
-      },
-      {
-        "type": "image",
-        "link": "https://mock.example/gallery/article-4.jpg"
-      },
-      {
-        "type": "image",
-        "link": "https://mock.example/gallery/article-5.jpg"
-      },
-      {
-        "type": "image",
-        "link": "https://mock.example/gallery/article-6.jpg"
-      },
-      {
-        "type": "video",
-        "link": "https://mock.example/gallery/video.mp4"
-      }
+    "thumbnails": [
+      "https://mock.example/gallery/article-1.jpg",
+      "https://mock.example/gallery/article-2.jpg",
+      "https://mock.example/gallery/article-3.jpg",
+      "https://mock.example/gallery/article-4.jpg",
+      "https://mock.example/gallery/article-5.jpg",
+      "https://mock.example/gallery/article-6.jpg"
+    ],
+    "reviews_images": [
+      "https://mock.example/reviews/article-1.jpg",
+      "https://mock.example/reviews/article-2.jpg",
+      "https://mock.example/reviews/article-3.jpg"
     ]
   }
 }

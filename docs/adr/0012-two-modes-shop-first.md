@@ -286,6 +286,13 @@ eval to tune):
 | COLOR_SUGGESTED_MIN_SHARE | 0.40 | a batch takes at least this share from the suggested colours (a colour that complements the room the request names), where the pool has them (stage 2k; judgment, not measured) |
 | COLOR_AVOID_MAX_SHARE | 0.15 | and at most this share from the colours to avoid because the product would blend in or clash (stage 2k) |
 | REFINE_FOCUS_MIN_SHARE | 0.50 | a "focus on" refine chip takes at least this share of a batch where the pool has it (stage 2l; judgment) |
+| NEAR_FP_DISTANCE | 6 | the most two 64-bit difference hashes may differ and still be one image (stage 2n; judgment) |
+| NEAR_FP_PRICE | 0.40 | prices within this share of each other, for an image match (stage 2n) |
+| NEAR_TITLE_JACCARD | 0.8 | share of words two normalized titles must share to be one product (stage 2n) |
+| NEAR_TITLE_PRICE | 0.25 | prices within this share of each other, for a title match (stage 2n) |
+| NEAR_FP_TOP | 48 | best ranked candidates whose thumbnails are fingerprinted live (stage 2n) |
+| NEAR_FP_WORKERS | 10 | parallel fingerprint fetches (stage 2n) |
+| NEAR_FP_BUDGET_S | 2.0 | seconds allowed for the whole fingerprint step; the rest fall back to titles (stage 2n) |
 | REFINE_MAX_PER_SUBMIT | 5 | interpretations kept from one refine instruction (stage 2l) |
 | REFINE_MAX_CHIPS | 12 | active refine chips in a topic (stage 2l) |
 | REFINE_MAX_CHARS | 200 | characters in one refine instruction (stage 2l) |
@@ -917,3 +924,33 @@ the shared cap of 12; a gallery after Open, and Open after a gallery, cost nothi
 appear inline with previous and next buttons and the arrow keys; past the cap the button is disabled with the
 reason; a failed lookup shows a short message. No CSP change was needed (`img-src https:` already allows the
 images); the trace shows lookups used.
+
+## Amendment, stage 2n (2026-10-25): fixes from the first live run
+
+Photo field: SerpApi's `google_product` documents gallery images under `product_results.thumbnails`; stage 2m read
+only `media`, so the live gallery was empty. The gallery now reads `thumbnails` first, then `media`, keeping only
+distinct https image links in order (6 at most); `reviews_images` (customer photos) is never part of it. The trace
+and footer report, per lookup, which response fields held images and how many, so a future mismatch shows at once.
+Fewer than 2 usable images are cached like any lookup and the button reads "No more photos available".
+
+Same product from different vendors: two signals, either one enough. (1) Image: a 64-bit difference hash of the
+thumbnail, at most 6 bits apart, with prices within 40%. (2) Title: normalized titles (seller names, sizes and
+filler words removed) with Jaccard similarity of at least 0.8 and prices within 25%. A group keeps one
+representative (a chip seller or tier or design premium first, then a rated one, then the lowest price) and the
+card says "Also at: eBay $18.99, Lowe's $21.00" (three, then "and n more"; text only). Hidden members join the
+seen memory with the shown results (every topic), do not count toward caps, shares, stats or batch size, and are
+traced by reason with at most 5 examples. Fingerprints come from thumbnails the preparation already fetched, and
+live for the top candidates (10 in parallel, a 2 second budget, never past the hard stop); a candidate without
+one is compared by title only. Fetches are bounded: 500 KB and a 24 megapixel header limit (Pillow was already a
+dependency; nothing was added). Thresholds: `NEAR_*` in `app.shop.thresholds`, all judgment values.
+
+Comments about the listing: the preference reader (prompt `shop_prefs` version 7; v6 kept) also labels each item's
+comment as taste (null) or one of duplicate, broken_image, wrong_product_type, wrong_item, listing_problem,
+other_meta, and whether it also says something about taste. Code checks the label against that fixed list (an
+unknown label is ignored). A flagged item makes no chip and its rating is left out of tags, evidence, baselines and
+seller rules; the result stays in the seen memory. In a mixed comment ("duplicate and too dark") only the taste part
+is read. The trace lists these items under their own heading, "flagged duplicate by you" for duplicates, and says
+whether the automatic check would have caught each.
+
+Small: when chips only narrow the search the footer says "matches your preferences: none yet (n chips only narrow
+the search)"; the refine box's placeholder is "e.g. no Walmart" with the full examples in its title and label.

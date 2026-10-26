@@ -25,9 +25,9 @@ from app.shop.models import (
     clean_request,
     is_https_url,
 )
+from app.shop.nearby import build_fingerprinter
 from app.shop.parse import COLOR_CONTEXT_KINDS
 from app.shop.prefs import (
-    comment_key,
     pin_seller,
     profile_summary,
     reapply_removed,
@@ -38,7 +38,7 @@ from app.shop.prep import PrepManager
 from app.shop.progress import SHOP_AGAIN_REFINE_STEPS, Progress
 from app.shop.refine import REJECTED, add_chips, clean_instruction, interpret
 from app.shop.resolve import UnknownResult, fill_rating, product_lookup, resolve
-from app.shop.search import SearchOutcome, run_search
+from app.shop.search import SearchOutcome, near_context, run_search
 from app.shop.store import (
     MAX_SEARCHES_PER_SESSION,
     RatingRecord,
@@ -48,6 +48,7 @@ from app.shop.store import (
     SessionStore,
     Topic,
     advance_topic,
+    comment_key,
     current_topic,
     in_topic,
     now_iso,
@@ -61,6 +62,8 @@ from app.shopping import ProductLookup, ProviderError, SearchProvider
 from app.thumbnails import Thumbnailer, build_thumbnailer
 
 MAX_GALLERY_SHOWN = 6
+MAX_HIDDEN = 400  # listings remembered as hidden duplicates (the oldest go first)
+MIN_GALLERY = 2  # fewer usable images than this is "no more photos available"
 UNSET = object()
 
 
@@ -121,7 +124,8 @@ class ShopService:
         self.store = store
         self.search_provider = search
         self.lookup_provider = lookup
-        self.prep = PrepManager(config, store, self.thumbnailer, self.clock)
+        self.fingerprinter = build_fingerprinter(config)
+        self.prep = PrepManager(config, store, self.thumbnailer, self.clock, self.fingerprinter)
 
     # ---- views ----------------------------------------------------------------------------
 
@@ -144,6 +148,8 @@ class ShopService:
             "session_usd": 0.0,
             "prep_usd": 0.0,
             "photos_cached": [],
+            "photos_none": [],
+            "lookup_trace": [],
             "refine": [],
             "refine_usd": 0.0,
         }
@@ -176,8 +182,14 @@ class ShopService:
             ),
             prep_usd=round(float(session.prep.get("usd", 0.0)), 6),
             photos_cached=sorted(
-                rid for rid, row in session.product_cache.items() if not row.get("error")
+                rid for rid, row in session.product_cache.items() if self._gallery_ok(row)
             ),
+            photos_none=sorted(
+                rid
+                for rid, row in session.product_cache.items()
+                if not row.get("error") and not self._gallery_ok(row)
+            ),
+            lookup_trace=self._lookup_trace(session),
             refine=[c.model_dump(mode="json") for c in self._refinements(session)],
             refine_usd=round(session.refine_usd, 6),
             prep={
@@ -246,6 +258,30 @@ class ShopService:
                 "warnings": last.warnings,
             }
         return base
+
+    @staticmethod
+    def _gallery_ok(row: dict[str, Any]) -> bool:
+        """A cached lookup with at least `MIN_GALLERY` usable images."""
+        if row.get("error"):
+            return False
+        details = row.get("details") or {}
+        return len([u for u in details.get("images", []) if is_https_url(u)]) >= MIN_GALLERY
+
+    @staticmethod
+    def _lookup_trace(session: Session) -> list[dict[str, Any]]:
+        """Per product lookup: which response fields held images and how many (names and counts
+        only, never a URL), and how many images were usable. Makes a field mismatch visible."""
+        out = []
+        for n, row in enumerate(session.product_cache.values(), start=1):
+            details = row.get("details") or {}
+            out.append(
+                {
+                    "n": n, "ok": not row.get("error"),
+                    "fields": dict(details.get("image_fields", {})),
+                    "usable": len(details.get("images", [])),
+                }
+            )  # fmt: skip
+        return out
 
     @staticmethod
     def _refinements(session: Session) -> list[RefineChip]:
@@ -320,10 +356,16 @@ class ShopService:
     def _do_search(
         self, cleaned: str, session_id: str | None, progress: Callable[[str], None] | None = None
     ) -> dict[str, Any]:
+        near = near_context(
+            self.store.load(session_id) if session_id and self.store.exists(session_id) else None,
+            self.fingerprinter,
+            self.config,
+        )
         try:
             outcome = run_search(
-                cleaned, self.search_provider, self.config, progress=progress, clock=self.clock
-            )
+                cleaned, self.search_provider, self.config, progress=progress, clock=self.clock,
+                near=near,
+            )  # fmt: skip
         except ProviderError as exc:
             raise ApiError(502, str(exc)) from None
         except BudgetExceededError as exc:
@@ -402,6 +444,13 @@ class ShopService:
                     "items": outcome.pool_snapshot[:100],
                 },
             ][-10:]
+        for row in outcome.hidden:  # the seen memory keeps what was collapsed
+            session.hidden[row["key"]] = {k: v for k, v in row.items() if k != "key"}
+        while len(session.hidden) > MAX_HIDDEN:
+            session.hidden.pop(next(iter(session.hidden)))
+        for result in outcome.results:
+            if outcome.fingerprints.get(result.id) is not None:
+                session.fingerprints[result.id] = outcome.fingerprints[result.id]
         rated_shown = sum(1 for r in outcome.results if r.rating is not None)
         reviews = {"with_rating": rated_shown, "total": len(outcome.results)}
         session.searches.append(
@@ -429,6 +478,7 @@ class ShopService:
                     **outcome.trace,
                     **({"request": outcome.request_trace} if outcome.request_trace else {}),
                     "reviews": reviews,
+                    **({"duplicates": outcome.duplicate_trace} if outcome.duplicate_trace else {}),
                 },
                 tagging=outcome.tagging,
                 diversity={d: [v[0], v[1]] for d, v in outcome.diversity.items()},
@@ -549,14 +599,19 @@ class ShopService:
                 fill_rating(session, result, details)
                 images = [u for u in (details.images if details else []) if is_https_url(u)]
                 message = ""
+                unavailable = False
                 if error is not None:
                     message = "The photos could not be loaded for this product."
-                elif not images:
+                elif len(images) < MIN_GALLERY:
+                    # the lookup worked but has almost nothing to show: cached, never asked twice
+                    unavailable = True
                     message = "No more photos were found for this product."
                 shown = session.results[result_id]
                 return {
-                    "images": images[:MAX_GALLERY_SHOWN],
+                    "images": images[:MAX_GALLERY_SHOWN] if not unavailable else [],
                     "message": message,
+                    "unavailable": unavailable,
+                    "image_fields": dict(details.image_fields) if details else {},
                     "fresh": fresh,
                     "lookups_used": session.lookups_used,
                     "lookups_cap": self.config.shop_lookups_per_session,
@@ -631,8 +686,9 @@ class ShopService:
         session = self._await_prep(session_id, session, progress)
         try:
             outcome, profile, query = run_shop_again(
-                session, self.search_provider, self.config, self.thumbnailer, self.clock, progress
-            )
+                session, self.search_provider, self.config, self.thumbnailer, self.clock, progress,
+                self.fingerprinter,
+            )  # fmt: skip
         except ProviderError as exc:
             raise ApiError(502, str(exc)) from None
         except BudgetExceededError as exc:

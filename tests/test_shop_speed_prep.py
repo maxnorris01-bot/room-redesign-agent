@@ -17,14 +17,14 @@ import pytest
 from app.config import Config
 from app.images import PreparedImage
 from app.shop.clock import FakeClock
-from app.shop.prefs import cached_readings, comment_key
+from app.shop.prefs import cached_readings
 from app.shop.prep import PrepManager
 from app.shop.progress import Progress, Timeline
 from app.shop.providers import build_shop_providers
 from app.shop.retailers import canonical_name, count_sellers, retailer_of, seller_key, tier_of
 from app.shop.search import TagPipeline
 from app.shop.service import ShopService
-from app.shop.store import SessionStore
+from app.shop.store import SessionStore, comment_key
 from test_shop import (  # noqa: F401  (the autouse guard must be imported to apply here)
     RouterClient,
     _loopback_only,

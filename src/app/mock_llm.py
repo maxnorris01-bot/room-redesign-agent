@@ -624,6 +624,36 @@ _PREF_ROW_V2 = re.compile(
 )
 
 
+_META_PATTERNS = (
+    ("duplicate", re.compile(r"\bduplicate\b|\bsame as (the|that|this) other\b|\bsame as\b")),
+    ("broken_image", re.compile(r"image is broken|broken image|photo is broken|image won't load")),
+    ("wrong_item", re.compile(r"wrong item|wrong product")),
+    (
+        "wrong_product_type",
+        re.compile(r"\bthis is a (rug|lamp|chair|sofa|bed|shelf)\b|not a table"),
+    ),
+    ("listing_problem", re.compile(r"bad listing|listing is|out of stock|link is dead")),
+)
+_TASTE_CUE = re.compile(r"\btoo \w+|\blove\b|\bhate\b|\bflimsy\b|\bugly\b|\bdark\b|\blegs?\b")
+
+
+def _without_meta(low: str) -> str:
+    for _, pattern in _META_PATTERNS:
+        low = pattern.sub(" ", low)
+    return low
+
+
+def mock_comment_class(comment: str) -> tuple[str | None, bool]:
+    """(meta kind or None, whether the comment also says something about taste) for a comment, as
+    the v7 reader would classify it: deterministic phrase matching, mock only."""
+    low = comment.lower()
+    for kind, pattern in _META_PATTERNS:
+        if pattern.search(low):
+            rest = pattern.sub(" ", low)
+            return kind, bool(_TASTE_CUE.search(rest))
+    return None, True
+
+
 def _phrases_in(title: str) -> list[tuple[str, str]]:
     """The most specific MOCK_ATTR_PHRASES in a title (one inside a longer match is dropped)."""
     low = title.lower()
@@ -649,6 +679,11 @@ def mock_prefs_v2_payload(request_text: str) -> dict[str, Any]:
         for phrase, kind in _phrases_in(title):
             evidence.setdefault((phrase, kind, pol), []).append(rid)
         low = comment.lower()
+        meta, has_taste = mock_comment_class(comment)
+        if meta is not None and not has_taste:
+            low = ""  # a meta comment says nothing about taste
+        elif meta is not None:
+            low = _without_meta(low)
         if rating != "dislike":
             likes += [p for p, _ in MOCK_ATTR_PHRASES if p in low and p not in likes]
         for m in re.finditer(r"too (\w+)", low):
@@ -882,8 +917,9 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
         m = _PREF_ROW_V2.match(line)
         if not m:
             continue
-        _rating, rid, title, _price, _seller, _comment, image = m.groups()
+        _rating, rid, title, _price, _seller, comment, image = m.groups()
         low = title.lower()
+        meta_kind, has_taste = mock_comment_class(comment)
         if rid in replay:  # the owner's real session: tags from its real attributes, not keywords
             a = replay[rid]
             items.append(
@@ -913,6 +949,8 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
                 "frame_color": title_value("frame_color", title),
                 "style": [x for x in [title_value("style", title)] if x],
                 "quality_cues": cues,
+                "meta_kind": meta_kind,
+                "has_taste": has_taste,
             }
         )
     return {

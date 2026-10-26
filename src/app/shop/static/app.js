@@ -22,7 +22,7 @@
     profile: null, summary: '', used: 0, cap: 0, againsUsed: 0, againsCap: 0,
     sessionUsd: 0, prepUsd: 0, prep: null, busy: 0, busyMessage: '', savedOpen: false, savedTab: 'love',
     confirming: false, whyOpen: false, topic: null, refine: [], refineUsd: 0, refinePending: false,
-    photosCached: {}, gallery: {}
+    photosCached: {}, gallery: {}, photosNone: {}, lookupTrace: []
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -611,10 +611,50 @@
         state.topic.excluded + '.'
       ]));
     }
+    state.lookupTrace.forEach(function (l) {
+      var names = Object.keys(l.fields || {}).map(function (k) { return k + ' ' + l.fields[k]; });
+      panel.appendChild(h('p', { class: 'why-line' }, [
+        'Lookup ' + l.n + ': ' + (l.ok ? 'images found in ' + (names.join(', ') || 'no field') +
+          '; ' + l.usable + ' usable' : 'the request failed') + '.'
+      ]));
+    });
     panel.appendChild(h('p', { class: 'why-line' }, [
       'Product lookups used: ' + state.used + ' of ' + state.cap + ' this session (Open and More photos share them; ' +
       'a product already looked up costs nothing more).'
     ]));
+    var dup = state.search && state.search.trace && state.search.trace.duplicates;
+    if (dup && dup.before !== undefined) {
+      var reasons = Object.keys(dup.by_reason || {}).map(function (k) {
+        return k.replace(/_/g, ' ') + ' ' + dup.by_reason[k];
+      });
+      var exact = Object.keys(dup.exact || {}).filter(function (k) { return dup.exact[k]; }).map(function (k) {
+        return k.replace(/_/g, ' ') + ' ' + dup.exact[k];
+      });
+      if (exact.length) reasons = exact.concat(reasons);
+      var fpr = dup.fingerprints || {};
+      panel.appendChild(h('p', { class: 'why-line' }, [
+        'Same product from other vendors: ' + dup.before + ' candidates became ' + dup.after + ' (' +
+        (reasons.join(', ') || 'none found') + '). Thumbnails fingerprinted: ' + (fpr.fetched || 0) + ' of ' +
+        (fpr.wanted || 0) + (fpr.failed ? ', ' + fpr.failed + ' failed' : '') +
+        (fpr.skipped ? ', ' + fpr.skipped + ' left to the time budget (compared by title only)' : '') + '.'
+      ]));
+      (dup.examples || []).forEach(function (g) {
+        panel.appendChild(h('p', { class: 'why-line' }, ['Shown once: ' + g.kept + '; also: ' + g.also.join('; ') + '.']));
+      });
+    }
+    var mc = state.search && state.search.trace && state.search.trace.meta_comments;
+    if (mc && mc.length) {
+      panel.appendChild(h('h4', { class: 'why-line' }, ['Comments about the listing, not your taste']));
+      mc.forEach(function (m) {
+        var lead = m.flagged_duplicate ? 'flagged duplicate by you' : 'flagged ' + m.label + ' by you';
+        panel.appendChild(h('p', { class: 'why-line' }, [
+          lead + ': ' + m.title + ' (' + m.label + '; ' +
+          (m.dedupe_would_catch ? 'the automatic check would have caught it' +
+            (m.caught_by ? ' by ' + m.caught_by.replace(/_/g, ' ') : '') : 'the automatic check would not have caught it') +
+          '). Its rating is not used for your taste.'
+        ]));
+      });
+    }
     var rv = state.search && state.search.trace && state.search.trace.reviews;
     if (rv) {
       panel.appendChild(h('p', { class: 'why-line' }, [
@@ -743,8 +783,8 @@
     var c = (s.trace && s.trace.alignment_counted) || {};
     if (s.alignment.signals === 0) {
       if (c.other_chips > 0) {
-        return 'matches your preferences: nothing to match against yet (only ' + c.other_chips +
-          ' chip(s) that narrow the search: leaning away, the marketplace exclusion, open or mixed)';
+        return 'matches your preferences: none yet (' + c.other_chips + ' chip' +
+          (c.other_chips === 1 ? ' only narrows' : 's only narrow') + ' the search)';
       }
       return 'matches your preferences: n/a (nothing decided yet)';
     }
@@ -799,6 +839,12 @@
     var s = state.search;
     var el = $('stats');
     var lookups = state.cap ? 'link lookups ' + state.used + ' of ' + state.cap : '';
+    if (lookups && state.lookupTrace.length) {  // which response fields held images, counts only
+      lookups += ' (' + state.lookupTrace.slice(0, 3).map(function (l) {
+        var names = Object.keys(l.fields || {}).map(function (k) { return k + ' ' + l.fields[k]; });
+        return names.length ? names.join(', ') : 'no images';
+      }).join('; ') + (state.lookupTrace.length > 3 ? '; …' : '') + ')';
+    }
     if (!s) { el.textContent = lookups ? lookups + ' this session' : ''; return; }
     var calls = s.serper_calls;
     el.textContent = [
@@ -863,9 +909,14 @@
   function photosState(card, id) {
     var btn = card.querySelector('.photos');
     if (!btn) return;
-    var free = !!state.photosCached[id] || !!state.resolved[id];
+    var free = !!state.photosCached[id] || !!state.resolved[id] || !!state.photosNone[id];
     var capped = !free && (state.cap === 0 || state.used >= state.cap);
     var note = card.querySelector('.photos-note');
+    if (state.photosNone[id]) {  // looked up before and nothing usable came back: never asked again
+      btn.disabled = true;
+      btn.textContent = 'No more photos available';
+      return;
+    }
     btn.disabled = capped;
     if (capped && note && note.hidden) {
       note.hidden = false;
@@ -894,7 +945,9 @@
     api('POST', '/api/photos', { session_id: state.sessionId, result_id: r.id })
       .then(function (data) {
         state.gallery[r.id] = data;
-        state.photosCached[r.id] = true;
+        if (data.unavailable) state.photosNone[r.id] = true;
+        else state.photosCached[r.id] = true;
+        state.lookupTrace = state.lookupTrace.concat([{ n: state.lookupTrace.length + 1, ok: true, fields: data.image_fields || {}, usable: (data.images || []).length }]);
         state.used = data.lookups_used;
         state.cap = data.lookups_cap;
         var known = state.known[r.id];
@@ -904,6 +957,10 @@
         }
         btn.disabled = false;
         show(data);
+        if (data.unavailable) {
+          btn.disabled = true;
+          btn.textContent = 'No more photos available';
+        }
         renderStats();
         syncAll(r.id);
       })
@@ -1101,6 +1158,15 @@
       h('div', { class: 'seller' }, [r.seller || 'Seller not listed'])
     ]);
     body.appendChild(h('div', { class: 'rating-row', hidden: '' }));
+    if (r.also_at && r.also_at.length) {  // the same product from other sellers (text only, no links)
+      var shownSellers = r.also_at.slice(0, 3).map(function (a) {
+        return a.seller + (a.price === null || a.price === undefined ? '' : ' $' + Number(a.price).toFixed(2));
+      });
+      body.appendChild(h('div', { class: 'also-at' }, [
+        'Also at: ' + shownSellers.join(', ') +
+        (r.also_at.length > 3 ? ' and ' + (r.also_at.length - 3) + ' more' : '')
+      ]));
+    }
     if (r.size_hint) body.appendChild(h('span', { class: 'size' }, [r.size_hint]));
     var known = state.known[r.id];
     if (known && known.topic_label) {
@@ -1238,6 +1304,9 @@
     state.refineUsd = data.refine_usd || 0;
     state.photosCached = {};
     (data.photos_cached || []).forEach(function (id) { state.photosCached[id] = true; });
+    state.photosNone = {};
+    (data.photos_none || []).forEach(function (id) { state.photosNone[id] = true; });
+    state.lookupTrace = data.lookup_trace || [];
     state.prep = data.prep || null;
     (data.saved || []).forEach(function (r) { state.known[r.id] = r; });
     if (state.search) state.search.results.forEach(function (r) { state.known[r.id] = r; });

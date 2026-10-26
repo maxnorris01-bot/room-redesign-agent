@@ -62,6 +62,16 @@ BASE_PAGE_MAX = 2  # the base query is paged no deeper than this, page 3 only as
 # stage 2k: colours that complement the room the request names (suggestions, never filters)
 COLOR_SUGGESTED_MIN_SHARE = 0.40  # a batch takes at least this share from suggested colours
 COLOR_AVOID_MAX_SHARE = 0.15  # and at most this share from the colours to avoid
+# stage 2n: the same product from different vendors (near-duplicates). Judgment, not measured.
+NEAR_FP_DISTANCE = (
+    6  # image fingerprints (64-bit difference hash) this close or closer are one image
+)
+NEAR_FP_PRICE = 0.40  # ... and the prices must be within this share of each other
+NEAR_TITLE_JACCARD = 0.8  # normalized titles sharing at least this share of their words ...
+NEAR_TITLE_PRICE = 0.25  # ... with prices within this share, are the same product
+NEAR_FP_TOP = 48  # candidates (best ranked first) whose thumbnails are fingerprinted live
+NEAR_FP_WORKERS = 10  # parallel fingerprint fetches
+NEAR_FP_BUDGET_S = 2.0  # seconds for the whole fingerprint step; the rest fall back to titles
 # stage 2l: refine instructions typed by the shopper
 REFINE_FOCUS_MIN_SHARE = 0.50  # a "focus on" chip takes at least this share of a batch, if supplied
 REFINE_MAX_PER_SUBMIT = 5  # interpretations kept from one instruction
@@ -133,6 +143,13 @@ def all_thresholds() -> dict[str, float | int]:
         "COLOR_SUGGESTED_MIN_SHARE": COLOR_SUGGESTED_MIN_SHARE,
         "COLOR_AVOID_MAX_SHARE": COLOR_AVOID_MAX_SHARE,
         "REFINE_FOCUS_MIN_SHARE": REFINE_FOCUS_MIN_SHARE,
+        "NEAR_FP_DISTANCE": NEAR_FP_DISTANCE,
+        "NEAR_FP_PRICE": NEAR_FP_PRICE,
+        "NEAR_TITLE_JACCARD": NEAR_TITLE_JACCARD,
+        "NEAR_TITLE_PRICE": NEAR_TITLE_PRICE,
+        "NEAR_FP_TOP": NEAR_FP_TOP,
+        "NEAR_FP_WORKERS": NEAR_FP_WORKERS,
+        "NEAR_FP_BUDGET_S": NEAR_FP_BUDGET_S,
         "REFINE_MAX_PER_SUBMIT": REFINE_MAX_PER_SUBMIT,
         "REFINE_MAX_CHIPS": REFINE_MAX_CHIPS,
         "REFINE_MAX_CHARS": REFINE_MAX_CHARS,
