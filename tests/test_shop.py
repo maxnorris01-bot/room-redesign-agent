@@ -31,6 +31,7 @@ from app.mock_llm import (
     mock_prefs_v2_payload,
     mock_prefs_v3_payload,
     mock_queries,
+    mock_refinements,
     mock_shop_parse_payload,
     response,
     text_block,
@@ -181,6 +182,15 @@ class RouterClient:
         self.messages = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs: Any) -> SimpleNamespace:
+        if (kwargs.get("tool_choice") or {}).get("name") == "record_refinements":
+            self.calls.append(kwargs)
+            content = kwargs["messages"][0]["content"]
+            ask = content if isinstance(content, str) else str(content)
+            block = SimpleNamespace(
+                type="tool_use", id="toolu_r", name="record_refinements",
+                input={"items": mock_refinements(ask)},
+            )  # fmt: skip
+            return response([block], stop_reason="tool_use")
         if (kwargs.get("tool_choice") or {}).get("name") == "record_queries":
             self.calls.append(kwargs)
             content = kwargs["messages"][0]["content"]

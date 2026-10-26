@@ -34,7 +34,8 @@ STATIC_FILES: dict[str, tuple[str, str]] = {
 }
 API_PATHS = {
     "/api/session", "/api/search", "/api/rate", "/api/resolve", "/api/shop-again",
-    "/api/preference/remove", "/api/preference/pin", "/api/reset",
+    "/api/preference/remove", "/api/preference/pin", "/api/reset", "/api/context/remove",
+    "/api/refine", "/api/refine/remove", "/api/photos",
 }  # fmt: skip
 POST_PATHS = API_PATHS - {"/api/session"}
 JOB_PREFIX = "/api/job/"  # GET /api/job/<id>?session=<session id>
@@ -140,10 +141,22 @@ class ShopApp:
                     data["comment"] if "comment" in data else UNSET,
                 )
             elif path == "/api/shop-again":
-                result = self.service.start_shop_again(data.get("session_id"))
+                result = self.service.start_shop_again(
+                    data.get("session_id"), data.get("refine_text")
+                )
+            elif path == "/api/photos":
+                result = self.service.photos(data.get("session_id"), data.get("result_id"))
+            elif path == "/api/refine":
+                result = self.service.refine(data.get("session_id"), data.get("text"))
+            elif path == "/api/refine/remove":
+                result = self.service.remove_refine(data.get("session_id"), data.get("id"))
             elif path == "/api/preference/remove":
                 result = self.service.remove_preference(
                     data.get("session_id"), data.get("kind"), data.get("phrase")
+                )
+            elif path == "/api/context/remove":
+                result = self.service.remove_context(
+                    data.get("session_id"), data.get("kind"), data.get("value")
                 )
             elif path == "/api/reset":
                 result = self.service.reset_session(data.get("session_id"))

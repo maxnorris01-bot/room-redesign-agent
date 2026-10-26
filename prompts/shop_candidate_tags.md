@@ -1,5 +1,5 @@
 ---
-version: 4
+version: 5
 ---
 You tag shopping results from their listing text and, when one is attached, their product photo. For
 each result you are given a number, its title, its price, its seller and either "image N" (the Nth
@@ -15,6 +15,12 @@ order, each with:
 - `material`: the main material of the piece;
 - `finish`: the colour or finish of the main surface (the top, the body);
 - `frame_color`: the colour of the frame, base or legs;
+- `color`: the dominant colour of the whole product, the colour you would name first (a curtain, a
+  sofa, a rug: its main colour; a table: the colour of the top and body together). From a photo,
+  judge what is shown; from a title, only what the words say ("Navy Velvet Curtains" is
+  navy_dark_blue; "Boho Curtains" is null). A pattern with no one main colour is multicolor_pattern;
+  a metal or gold finish is metallic. Never read the colour of the room, the photo background or a
+  styled setting; null when it does not show;
 - `style`: a list of up to two style values, only when the title or the photo shows them (an empty
   list otherwise);
 - `quality_cues` (only when the tool has this field): up to three short phrases of one to three words

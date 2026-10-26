@@ -11,10 +11,12 @@ limits in `search.build_results`.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from functools import partial
+from typing import Any
 
 from app.config import Config
 from app.llm import Budget
@@ -36,6 +38,14 @@ from app.shop.prefs import (
 )
 from app.shop.progress import Progress, Timeline
 from app.shop.queries import QueryInput, write_queries
+from app.shop.refine import (
+    RefineSet,
+    apply_to_query,
+    build_set,
+    ranker_lines,
+    suppress_inferred,
+    writer_lines,
+)
 from app.shop.retailers import (
     AFFINITY_TIERS,
     Retailer,
@@ -47,22 +57,25 @@ from app.shop.retailers import (
 from app.shop.search import (
     AgainContext,
     SearchOutcome,
+    _holds,
     _search_page,
     normalized_title_key,
     query_key,
     run_query,
     seen_listing,
+    setting_lines,
 )
-from app.shop.store import Session, rated_results, sellers_to_deprioritize
+from app.shop.store import Session, current_topic, rated_results, sellers_to_deprioritize
 from app.shop.thresholds import (
     BASE_PAGE_MAX,
     CONVERGED_MAX_SHARE,
     DIVERSITY_MAX_SHARE,
     QUERY_DISLIKED_TITLES,
     QUERY_LIKED_TITLES,
+    REFINE_FOCUS_MIN_SHARE,
     SELLER_SEARCHES,
 )
-from app.shop.vocab import DIMENSIONS
+from app.shop.vocab import DIMENSIONS, title_tags
 from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.thumbnails import Thumbnailer
 
@@ -307,6 +320,46 @@ def again_context(
     )
 
 
+def refine_trace(
+    rs: RefineSet, ctx: AgainContext, outcome: SearchOutcome, suppressed: list[str]
+) -> dict[str, Any]:
+    """How each refine chip was applied: candidates removed, the share it holds of the batch, a
+    hint to the ranker, a constraint for the query writer; and what it suppressed."""
+    rows = []
+    for c in rs.chips:
+        applied: dict[str, Any] = {"query_constraint": True, "rank_hint": True}
+        if c.kind.startswith("exclude"):
+            applied["removed"] = len(ctx.refine_dropped.get(c.id, ()))
+        elif c.kind in ("focus_value", "focus_seller"):
+            pair = (
+                ("seller", seller_key(c.target))
+                if c.kind == "focus_seller"
+                else tuple(c.target.split(":", 1))
+            )
+            held = 0
+            for r in outcome.results:
+                if pair[0] == "seller":
+                    held += seller_key(r.seller) == pair[1]
+                else:
+                    tags = (ctx.tag_book.get(r.id) if ctx.tag_book else None) or title_tags(r.title)
+                    held += _holds(tags, pair[0], pair[1])
+            applied["in_batch"] = held
+            applied["reserved"] = math.ceil(REFINE_FOCUS_MIN_SHARE * len(outcome.results))
+        elif c.kind in ("price_max", "price_min"):
+            applied["price"] = c.target
+            applied["rank_hint"] = False
+        rows.append(
+            {
+                "id": c.id,
+                "label": c.label,
+                "kind": c.kind,
+                "approximate": c.approximate,
+                "applied": applied,
+            }  # fmt: skip
+        )
+    return {"chips": rows, "suppressed": suppressed}
+
+
 def _query_input(
     session: Session,
     base: ShopQuery,
@@ -338,6 +391,7 @@ def _query_input(
         liked_sellers=names, liked_titles=liked[:QUERY_LIKED_TITLES],
         disliked_titles=disliked[:QUERY_DISLIKED_TITLES],
         existing=[*planned, *(p[2] for p in ctx.peer_queries)],
+        setting=setting_lines(adjusted),
     )  # fmt: skip
 
 
@@ -442,18 +496,38 @@ def run_shop_again(
     if warning:
         warnings.append(warning)
     query = apply_adjustments(base, profile)
+    topic = current_topic(session)
+    rs = build_set(topic.refinements if topic is not None else [])
+    profile, query, suppressed = suppress_inferred(profile, query, rs)  # chips outrank ratings
+    query = apply_to_query(query, rs)
     queries, dropped = build_phrasings(
         base, profile, query, config.shop_again_max_serper_calls, with_seller=False
     )  # the seller searches are planned by the evidence, not by a chip's phrasing
     ctx = again_context(session, profile, config, queries, dropped, book, query)
+    ctx.refine, ctx.refine_lines = rs, ranker_lines(rs)
+    for name in rs.focus_sellers:  # a focus on a seller searches that seller by name
+        key = seller_key(name)
+        ctx.affinity_sellers.add(key)
+        ctx.liked_seller_keys.add(key)
+        text = " ".join(f"{name} {query.search_text}".split())[:MAX_SEARCH_TEXT_CHARS]
+        ctx.peer_queries = [(key, name, text), *[p for p in ctx.peer_queries if p[0] != key]][
+            :SELLER_SEARCHES
+        ]
     qinput = _query_input(session, base, query, profile, ctx, queries)
+    if qinput is not None:
+        qinput.setting += writer_lines(rs)
     if config.shop_model_queries and qinput is not None:
         ctx.query_writer = partial(write_queries, qinput, budget, config)
     ctx.clock, ctx.progress, ctx.hard_stop_at = clock, progress, started + config.shop_hard_stop_s
     ctx.prefetched = prefetched
     ctx.timeline = timeline
     outcome = run_query(query, search, config, budget, warnings, started, ctx, clock, progress)
-    outcome.display_query = base  # the request chips keep showing only what the parser read
+    # the request chips keep showing only what the parser read, and a refined price
+    outcome.display_query = (
+        base.model_copy(update={"price_min": query.price_min, "price_max": query.price_max})
+        if (rs.price_min is not None or rs.price_max is not None)
+        else base
+    )
     if book.failed:
         outcome.warnings.append(
             f"Candidate tagging failed: {book.reason}. No attribute preference was applied "
@@ -476,6 +550,8 @@ def run_shop_again(
         "tag_calls": book.log,
         "alignment_counted": ctx_counts,
     }
+    if rs.active:
+        outcome.trace["refine"] = refine_trace(rs, ctx, outcome, suppressed)
     if ctx.query_result is not None:
         outcome.trace["model_queries"] = outcome.composition.get("model_queries", {})
     outcome.tagging = {

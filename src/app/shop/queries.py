@@ -59,6 +59,7 @@ class QueryInput:
     liked_titles: list[str] = field(default_factory=list)
     disliked_titles: list[str] = field(default_factory=list)
     existing: list[str] = field(default_factory=list)  # queries already planned (normalized)
+    setting: list[str] = field(default_factory=list)  # stage 2k: setting and colour guidance lines
 
 
 @dataclass
@@ -99,6 +100,7 @@ def user_text(inp: QueryInput) -> str:
         line("Avoid", q.avoid),
         "Settled values: "
         + ("; ".join(f"{d.replace('_', ' ')}: {v}" for d, v in inp.converged.items()) or "none"),
+        *inp.setting,
         line("Leaning toward", inp.toward),
         line("Leaning away from", inp.away),
         line("Liked retailers (you may name one)", inp.liked_sellers),

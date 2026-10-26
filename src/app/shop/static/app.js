@@ -21,7 +21,8 @@
     sessionId: null, search: null, ratings: {}, resolved: {}, known: {},
     profile: null, summary: '', used: 0, cap: 0, againsUsed: 0, againsCap: 0,
     sessionUsd: 0, prepUsd: 0, prep: null, busy: 0, busyMessage: '', savedOpen: false, savedTab: 'love',
-    confirming: false, whyOpen: false
+    confirming: false, whyOpen: false, topic: null, refine: [], refineUsd: 0, refinePending: false,
+    photosCached: {}, gallery: {}
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -123,7 +124,11 @@
   }
 
   function hasRating() {
-    return Object.keys(state.ratings).some(function (id) { return state.ratings[id].rating; });
+    // only ratings made in the current topic count toward a Shop Again (earlier ones stay in Saved)
+    return Object.keys(state.ratings).some(function (id) {
+      var r = state.ratings[id];
+      return r.rating && (r.topic === null || r.topic === undefined || !state.topic || r.topic === state.topic.id);
+    });
   }
 
   function updateButtons() {
@@ -178,6 +183,73 @@
     q.material_terms.forEach(function (t) { add('Material', t); });
     q.must_have.forEach(function (t) { add('Must have', t); });
     q.avoid.forEach(function (t) { add('Avoid', t, 'avoid'); });
+    (q.color_terms || []).forEach(function (c) { add('Color', colorName(c)); });
+    // the setting of the request and the colours it suggests: each chip can be deleted (stage 2k)
+    (q.context || []).forEach(function (c) {
+      ctxChip(CONTEXT_LABELS[c.kind] || 'Setting', c.value, 'context', c.value, '', c.approximate);
+    });
+    (q.suggested_colors || []).forEach(function (c) {
+      ctxChip('Suggested', colorName(c), 'suggested', colorName(c), 'suggested');
+    });
+    (q.avoid_colors || []).forEach(function (c) {
+      ctxChip('Avoid color', colorName(c), 'avoid', colorName(c), 'avoidc');
+    });
+  }
+
+  var CONTEXT_LABELS = {
+    room_color: 'Room', wall_color: 'Walls', existing_item: 'Goes with', room_type: 'Room type',
+    room_size: 'Space', mood: 'Mood', other: 'Setting'
+  };
+  var COLOR_NAMES = {
+    navy_dark_blue: 'navy', rust_terracotta: 'rust', yellow_mustard: 'mustard',
+    multicolor_pattern: 'multicolor'
+  };
+
+  function colorName(id) { return COLOR_NAMES[id] || id; }
+
+  function ctxChip(key, value, kind, removeValue, cls, approximate) {
+    var x = h('button', { type: 'button', class: 'x', 'aria-label': 'Remove ' + key + ' ' + value }, ['×']);
+    x.addEventListener('click', function () {
+      api('POST', '/api/context/remove', { session_id: state.sessionId, kind: kind, value: removeValue })
+        .then(function (data) {
+          if (state.search) {
+            state.search.query = data.query;
+            if (state.search.used_query) state.search.used_query = data.query;
+          }
+          renderChips(state.search && state.search.query);
+          renderRequestTrace();
+        })
+        .catch(function (err) { fail(err.message, null); });
+    });
+    var kids = [h('span', { class: 'k' }, [key]), value];
+    if (approximate) kids.push(h('span', { class: 'approx' }, ['approximate']));
+    kids.push(x);
+    $('chips').appendChild(h('span', { class: 'chip ctx' + (cls ? ' ' + cls : '') }, kids));
+  }
+
+  function renderRequestTrace() {
+    var box = $('request-trace');
+    var body = $('request-trace-body');
+    var s = state.search;
+    var t = s && s.trace && s.trace.request;
+    var q = s && s.query;
+    var live = q && ((q.context && q.context.length) || (q.suggested_colors && q.suggested_colors.length));
+    box.hidden = !(t && live);
+    body.textContent = '';
+    if (box.hidden) return;
+    body.appendChild(h('p', {}, ['Searched for: "' + t.search_text + '" (only what describes the product).']));
+    if (t.product_colors.length) body.appendChild(h('p', {}, ['Product color asked for: ' + t.product_colors.join(', ') + '.']));
+    body.appendChild(h('p', {}, ['Setting: ' + t.context.map(function (c) {
+      return (CONTEXT_LABELS[c.kind] || 'Setting') + ' ' + c.value + (c.approximate ? ' (approximate)' : '');
+    }).join('; ') + '.']));
+    if (t.suggested.length) body.appendChild(h('p', {}, ['Suggested colors: ' + t.suggested.join(', ') + '.']));
+    if (t.avoid.length) body.appendChild(h('p', {}, ['Colors to avoid: ' + t.avoid.join(', ') + '.']));
+    if (t.reason) body.appendChild(h('p', {}, ['Why: ' + t.reason]));
+    if (t.second_query) body.appendChild(h('p', {}, ['Second search: "' + t.second_query + '".']));
+    body.appendChild(h('p', {}, [
+      'Of ' + t.results + ' results, ' + t.from_suggested + ' are in a suggested color and ' +
+      t.from_avoid + ' in a color to avoid. Suggestions are soft guidance, never filters.'
+    ]));
   }
 
   // One chip. `tip` is an array of plain lines shown in a hover/focus tooltip (text nodes only).
@@ -532,6 +604,42 @@
     panel.textContent = '';
     if (!has || !state.whyOpen) return;
     var tg = state.profile.tagging || {};
+    if (state.topic) {
+      panel.appendChild(h('p', { class: 'why-line' }, [
+        'Topic: ' + (state.topic.label || 'unknown product type') + ' (' + state.topic.request + '). ' +
+        'Ratings counted: ' + state.topic.counted + '; left out because they were made in an earlier topic: ' +
+        state.topic.excluded + '.'
+      ]));
+    }
+    panel.appendChild(h('p', { class: 'why-line' }, [
+      'Product lookups used: ' + state.used + ' of ' + state.cap + ' this session (Open and More photos share them; ' +
+      'a product already looked up costs nothing more).'
+    ]));
+    var rv = state.search && state.search.trace && state.search.trace.reviews;
+    if (rv) {
+      panel.appendChild(h('p', { class: 'why-line' }, [
+        'Customer ratings: ' + rv.with_rating + ' of ' + rv.total + ' shown results came with a star rating. ' +
+        'They are shown on the cards only and never change ranking.'
+      ]));
+    }
+    var rf = state.search && state.search.trace && state.search.trace.refine;
+    if (rf && rf.chips && rf.chips.length) {
+      rf.chips.forEach(function (c) {
+        var a = c.applied || {};
+        var bits = [];
+        if (a.removed !== undefined) bits.push(a.removed + ' candidate(s) removed before ranking');
+        if (a.in_batch !== undefined) bits.push(a.in_batch + ' in the batch, ' + a.reserved + ' reserved');
+        if (a.price) bits.push('replaces the typed price: ' + a.price);
+        if (a.rank_hint) bits.push('given to the ranker as a must-favor or a note');
+        if (a.query_constraint) bits.push('passed to the query writer as a constraint');
+        panel.appendChild(h('p', { class: 'why-line' }, [
+          'You asked: ' + c.label + (c.approximate ? ' (approximate)' : '') + ': ' + bits.join('; ') + '.'
+        ]));
+      });
+      (rf.suppressed || []).forEach(function (t) {
+        panel.appendChild(h('p', { class: 'why-line' }, ['Suppressed because you asked: ' + t + '.']));
+      });
+    }
     if (tg.from_cache !== undefined) {
       panel.appendChild(h('p', { class: 'why-line' }, [
         'Ratings read: ' + tg.from_cache + ' of ' + tg.items_total + ' reused from the background preparation (photo tags' +
@@ -707,6 +815,7 @@
       taggingText(s),
       'session ' + usd(state.sessionUsd),
       state.prepUsd ? 'background preparation ' + usd(state.prepUsd) : '',
+      state.refineUsd ? 'refinements ' + usd(state.refineUsd) : '',
       lookups
     ].filter(Boolean).join(' · ');
   }
@@ -745,6 +854,126 @@
     var note = card.querySelector('.note');
     if (document.activeElement !== note) note.value = rec.comment || '';
     resolvedLine(card, id);
+    ratingLine(card, id);
+    photosState(card, id);
+  }
+
+  // "More photos" uses the same product lookup as Open, so it shares the cap of lookups per session.
+  // Past the cap the button is disabled and says why (a gallery already looked up stays free).
+  function photosState(card, id) {
+    var btn = card.querySelector('.photos');
+    if (!btn) return;
+    var free = !!state.photosCached[id] || !!state.resolved[id];
+    var capped = !free && (state.cap === 0 || state.used >= state.cap);
+    var note = card.querySelector('.photos-note');
+    btn.disabled = capped;
+    if (capped && note && note.hidden) {
+      note.hidden = false;
+      note.textContent = 'Lookup limit reached (' + state.used + ' of ' + state.cap + ' this session), so no more photos can be loaded.';
+    }
+  }
+
+  function togglePhotos(r, btn, gallery, note) {
+    if (!gallery.hidden) {
+      gallery.hidden = true;
+      btn.textContent = 'More photos';
+      btn.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    var show = function (data) {
+      renderGallery(gallery, data.images || [], r.title);
+      gallery.hidden = !(data.images && data.images.length);
+      note.hidden = !data.message;
+      note.textContent = data.message || '';
+      btn.textContent = gallery.hidden ? 'More photos' : 'Hide photos';
+      btn.setAttribute('aria-expanded', gallery.hidden ? 'false' : 'true');
+    };
+    if (state.gallery[r.id]) { show(state.gallery[r.id]); return; }
+    btn.disabled = true;
+    btn.textContent = 'Loading…';
+    api('POST', '/api/photos', { session_id: state.sessionId, result_id: r.id })
+      .then(function (data) {
+        state.gallery[r.id] = data;
+        state.photosCached[r.id] = true;
+        state.used = data.lookups_used;
+        state.cap = data.lookups_cap;
+        var known = state.known[r.id];
+        if (known && data.rating) {
+          if (known.rating === null || known.rating === undefined) known.rating = data.rating.rating;
+          if (known.rating_count === null || known.rating_count === undefined) known.rating_count = data.rating.rating_count;
+        }
+        btn.disabled = false;
+        show(data);
+        renderStats();
+        syncAll(r.id);
+      })
+      .catch(function (err) {
+        btn.disabled = false;
+        btn.textContent = 'More photos';
+        note.hidden = false;
+        note.textContent = err.message;
+      });
+  }
+
+  function renderGallery(gallery, images, title) {
+    gallery.textContent = '';
+    if (!images.length) return;
+    var index = 0;
+    var frame = h('div', { class: 'g-frame' });
+    var counter = h('span', { class: 'g-count', 'aria-live': 'polite' });
+    var prev = h('button', { type: 'button', class: 'g-nav', 'aria-label': 'Previous photo' }, ['\u2039']);
+    var next = h('button', { type: 'button', class: 'g-nav', 'aria-label': 'Next photo' }, ['\u203a']);
+    function draw() {
+      frame.textContent = '';
+      var url = images[index];
+      if (typeof url === 'string' && url.indexOf('https://') === 0) {
+        var img = document.createElement('img');
+        img.alt = 'Photo ' + (index + 1) + ' of ' + images.length + ': ' + title.slice(0, 60);
+        img.loading = 'lazy';
+        img.referrerPolicy = 'no-referrer';
+        img.addEventListener('error', function () {
+          frame.textContent = 'This photo could not be loaded.';
+        });
+        img.src = url;
+        frame.appendChild(img);
+      }
+      counter.textContent = (index + 1) + ' of ' + images.length;
+      prev.disabled = images.length < 2;
+      next.disabled = images.length < 2;
+    }
+    function move(step) { index = (index + step + images.length) % images.length; draw(); }
+    prev.addEventListener('click', function () { move(-1); });
+    next.addEventListener('click', function () { move(1); });
+    gallery.onkeydown = function (e) {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); move(-1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); move(1); }
+    };
+    gallery.appendChild(frame);
+    gallery.appendChild(h('div', { class: 'g-controls' }, [prev, counter, next]));
+    draw();
+  }
+
+  // The star rating and review count the search gave (or an Open lookup filled in). Shown only when
+  // the data exists: nothing is estimated. Display only; it never enters ranking.
+  function ratingLine(card, id) {
+    var el = card.querySelector('.rating-row');
+    if (!el) return;
+    var r = state.known[id];
+    el.textContent = '';
+    if (!r || r.rating === null || r.rating === undefined) { el.hidden = true; return; }
+    var n = r.rating_count;
+    var shown = Number(r.rating).toFixed(1);
+    var count = n === null || n === undefined ? '' : Number(n).toLocaleString('en-US');
+    var full = Math.max(0, Math.min(5, Math.round(Number(r.rating))));
+    el.hidden = false;
+    var wrap = h('span', {
+      class: 'stars', role: 'img',
+      'aria-label': 'rated ' + shown + ' out of 5' + (count ? ' from ' + count + ' reviews' : '')
+    }, [
+      h('span', { class: 'glyphs', 'aria-hidden': 'true' }, ['\u2605'.repeat(full) + '\u2606'.repeat(5 - full)]),
+      h('span', { class: 'num', 'aria-hidden': 'true' }, [' ' + shown + (count ? ' (' + count + ')' : '')])
+    ]);
+    el.appendChild(wrap);
   }
 
   function syncAll(id) {
@@ -763,6 +992,11 @@
     return api('POST', '/api/resolve', { session_id: state.sessionId, result_id: id })
       .then(function (data) {
         state.resolved[id] = data.resolved;
+        var known = state.known[id];
+        if (known && data.rating) {  // a lookup fills in a rating the search did not give
+          if (known.rating === null || known.rating === undefined) known.rating = data.rating.rating;
+          if (known.rating_count === null || known.rating_count === undefined) known.rating_count = data.rating.rating_count;
+        }
         state.used = data.lookups_used;
         state.cap = data.lookups_cap;
         renderStats();
@@ -787,7 +1021,8 @@
     var next = prev.rating === rating ? null : rating;
     var before = savedIdsNow().join();
     state.ratings[id] = {
-      rating: next, comment: prev.comment, rated_at: next ? new Date().toISOString().replace('Z', '+00:00') : null
+      rating: next, comment: prev.comment, rated_at: next ? new Date().toISOString().replace('Z', '+00:00') : null,
+      topic: next && state.topic ? state.topic.id : prev.topic
     };
     syncAll(id);
     updateButtons();
@@ -865,7 +1100,12 @@
       ]),
       h('div', { class: 'seller' }, [r.seller || 'Seller not listed'])
     ]);
+    body.appendChild(h('div', { class: 'rating-row', hidden: '' }));
     if (r.size_hint) body.appendChild(h('span', { class: 'size' }, [r.size_hint]));
+    var known = state.known[r.id];
+    if (known && known.topic_label) {
+      body.appendChild(h('span', { class: 'topic-tag' }, ['From an earlier search: ' + known.topic_label]));
+    }
 
     var rates = h('div', { class: 'rates', role: 'group', 'aria-label': 'Rate this product' });
     RATINGS.forEach(function (pair) {
@@ -891,7 +1131,20 @@
       type: 'button', class: 'open', title: 'Look up the retailer link and open it'
     }, ['Open']);
     open.addEventListener('click', function () { openResult(r.id, open); });
-    body.appendChild(h('div', { class: 'open-row' }, [open]));
+    var openRow = h('div', { class: 'open-row' }, [open]);
+    body.appendChild(openRow);
+    if (r.product_id) {  // a card without a product id has no gallery to look up
+      var photos = h('button', {
+        type: 'button', class: 'open photos', 'aria-expanded': 'false',
+        title: 'Look up more photos of this product'
+      }, ['More photos']);
+      var gallery = h('div', { class: 'gallery', hidden: '', tabindex: '0', 'aria-label': 'More photos of this product' });
+      var photosNote = h('p', { class: 'photos-note', role: 'status', hidden: '' });
+      photos.addEventListener('click', function () { togglePhotos(r, photos, gallery, photosNote); });
+      openRow.appendChild(photos);
+      body.appendChild(photosNote);
+      body.appendChild(gallery);
+    }
     body.appendChild(h('div', { class: 'resolved', role: 'status' }));
 
     var card = h('article', { class: 'card', 'data-id': r.id }, [thumb, body]);
@@ -943,6 +1196,9 @@
     var s = state.search;
     $('empty').hidden = !!s;
     renderChips(s && s.query);
+    renderRefine();
+    renderRequestTrace();
+    renderTopicNotice();
     renderPrefs();
     renderStats();
     renderSaved();
@@ -963,6 +1219,9 @@
   }
 
   function adopt(data) {
+    // a late answer for an earlier topic must not overwrite the topic that is current now
+    if (data.topic && state.topic && data.topic.id < state.topic.id) return false;
+    state.topic = data.topic || null;
     state.sessionId = data.session_id || state.sessionId;
     state.search = data.search || null;
     state.ratings = data.ratings || {};
@@ -975,6 +1234,10 @@
     state.againsCap = data.shop_agains_cap || 0;
     state.sessionUsd = data.session_usd || 0;
     state.prepUsd = data.prep_usd || 0;
+    state.refine = data.refine || [];
+    state.refineUsd = data.refine_usd || 0;
+    state.photosCached = {};
+    (data.photos_cached || []).forEach(function (id) { state.photosCached[id] = true; });
     state.prep = data.prep || null;
     (data.saved || []).forEach(function (r) { state.known[r.id] = r; });
     if (state.search) state.search.results.forEach(function (r) { state.known[r.id] = r; });
@@ -984,6 +1247,64 @@
       badge.hidden = false;
       badge.textContent = 'mock data';
     }
+    return true;
+  }
+
+  /* ---- refine: plain instructions that change the next Shop Agains (stage 2l) ---- */
+
+  function renderRefine(note, isError) {
+    var box = $('refine-box');
+    var chips = $('refine-chips');
+    chips.textContent = '';
+    state.refine.forEach(function (c) {
+      var x = h('button', { type: 'button', class: 'x', 'aria-label': 'Remove ' + c.label }, ['×']);
+      x.addEventListener('click', function () { removeRefine(c.id); });
+      var kids = [h('span', { class: 'txt' }, [c.label]), h('span', { class: 'tag' }, ['you asked'])];
+      if (c.approximate) kids.push(h('span', { class: 'approx' }, ['approximate']));
+      kids.push(x);
+      chips.appendChild(h('span', { class: 'chip pref askchip', 'data-kind': c.kind }, kids));
+    });
+    var line = $('refine-note');
+    if (note !== undefined) {
+      line.textContent = note;
+      line.className = isError ? 'refine-note error' : 'refine-note';
+    }
+    box.hidden = !(state.refine.length || line.textContent);
+    $('refine-add').disabled = !state.sessionId || !$('refine-input').value.trim();
+  }
+
+  function submitRefine(ev) {
+    ev.preventDefault();
+    var input = $('refine-input');
+    var text = input.value.trim();
+    if (!text || !state.sessionId) return;
+    $('refine-add').disabled = true;
+    api('POST', '/api/refine', { session_id: state.sessionId, text: text })
+      .then(function (data) {
+        state.refine = data.refine || [];
+        state.refineUsd = data.refine_usd || 0;
+        input.value = '';
+        renderRefine((data.notices || []).join(' '), false);
+        renderStats();
+      })
+      .catch(function (err) { renderRefine(err.message, true); });
+  }
+
+  function removeRefine(id) {
+    api('POST', '/api/refine/remove', { session_id: state.sessionId, id: id })
+      .then(function (data) {
+        state.refine = data.refine || [];
+        renderRefine('', false);
+      })
+      .catch(function (err) { renderRefine(err.message, true); });
+  }
+
+  function renderTopicNotice() {
+    var el = $('topic-notice');
+    var s = state.search;
+    var text = s && s.kind === 'search' ? s.topic_notice || '' : '';
+    el.hidden = !text;
+    el.textContent = text;
   }
 
   /* A search or a Shop Again is a background job: POST answers with a job id, then the page polls
@@ -1032,7 +1353,11 @@
     bar.started = Date.now();
     var box = $('stepbar');
     box.hidden = false;
-    renderSteps(DEFAULT_STEPS[kind].map(function (p) {
+    var plan = DEFAULT_STEPS[kind];
+    if (kind === '/api/shop-again' && state.refinePending) {
+      plan = [['refine', 'Reading your refinement']].concat(plan);
+    }
+    renderSteps(plan.map(function (p) {
       return { id: p[0], label: p[1], state: 'pending', done_count: null, total: null };
     }));
     tickElapsed();
@@ -1093,9 +1418,12 @@
 
   function shopAgain() {
     if (state.busy > 0 || $('shop-again').disabled) return;
+    var refineText = $('refine-input').value.trim();
+    state.refinePending = !!refineText;
+    $('refine-input').value = '';  // the box empties after every submission
     begin(AGAIN_MSG);
     showSkeleton();
-    runJob('/api/shop-again', { session_id: state.sessionId })
+    runJob('/api/shop-again', { session_id: state.sessionId, refine_text: refineText || undefined })
       .then(function (data) {
         adopt(data);
         renderResults();
@@ -1141,6 +1469,8 @@
       b.addEventListener('click', function () { $('request').value = text; search(text); });
       ex.appendChild(b);
     });
+    $('refine-form').addEventListener('submit', submitRefine);
+    $('refine-input').addEventListener('input', function () { renderRefine(); });
     $('search-form').addEventListener('submit', function (e) {
       e.preventDefault();
       search($('request').value);

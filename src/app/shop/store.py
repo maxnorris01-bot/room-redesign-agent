@@ -26,10 +26,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.categories import canonical_category
 from app.shop.models import (
     FilterCounts,
     LinkKind,
     Rating,
+    RefineChip,
     ShopQuery,
     ShopResult,
     StoredProfile,
@@ -87,6 +89,8 @@ class SearchRecord(_Model):
     alignment_matches: int | None = None  # Shop Again: results matching the inferred preferences
     alignment_total: int | None = None
     alignment_signals: int | None = None  # decided signals the match was measured against (2f)
+    topic: int | None = None  # stage 2j: the topic this search belongs to
+    topic_notice: str = ""  # stage 2j: what the page says under the search box
 
 
 class RatingRecord(_Model):
@@ -95,6 +99,7 @@ class RatingRecord(_Model):
     rated_at: str | None = None  # when the current rating was set
     updated_at: str = ""
     search_index: int | None = None  # the search whose results the visitor was looking at
+    topic: int | None = None  # stage 2j: the topic the rating counts toward (None: the current one)
 
 
 class ResolvedLink(_Model):
@@ -110,6 +115,18 @@ class ResolvedLink(_Model):
     note: str = ""
     cost_usd: float = 0.0
     resolved_at: str = ""
+
+
+class Topic(_Model):
+    """One product type searched in a session (stage 2j). Ratings, searches and pool snapshots
+    carry the topic they belong to; what is learned comes from the current topic only."""
+
+    id: int
+    key: str  # the canonical category (`app.categories.canonical_category`), "" when unknown
+    label: str  # the category as parsed ("coffee table")
+    request: str  # the typed request that started it
+    started_at: str
+    refinements: list[RefineChip] = []  # stage 2l: what the visitor asked for; ends with the topic
 
 
 class Session(_Model):
@@ -139,6 +156,12 @@ class Session(_Model):
     quality_cues: dict[str, list[str]] = Field(default_factory=dict)
     comment_cache: dict[str, dict[str, Any]] = Field(default_factory=dict)
     prep: dict[str, Any] = Field(default_factory=dict)
+    topics: list[Topic] = Field(default_factory=list)  # stage 2j
+    current_topic: int = 0  # the id of the topic new ratings count toward (0: none yet)
+    refine_usd: float = 0.0  # stage 2l: what interpreting refine instructions has cost
+    # stage 2m: one SerpApi product lookup per result, shared by Open and "More photos": its photos,
+    # rating and review count, or why there are none. `lookups_used` counts it once.
+    product_cache: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # stage 2i: a compact copy of each round's candidate pool (at most 100 items: title, price,
     # seller, thumbnail, tags, tag source), for replay fixtures (`scripts/shop_export_replay.py`)
     pool_snapshots: list[dict[str, Any]] = Field(default_factory=list)
@@ -176,7 +199,7 @@ class SessionStore:
         path = self._path(session_id)
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            return Session.model_validate(raw)
+            return ensure_topics(Session.model_validate(raw))
         except FileNotFoundError:
             raise SessionError("session not found") from None
         except (OSError, ValueError) as exc:  # bad JSON and failed validation are both ValueErrors
@@ -212,8 +235,122 @@ class SessionStore:
 # ---- inputs for Shop Again (read-only helpers; no Shop Again logic) ---------------------
 
 
+def topic_key(query: ShopQuery) -> str:
+    """The canonical category of a parsed request ("couch" and "sofa" are one), "" when missing."""
+    return canonical_category(query.category) if query.category.strip() else ""
+
+
+def ensure_topics(session: Session) -> Session:
+    """Migrate a session file from before topics: every search and rating belongs to one topic,
+    that of the last typed search. Nothing is dropped; the file is rewritten on its next save."""
+    if session.topics or not session.searches:
+        return session
+    typed = [s for s in session.searches if s.kind == "search"]
+    last = typed[-1] if typed else session.searches[-1]
+    session.topics = [
+        Topic(
+            id=1,
+            key=topic_key(last.query),
+            label=last.query.category,
+            request=last.request,
+            started_at=session.created_at,
+        )
+    ]
+    session.current_topic = 1
+    for record in session.searches:
+        record.topic = 1
+    for rating in session.ratings.values():
+        rating.topic = 1
+    for snapshot in session.pool_snapshots:
+        snapshot.setdefault("topic", 1)
+    return session
+
+
+def in_topic(rec: RatingRecord, session: Session) -> bool:
+    """Whether a rating counts toward what is learned now: it is stamped with the current topic (an
+    unstamped one, from a session built in memory, counts too)."""
+    return rec.topic is None or rec.topic == session.current_topic
+
+
+def topic_ratings(session: Session) -> dict[str, RatingRecord]:
+    """The ratings that count toward the current topic."""
+    return {rid: rec for rid, rec in session.ratings.items() if in_topic(rec, session)}
+
+
+def rated_count(session: Session) -> int:
+    return sum(1 for rec in topic_ratings(session).values() if rec.rating is not None)
+
+
+def current_topic(session: Session) -> Topic | None:
+    return next((t for t in session.topics if t.id == session.current_topic), None)
+
+
+def plural(label: str) -> str:
+    word = label.strip() or "this"
+    if word.endswith("s"):
+        return word
+    if word.endswith(("ch", "sh", "x", "z")):
+        return word + "es"
+    return word + "s"
+
+
+REFINEMENT_NOTICE = "Kept what I learned in this session (same product type)."
+
+
+def advance_topic(session: Session, query: ShopQuery, request: str) -> str:
+    """Decide whether a new typed search continues the current topic or starts a new one, apply it
+    to `session` and return the notice for the page.
+
+    The same canonical category is a refinement: what was learned stays. A different category, or
+    one the parse did not give, starts a new topic: the profile (chips, leanings, the marketplace
+    exclusion and its dismissal, evidence) and the peer rotation reset, and only ratings stamped
+    with the new topic count from now on. Saved items, the tag cache and the seen-results memory
+    stay."""
+    key = topic_key(query)
+    now = now_iso()
+    current = current_topic(session)
+    if current is None:
+        session.topics.append(
+            Topic(id=1, key=key, label=query.category, request=request, started_at=now)
+        )
+        session.current_topic = 1
+        return ""
+    if key and key == current.key:
+        return REFINEMENT_NOTICE
+    saved_before = bool(saved_ids(session))
+    cleared = " Your refinements were cleared." if current.refinements else ""
+    topic = Topic(
+        id=max(t.id for t in session.topics) + 1,
+        key=key,
+        label=query.category,
+        request=request,
+        started_at=now,
+    )
+    session.topics.append(topic)
+    session.current_topic = topic.id
+    session.profile = None
+    session.searched_peers = {}
+    tail = " Your saved items are still in Saved." + cleared
+    if not key:
+        return (
+            "Started fresh: I could not tell what kind of product this is, so nothing from your "
+            "earlier ratings was carried over." + tail
+        )
+    text = f"Started fresh for {plural(query.category)}."
+    if saved_before and current.label:
+        text += (
+            f" Your saved {plural(current.label)} are still in Saved"
+            " and no longer shape this search."
+        ) + cleared
+    elif saved_before:
+        text += tail
+    else:
+        text += cleared
+    return text
+
+
 def rated_results(session: Session) -> list[dict[str, Any]]:
-    """Every result the visitor rated, with the rating and comment, newest rating first."""
+    """Every result rated in the current topic, with the rating and comment, newest first."""
     rows = [
         {
             "result": session.results[rid],
@@ -222,7 +359,7 @@ def rated_results(session: Session) -> list[dict[str, Any]]:
             "rated_at": rec.rated_at,
         }
         for rid, rec in session.ratings.items()
-        if rec.rating is not None and rid in session.results
+        if rec.rating is not None and rid in session.results and in_topic(rec, session)
     ]
     return sorted(rows, key=lambda r: r["rated_at"] or "", reverse=True)
 
@@ -249,7 +386,7 @@ def sellers_to_deprioritize(session: Session, min_dislikes: int = 2) -> set[str]
     positive: set[str] = set()
     for rid, rec in session.ratings.items():
         shown = session.results.get(rid)
-        if shown is None or rec.rating is None:
+        if shown is None or rec.rating is None or not in_topic(rec, session):
             continue
         key = seller_key(shown.seller)
         if rec.rating == "dislike":

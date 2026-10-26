@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.config import BudgetExceededError, Config
+from app.llm import Budget
 from app.shop import store as store_mod
 from app.shop.again import run_shop_again
 from app.shop.clock import Clock
@@ -18,10 +19,13 @@ from app.shop.models import (
     MAX_COMMENT_CHARS,
     MAX_REQUEST_CHARS,
     RATINGS,
+    RefineChip,
     StoredProfile,
     clean_comment,
     clean_request,
+    is_https_url,
 )
+from app.shop.parse import COLOR_CONTEXT_KINDS
 from app.shop.prefs import (
     comment_key,
     pin_seller,
@@ -31,8 +35,9 @@ from app.shop.prefs import (
     with_pins,
 )
 from app.shop.prep import PrepManager
-from app.shop.progress import Progress
-from app.shop.resolve import UnknownResult, resolve
+from app.shop.progress import SHOP_AGAIN_REFINE_STEPS, Progress
+from app.shop.refine import REJECTED, add_chips, clean_instruction, interpret
+from app.shop.resolve import UnknownResult, fill_rating, product_lookup, resolve
 from app.shop.search import SearchOutcome, run_search
 from app.shop.store import (
     MAX_SEARCHES_PER_SESSION,
@@ -41,14 +46,21 @@ from app.shop.store import (
     Session,
     SessionError,
     SessionStore,
+    Topic,
+    advance_topic,
+    current_topic,
+    in_topic,
     now_iso,
     now_iso_ms,
+    rated_count,
     saved_ids,
 )
 from app.shop.textutil import normalize_phrase
+from app.shop.vocab import normalize
 from app.shopping import ProductLookup, ProviderError, SearchProvider
 from app.thumbnails import Thumbnailer, build_thumbnailer
 
+MAX_GALLERY_SHOWN = 6
 UNSET = object()
 
 
@@ -131,28 +143,43 @@ class ShopService:
             "saved": [],
             "session_usd": 0.0,
             "prep_usd": 0.0,
+            "photos_cached": [],
+            "refine": [],
+            "refine_usd": 0.0,
         }
         if session is None:
             return base
         base.update(
             session_id=session.session_id,
             ratings={
-                rid: {"rating": rec.rating, "comment": rec.comment, "rated_at": rec.rated_at}
+                rid: {
+                    "rating": rec.rating,
+                    "comment": rec.comment,
+                    "rated_at": rec.rated_at,
+                    "topic": rec.topic,
+                }  # fmt: skip
                 for rid, rec in session.ratings.items()
             },
-            can_shop_again=any(rec.rating is not None for rec in session.ratings.values())
+            can_shop_again=rated_count(session) > 0
             and any(r.kind == "search" for r in session.searches),
+            topic=self._topic_view(session),
             profile=session.profile.model_dump(mode="json") if session.profile else None,
             profile_summary=profile_summary(session.profile),
             shop_agains_used=session.shop_agains_used,
-            saved=[session.results[rid].model_dump(mode="json") for rid in saved_ids(session)],
+            saved=[self._saved_row(session, rid) for rid in saved_ids(session)],
             session_usd=round(
                 sum(r.total_usd for r in session.searches)
                 + session.lookup_usd
-                + float(session.prep.get("usd", 0.0)),
+                + float(session.prep.get("usd", 0.0))
+                + session.refine_usd,
                 6,
             ),
             prep_usd=round(float(session.prep.get("usd", 0.0)), 6),
+            photos_cached=sorted(
+                rid for rid, row in session.product_cache.items() if not row.get("error")
+            ),
+            refine=[c.model_dump(mode="json") for c in self._refinements(session)],
+            refine_usd=round(session.refine_usd, 6),
             prep={
                 "calls": int(session.prep.get("calls", 0)),
                 "tagged": int(session.prep.get("tagged", 0)),
@@ -175,6 +202,8 @@ class ShopService:
                     )
             base["search"] = {
                 "index": last.index,
+                "topic": last.topic,
+                "topic_notice": last.topic_notice,
                 "request": last.request,
                 "query": last.query.model_dump(mode="json"),
                 "created_at": last.created_at,
@@ -217,6 +246,35 @@ class ShopService:
                 "warnings": last.warnings,
             }
         return base
+
+    @staticmethod
+    def _refinements(session: Session) -> list[RefineChip]:
+        topic = current_topic(session)
+        return list(topic.refinements) if topic is not None else []
+
+    @staticmethod
+    def _topic_view(session: Session) -> dict[str, Any] | None:
+        """The current topic and how many ratings count toward it and how many do not (they were
+        made in an earlier topic and only keep their place in Saved)."""
+        topic = current_topic(session)
+        if topic is None:
+            return None
+        rated = [rec for rec in session.ratings.values() if rec.rating is not None]
+        counted = sum(1 for rec in rated if in_topic(rec, session))
+        return {
+            "id": topic.id, "label": topic.label, "request": topic.request,
+            "counted": counted, "excluded": len(rated) - counted, "topics": len(session.topics),
+        }  # fmt: skip
+
+    @staticmethod
+    def _saved_row(session: Session, rid: str) -> dict[str, Any]:
+        """A saved result; one from an earlier topic carries the search it came from."""
+        row = session.results[rid].model_dump(mode="json")
+        rec = session.ratings.get(rid)
+        if rec is not None and not in_topic(rec, session):
+            old = next((t for t in session.topics if t.id == rec.topic), None)
+            row["topic_label"] = (old.request if old else "")[:80]
+        return row
 
     def _load(self, session_id: Any) -> Session:
         if not isinstance(session_id, str) or not store_mod.valid_session_id(session_id):
@@ -276,7 +334,8 @@ class ShopService:
             except OSError:
                 raise ApiError(500, "could not create a session") from None
         with self.store.transaction(session_id) as session:
-            self._record(session, cleaned, outcome)
+            notice = advance_topic(session, outcome.display_query or outcome.query, cleaned)
+            self._record(session, cleaned, outcome, topic_notice=notice)
             view = self._view(session)
         self.prep.submit_batch(session_id, outcome.results)  # tag it from photos while you browse
         return view
@@ -297,9 +356,10 @@ class ShopService:
         kind: str,
         session_id: str | None,
         work: Callable[[Callable[[str], None]], dict[str, Any]],
+        steps: tuple[tuple[str, str], ...] | None = None,
     ) -> str:
         try:
-            return self.jobs.start(session_id, kind, work, self._job_failure)
+            return self.jobs.start(session_id, kind, work, self._job_failure, steps)
         except JobError as exc:
             raise ApiError(exc.status, exc.message) from None
 
@@ -321,7 +381,13 @@ class ShopService:
             raise ApiError(exc.status, exc.message) from None
 
     @staticmethod
-    def _record(session: Session, request: str, outcome: SearchOutcome, note: str = "") -> None:
+    def _record(
+        session: Session,
+        request: str,
+        outcome: SearchOutcome,
+        note: str = "",
+        topic_notice: str = "",
+    ) -> None:
         index = len(session.searches) + 1
         for result in outcome.results:
             session.results[result.id] = result
@@ -329,8 +395,15 @@ class ShopService:
         if outcome.pool_snapshot:
             session.pool_snapshots = [
                 *session.pool_snapshots,
-                {"index": index, "kind": outcome.kind, "items": outcome.pool_snapshot[:100]},
+                {
+                    "index": index,
+                    "kind": outcome.kind,
+                    "topic": session.current_topic,
+                    "items": outcome.pool_snapshot[:100],
+                },
             ][-10:]
+        rated_shown = sum(1 for r in outcome.results if r.rating is not None)
+        reviews = {"with_rating": rated_shown, "total": len(outcome.results)}
         session.searches.append(
             SearchRecord(
                 index=index,
@@ -352,7 +425,11 @@ class ShopService:
                 note=note,
                 queries=outcome.queries,
                 dropped_phrasings=outcome.dropped_phrasings,
-                trace=outcome.trace,
+                trace={
+                    **outcome.trace,
+                    **({"request": outcome.request_trace} if outcome.request_trace else {}),
+                    "reviews": reviews,
+                },
                 tagging=outcome.tagging,
                 diversity={d: [v[0], v[1]] for d, v in outcome.diversity.items()},
                 seller_share=list(outcome.seller_share) if outcome.seller_share else None,
@@ -360,6 +437,8 @@ class ShopService:
                 alignment_matches=outcome.alignment[0] if outcome.alignment else None,
                 alignment_total=outcome.alignment[1] if outcome.alignment else None,
                 alignment_signals=outcome.alignment_signals if outcome.alignment else None,
+                topic=session.current_topic,
+                topic_notice=topic_notice,
             )
         )
 
@@ -393,6 +472,8 @@ class ShopService:
                 record.rated_at = now if rating is not None else None
                 if rating is not None:
                     record.search_index = len(session.searches)
+            if rating is not UNSET and rating is not None:
+                record.topic = session.current_topic  # a rating made now counts toward this topic
             if comment is not UNSET:
                 record.comment = clean_comment(comment)
             record.updated_at = now
@@ -420,7 +501,9 @@ class ShopService:
         try:
             with self.store.transaction(session_id) as session:
                 link = resolve(session, result_id, self.lookup_provider, self.config)
+                shown = session.results[result_id]
                 return {
+                    "rating": {"rating": shown.rating, "rating_count": shown.rating_count},
                     "resolved": link.model_dump(mode="json"),
                     "lookups_used": session.lookups_used,
                     "lookups_cap": self.config.shop_lookups_per_session,
@@ -432,12 +515,62 @@ class ShopService:
         except BudgetExceededError as exc:
             raise ApiError(429, str(exc)) from None
 
+    # ---- more photos ----------------------------------------------------------------------
+
+    def photos(self, session_id: Any, result_id: Any) -> dict[str, Any]:
+        """Up to `MAX_GALLERY_SHOWN` product photos of one shown result, from the same SerpApi
+        product lookup Open uses (cached per result in the session, counted once against the
+        per-session cap). If Open or an earlier gallery already looked it up, this costs nothing."""
+        if not isinstance(result_id, str):
+            raise ApiError(400, "result_id must be text")
+        self._load(session_id)
+        assert isinstance(session_id, str)
+        try:
+            with self.store.transaction(session_id) as session:
+                result = session.results.get(result_id)
+                if result is None:
+                    raise ApiError(404, "unknown result")
+                if not result.product_id:
+                    raise ApiError(400, "This product has no photo gallery.")
+                known = result_id in session.product_cache
+                if not known and session.lookups_used >= self.config.shop_lookups_per_session:
+                    raise ApiError(
+                        429,
+                        f"Lookup limit for this session reached ({session.lookups_used} of "
+                        f"{self.config.shop_lookups_per_session}); no more photos can be loaded.",
+                    )
+                details, error, fresh = product_lookup(
+                    session, result, self.lookup_provider, self.config
+                )
+                if fresh:
+                    session.lookup_usd = round(
+                        session.lookup_usd + self.config.serpapi_usd_per_search, 6
+                    )
+                fill_rating(session, result, details)
+                images = [u for u in (details.images if details else []) if is_https_url(u)]
+                message = ""
+                if error is not None:
+                    message = "The photos could not be loaded for this product."
+                elif not images:
+                    message = "No more photos were found for this product."
+                shown = session.results[result_id]
+                return {
+                    "images": images[:MAX_GALLERY_SHOWN],
+                    "message": message,
+                    "fresh": fresh,
+                    "lookups_used": session.lookups_used,
+                    "lookups_cap": self.config.shop_lookups_per_session,
+                    "rating": {"rating": shown.rating, "rating_count": shown.rating_count},
+                }
+        except ProviderError as exc:
+            raise ApiError(502, str(exc)) from None
+
     # ---- shop again and preferences -------------------------------------------------------
 
     def _prepare_again(self, session_id: Any) -> Session:
         """Validate a Shop Again request and return the session it will run on."""
         session = self._load(session_id)
-        if not any(rec.rating is not None for rec in session.ratings.values()):
+        if rated_count(session) == 0:
             raise ApiError(400, "Rate a few results first")
         if not any(r.kind == "search" for r in session.searches):
             raise ApiError(400, "Search first")
@@ -476,8 +609,25 @@ class ShopService:
             return session
 
     def _do_again(
-        self, session_id: str, session: Session, progress: Callable[[str], None] | None = None
+        self,
+        session_id: str,
+        session: Session,
+        progress: Callable[[str], None] | None = None,
+        refine_text: str = "",
     ) -> dict[str, Any]:
+        refine_note = ""
+        if refine_text:
+            steps = progress if isinstance(progress, Progress) else None
+            if steps is not None:
+                steps.begin("refine")
+            try:
+                self.refine(session_id, refine_text)
+            except ApiError as exc:
+                refine_note = f"Your refinement was not applied: {exc.message}"
+            if steps is not None:
+                steps.finish("refine")
+            session = self.store.load(session_id)
+        started_topic = session.current_topic
         session = self._await_prep(session_id, session, progress)
         try:
             outcome, profile, query = run_shop_again(
@@ -488,6 +638,11 @@ class ShopService:
         except BudgetExceededError as exc:
             raise ApiError(429, str(exc)) from None
         with self.store.transaction(session_id) as live:
+            if live.current_topic != started_topic:
+                # a new topic began while this ran: nothing learned for the old one may land in it
+                raise ApiError(
+                    409, "You started a new search while this ran; its result was dropped"
+                )
             if live.shop_agains_used >= self.config.shop_agains_per_session:
                 raise ApiError(429, "Shop Again limit for this session reached")
             # ratings made while the search ran are kept; the profile replaces the old one except
@@ -499,6 +654,8 @@ class ShopService:
                 )
             live.profile = profile
             live.shop_agains_used += 1
+            if refine_note:
+                outcome.warnings.insert(0, refine_note)
             for rid, tags in outcome.new_tags.items():  # a result is tagged once; a photo tag stays
                 if live.tag_source.get(rid) != "photo":
                     live.tag_cache[rid] = tags
@@ -531,13 +688,23 @@ class ShopService:
         assert isinstance(session_id, str)
         return self._do_again(session_id, session)
 
-    def start_shop_again(self, session_id: Any) -> dict[str, Any]:
-        """Start a Shop Again as a background job: `{"job_id": ...}` (poll `job_status`)."""
+    def start_shop_again(self, session_id: Any, refine_text: Any = None) -> dict[str, Any]:
+        """Start a Shop Again as a background job: `{"job_id": ...}` (poll `job_status`). Text left
+        in the refine box is interpreted first, as an extra step ("Reading your refinement")."""
         session = self._prepare_again(session_id)
         assert isinstance(session_id, str)
+        text = ""
+        if refine_text is not None:
+            if not isinstance(refine_text, str) or len(refine_text) > 1000:
+                raise ApiError(400, "refinement must be short text")
+            text = clean_instruction(refine_text)
+        steps = SHOP_AGAIN_REFINE_STEPS if text else None
         return {
             "job_id": self._start(
-                "shop_again", session_id, lambda say: self._do_again(session_id, session, say)
+                "shop_again",
+                session_id,
+                lambda say: self._do_again(session_id, session, say, text),
+                steps,
             )
         }
 
@@ -555,7 +722,7 @@ class ShopService:
                     session.profile,
                     kind,
                     phrase,
-                    sum(1 for rec in session.ratings.values() if rec.rating is not None),
+                    rated_count(session),
                 )
                 if session.profile
                 else None
@@ -567,6 +734,97 @@ class ShopService:
                 "profile": updated.model_dump(mode="json"),
                 "profile_summary": profile_summary(updated),
                 "removed": normalize_phrase(phrase),
+            }
+
+    def _topic_of(self, session: Session) -> Topic:
+        topic = current_topic(session)
+        if topic is None:
+            raise ApiError(400, "Search first")
+        return topic
+
+    def refine(self, session_id: Any, text: Any) -> dict[str, Any]:
+        """Interpret one plain instruction and add its chips to the current topic. Rejects empty or
+        nonsense input with a short message. The instruction is untrusted text (see
+        `app.shop.refine`)."""
+        if not isinstance(text, str):
+            raise ApiError(400, "type an instruction first")
+        cleaned = clean_instruction(text)
+        if not cleaned:
+            raise ApiError(400, "type an instruction first")
+        session = self._load(session_id)
+        assert isinstance(session_id, str)
+        self._topic_of(session)
+        budget = Budget(self.config)
+        try:
+            result = interpret(cleaned, budget, self.config)
+        except BudgetExceededError as exc:
+            raise ApiError(429, str(exc)) from None
+        with self.store.transaction(session_id) as live:
+            live.refine_usd = round(live.refine_usd + result.usd, 6)
+            if not result.chips:
+                self.store.save(live)  # keep the cost of a call that found nothing
+                raise ApiError(400, result.message or REJECTED)
+            topic = self._topic_of(live)
+            topic.refinements, notices = add_chips(topic.refinements, result.chips)
+            chips = [c.model_dump(mode="json") for c in topic.refinements]
+        return {"refine": chips, "notices": notices, "refine_usd": live.refine_usd}
+
+    def remove_refine(self, session_id: Any, chip_id: Any) -> dict[str, Any]:
+        """Delete one refine chip: its effect is gone from the next Shop Again."""
+        if not isinstance(chip_id, str) or not chip_id or len(chip_id) > 40:
+            raise ApiError(400, "chip id must be short text")
+        self._load(session_id)
+        assert isinstance(session_id, str)
+        with self.store.transaction(session_id) as live:
+            topic = self._topic_of(live)
+            kept = [c for c in topic.refinements if c.id != chip_id]
+            if len(kept) == len(topic.refinements):
+                raise ApiError(404, "no such refinement")
+            topic.refinements = kept
+            return {"refine": [c.model_dump(mode="json") for c in kept]}
+
+    def remove_context(self, session_id: Any, kind: Any, value: Any) -> dict[str, Any]:
+        """Delete one chip of the request's setting (stage 2k): a context item (its colour effect
+        goes with it when no colour-bearing item is left), a suggested colour (it leaves the search
+        and the ranking) or a colour to avoid (it is no longer demoted). It applies to the current
+        topic's typed request, so it holds for every later Shop Again."""
+        if kind not in ("context", "suggested", "avoid"):
+            raise ApiError(400, "kind must be context, suggested or avoid")
+        if not isinstance(value, str) or not value.strip() or len(value) > 40:
+            raise ApiError(400, "value must be short text")
+        self._load(session_id)
+        assert isinstance(session_id, str)
+        with self.store.transaction(session_id) as session:
+            typed = [
+                s
+                for s in session.searches
+                if s.kind == "search" and s.topic == session.current_topic
+            ]
+            if not typed:
+                raise ApiError(404, "no such chip")
+            base = typed[-1].query
+            text = " ".join(value.lower().split())
+            if kind == "context":
+                kept = [i for i in base.context if i.value != text]
+                if len(kept) == len(base.context):
+                    raise ApiError(404, "no such chip")
+                update: dict[str, Any] = {"context": kept}
+                if not any(i.kind in COLOR_CONTEXT_KINDS for i in kept):
+                    update |= {"suggested_colors": [], "avoid_colors": [], "color_reason": ""}
+            else:
+                color = normalize("color", text)
+                field = "suggested_colors" if kind == "suggested" else "avoid_colors"
+                if color is None or color not in getattr(base, field):
+                    raise ApiError(404, "no such chip")
+                update = {field: [c for c in getattr(base, field) if c != color]}
+            for record in session.searches:
+                if record.topic == session.current_topic and record.query.request == base.request:
+                    record.query = record.query.model_copy(update=update)
+                    if record.used_query is not None:
+                        record.used_query = record.used_query.model_copy(update=update)
+            return {
+                "query": base.model_copy(update=update).model_dump(mode="json"),
+                "removed": text,
             }
 
     def pin_preference(self, session_id: Any, phrase: Any) -> dict[str, Any]:

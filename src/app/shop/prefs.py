@@ -63,7 +63,8 @@ from app.shop.models import (
 from app.shop.parse import strip_price_words
 from app.shop.retailers import seller_key, tier_of
 from app.shop.retailers import seller_key as decide_seller_key
-from app.shop.store import Session, now_iso, rated_results
+from app.shop.store import Session, in_topic, now_iso, rated_results
+from app.shop.store import rated_count as rated_count_of
 from app.shop.textutil import (
     Rated,
     mentions,
@@ -73,6 +74,7 @@ from app.shop.textutil import (
     text_matches,
 )
 from app.shop.vocab import (
+    FAMILY_LABELS,
     PHRASE_DIMS,
     normalize,
     normalize_style,
@@ -393,7 +395,7 @@ def merge_profile_v2(
     """The stored profile after one v2 preference call. `proposed=None` keeps the earlier profile
     (with this call's image report). Everything the model proposed is checked here."""
     previous = existing or StoredProfile()
-    rated_count = sum(1 for rec in session.ratings.values() if rec.rating is not None)
+    rated_count = rated_count_of(session)
     if proposed is None:
         return previous.model_copy(update={"images": images})
     stated = merge_profile(
@@ -506,7 +508,7 @@ def merge_profile_v3(
     profile is decided in fallback mode: no attribute at all (titles alone are biased), only seller
     affinity and price, and the stated part is kept as it was."""
     previous = existing or StoredProfile()
-    rated_count = sum(1 for rec in session.ratings.values() if rec.rating is not None)
+    rated_count = rated_count_of(session)
     rated = rated_map(session)
     if proposed is None:
         stated = previous
@@ -537,6 +539,7 @@ def merge_profile_v3(
         fallback=fallback,
         exposure=exposure,
         dismissed=previous.dismissed,
+        cached_tags=session.tag_cache,
     )
     info = dict(tagging or {})
     info.setdefault("items_total", len(rated))
@@ -916,8 +919,16 @@ def profile_summary(profile: StoredProfile | None) -> str:
             text += f" {label} is open: showing both {_join(e.values)}."
     if any(e.status == "mixed" for e in profile.inferred):
         text += " Price is mixed."
-    toward = [e.values[0] for e in profile.inferred if e.attr_kind == "leaning_toward" and e.values]
-    away = [e.values[0] for e in profile.inferred if e.attr_kind == "leaning_away" and e.values]
+    toward = [
+        FAMILY_LABELS.get(e.values[0], e.values[0])
+        for e in profile.inferred
+        if e.attr_kind == "leaning_toward" and e.values
+    ]
+    away = [
+        FAMILY_LABELS.get(e.values[0], e.values[0])
+        for e in profile.inferred
+        if e.attr_kind == "leaning_away" and e.values
+    ]
     if toward:
         text += f" Leaning toward {_join(toward)}."
     if away:
@@ -1304,7 +1315,7 @@ def cached_readings(
     photo_ids: set[str] = set()
     ratings: dict[str, str] = {}
     for rid, rec in session.ratings.items():
-        if rec.rating is None or rid not in session.results:
+        if rec.rating is None or rid not in session.results or not in_topic(rec, session):
             continue
         comment = rec.comment.strip()
         reading = session.comment_cache.get(comment_key(rid, comment)) if comment else None
@@ -1406,7 +1417,7 @@ def build_profile(
     items tagged of rated, images used, and whether a retry or the fallback happened.
     """
     config = budget.config
-    n_rated = sum(1 for rec in session.ratings.values() if rec.rating is not None)
+    n_rated = rated_count_of(session)
     cached, missing, photo_ids = cached_readings(session, base)
     need: set[str] | None = None  # None: every rated item goes to the call (nothing is cached)
     if cached is not None:

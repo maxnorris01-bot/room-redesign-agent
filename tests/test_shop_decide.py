@@ -181,10 +181,15 @@ def test_every_threshold_is_in_one_module_with_the_documented_values() -> None:
 
 def test_the_title_reader_is_a_fallback_that_leaves_unknowns_out() -> None:
     assert title_tags('Round Walnut Drum Storage Coffee Table 36"') == {
-        "shape": "round", "material": "wood", "color_finish": "warm wood",
+        "shape": "round", "material": "wood", "color_finish": "warm wood", "color": "brown",
     }  # fmt: skip
     got = title_tags("Rectangular Wood and Black Metal Lift-Top Coffee Table")
-    assert got == {"shape": "rectangular", "material": "wood", "frame_color": "black"}
+    assert got == {
+        "shape": "rectangular",
+        "material": "wood",
+        "frame_color": "black",
+        "color": "black",
+    }
     assert title_tags('Coffee Table with Storage 40"') == {}  # nothing to read
     assert title_tags("Brushed Brass Drum Table")["frame_color"] == "brass or gold"
     assert title_value("shape", "ROUND table") == "round"

@@ -23,6 +23,39 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+CONTEXT_KINDS = (
+    "room_color",
+    "wall_color",
+    "existing_item",
+    "room_type",
+    "room_size",
+    "mood",
+    "other",
+)
+ContextKind = Literal[
+    "room_color", "wall_color", "existing_item", "room_type", "room_size", "mood", "other"
+]
+MAX_CONTEXT = 6
+
+
+class ParseContext(_Strict):
+    """One thing in the request that is about where the product goes, not about the product."""
+
+    kind: ContextKind = Field(
+        description="room_color, wall_color, existing_item, room_type, room_size, mood or other"
+    )
+    value: str = Field(description="A short phrase, e.g. 'dark blue' or 'brown leather sofa'")
+
+
+class ContextItem(_Strict):
+    """A context item as kept: the value is bounded text; `approximate` marks one the code could
+    not map onto a fixed kind or vocabulary (it is only ever a soft hint)."""
+
+    kind: ContextKind
+    value: str
+    approximate: bool = False
+
+
 class ShopParse(_Strict):
     """What the model returns for a request (sent as the API schema)."""
 
@@ -34,6 +67,25 @@ class ShopParse(_Strict):
     material_terms: list[str] = Field(description="Materials, e.g. 'wood', 'velvet'")
     must_have: list[str] = Field(description="Features the shopper wants, e.g. 'storage'")
     avoid: list[str] = Field(description="Things the shopper does not want")
+    color_terms: list[str] = Field(
+        default_factory=list,
+        description="Colours the PRODUCT itself should be ('dark blue curtains' gives 'dark blue')",
+    )
+    context: list[ParseContext] = Field(
+        default_factory=list,
+        description="Room, walls, existing items, room size or mood the product has to go with",
+    )
+    suggested_colors: list[str] = Field(
+        default_factory=list,
+        description="Up to 4 product colours from the fixed list that would work with a colour in "
+        "the context, else an empty list",
+    )
+    avoid_colors: list[str] = Field(
+        default_factory=list,
+        description="Up to 3 colours from the fixed list the product should avoid because it would "
+        "blend in or clash, else an empty list",
+    )
+    color_reason: str = Field(default="", description="One short line saying why, or empty")
 
 
 class ShopQuery(_Strict):
@@ -50,6 +102,54 @@ class ShopQuery(_Strict):
     material_terms: list[str] = []
     must_have: list[str] = []
     avoid: list[str] = []
+    # stage 2k: what the request says about the product's own colour, and about the setting
+    color_terms: list[str] = []  # colour ids of the product itself ("navy_dark_blue")
+    context: list[ContextItem] = []
+    suggested_colors: list[str] = []  # colour ids that would work with the context (soft)
+    avoid_colors: list[str] = []  # colour ids the product should not be (soft)
+    color_reason: str = ""
+
+
+REFINE_KINDS = (
+    "exclude_seller", "exclude_tier", "exclude_value", "focus_value", "focus_seller", "price_max",
+    "price_min", "must_have", "free_note",
+)  # fmt: skip
+RefineKind = Literal[
+    "exclude_seller",
+    "exclude_tier",
+    "exclude_value",
+    "focus_value",
+    "focus_seller",
+    "price_max",
+    "price_min",
+    "must_have",
+    "free_note",
+]
+
+
+class RefineItem(_Strict):
+    """One interpretation of a refine instruction (the API schema of `record_refinements`)."""
+
+    kind: RefineKind = Field(description="One of the fixed kinds")
+    target: str = Field(
+        description="A seller name, a tier id, 'dimension:value', a number, or short text"
+    )
+    strength: Literal["hard", "focus"] = Field(description="hard filters; focus favours")
+    label: str = Field(description="A short plain label for the chip, e.g. 'no Walmart'")
+
+
+class RefineChip(_Strict):
+    """A refine chip as kept (validated): `target` is canonical (a seller name from the retailer
+    table, a tier id, 'dimension:value' from the fixed vocabularies, a number as text, or short
+    text), `approximate` marks a free note the code could not map onto a fixed kind."""
+
+    id: str
+    kind: RefineKind
+    target: str
+    strength: Literal["hard", "focus"]
+    label: str
+    approximate: bool = False
+    text: str = ""  # the instruction it came from (bounded, URLs stripped)
 
 
 class ShopResult(_Strict):
@@ -66,6 +166,10 @@ class ShopResult(_Strict):
     rank: int  # 1-based position in the returned list
     pool_position: int  # 1-based position in the filtered pool the ranker saw
     rank_reason: str = ""  # the ranker's own words; empty when it did not rank this one
+    # stage 2m: the star rating and review count the search (or an Open lookup) gave; None when the
+    # source gave none. Display only: they never enter ranking, evidence or caps.
+    rating: float | None = None
+    rating_count: int | None = None
 
 
 class FilterCounts(BaseModel):

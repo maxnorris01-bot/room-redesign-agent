@@ -48,7 +48,7 @@ from app.shop.thresholds import CANDIDATE_TAG_BATCH
 from app.shop.vocab import DIMENSIONS, normalize, normalize_style, vocab_text
 
 TAG_TOKENS_PER_ROW = 16  # a text row is about 14 tokens
-TAG_TOKENS_PER_ITEM = 40  # a tool-call object with its keys
+TAG_TOKENS_PER_ITEM = 48  # a tool-call object with its keys (stage 2k: 40, plus the color field)
 TAG_HEADROOM = 2  # the limit is twice the estimate, so an answer is not cut off
 TAG_BASE_TOKENS = 100
 MAX_TAG_TOKENS = 6000
@@ -79,8 +79,17 @@ TAG_TOOL_DEF: dict[str, Any] = {
                         "finish": _NULLABLE,
                         "frame_color": _NULLABLE,
                         "style": {"type": "array", "items": {"type": "string"}},
+                        "color": _NULLABLE,
                     },
-                    "required": ["index", "shape", "material", "finish", "frame_color", "style"],
+                    "required": [
+                        "index",
+                        "shape",
+                        "material",
+                        "finish",
+                        "frame_color",
+                        "style",
+                        "color",
+                    ],
                     "additionalProperties": False,
                 },
             }
@@ -110,6 +119,7 @@ _TOOL_KEYS = {
     "material": "material",
     "color_finish": "finish",
     "frame_color": "frame_color",
+    "color": "color",
 }
 
 

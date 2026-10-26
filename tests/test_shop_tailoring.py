@@ -643,7 +643,7 @@ def test_the_ranker_sees_the_leanings_as_soft_lines() -> None:
     assert "Leaning away from (soft avoid; rank a little lower): black (frame color)" in text
     from app.prompts import load_prompt
 
-    assert load_prompt("shop_rank").version == "5" and load_prompt("shop_rank", "4").version == "4"
+    assert load_prompt("shop_rank").version == "6" and load_prompt("shop_rank", "5").version == "5"
     assert "leanings" in load_prompt("shop_rank").text
 
 
@@ -712,7 +712,7 @@ def test_a_leaning_toward_counts_as_a_match_and_a_leaning_away_does_not() -> Non
 
 def test_the_summary_mentions_leanings_and_the_exclusion() -> None:
     text = profile_summary(StoredProfile(inferred=decided().entries))
-    assert "Leaning toward natural wood" in text and "Leaning away from black." in text
+    assert "Leaning toward natural wood" in text and "Leaning away from black" in text
     assert "Marketplace retailers are left out." in text
     assert "from West Elm, Article and CB2" in text or "West Elm" in text
 

@@ -90,7 +90,7 @@ def test_the_vocabularies_are_defined_once_and_passed_into_both_prompts() -> Non
     assert VOCAB["style"] == (
         "modern", "mid-century", "industrial", "farmhouse", "traditional", "boho", "glam", "other",
     )  # fmt: skip
-    assert DIMENSIONS == ("shape", "material", "color_finish", "frame_color", "style")
+    assert DIMENSIONS == ("shape", "material", "color_finish", "frame_color", "style", "color")
     from app.shop.candidates import candidate_user_text
     from app.shop.prefs import prefs_user_text
 
@@ -137,12 +137,12 @@ def test_candidate_rows_are_parsed_and_folded_and_bad_rows_are_dropped() -> None
     assert sorted(got) == [1, 2, 3, 4] and got[4]["material"] == "wood" and got[4]["style"] is None
     assert got[1] == {
         "shape": "round", "material": "wood", "color_finish": "warm wood",
-        "frame_color": "black", "style": "modern",
+        "frame_color": "black", "style": "modern", "color": None,
     }  # fmt: skip
     assert got[2] == dict.fromkeys(DIMENSIONS)
     assert got[3] == {
         "shape": "other", "material": "wood", "color_finish": "warm wood",
-        "frame_color": "other", "style": "other",
+        "frame_color": "other", "style": "other", "color": None,
     }  # fmt: skip
     assert 9 not in got
 
@@ -768,7 +768,8 @@ def test_the_prompts_are_versioned_and_the_old_ones_kept() -> None:
     for v in ("1", "2", "3", "4", "5"):
         assert load_prompt("shop_prefs", v).version == v
     tags = load_prompt("shop_candidate_tags")
-    assert tags.version == "4" and "Allowed values" in tags.text and "photo" in tags.text
+    assert tags.version == "5" and "Allowed values" in tags.text and "photo" in tags.text
+    assert load_prompt("shop_candidate_tags", "4").version == "4"
     assert load_prompt("shop_candidate_tags", "2").version == "2"
     assert "frame_or_legs" not in load_prompt("shop_prefs").text
     assert "size_class" not in load_prompt("shop_prefs").text

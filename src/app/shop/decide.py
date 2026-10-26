@@ -113,19 +113,23 @@ class TaggedItem:
         return tag_values(dim, self.values.get(dim))
 
 
-def tag_item(rated: Rated, model: ItemTags | None) -> TaggedItem:
+def tag_item(
+    rated: Rated, model: ItemTags | None, cached: Mapping[str, str | None] | None = None
+) -> TaggedItem:
     """The item's values from the model's tags only, folded into the fixed vocabularies. A dimension
     the model left null, and every dimension of an item the model did not tag, is unknown: title
-    keywords are never used to fill it."""
+    keywords are never used to fill it. The colour (stage 2k) is not in the preference call: it comes
+    from the item's cached tags (the photo or title tagging of what was shown), `cached`."""
     values: dict[str, str] = {}
     cues: list[str] = []
     if model is not None:
         for dim in DIMENSIONS:
-            got = (
-                normalize_style(model.style)
-                if dim == "style"
-                else normalize(dim, getattr(model, dim))
-            )
+            if dim == "color":
+                got = normalize("color", (cached or {}).get("color"))
+            elif dim == "style":
+                got = normalize_style(model.style)
+            else:
+                got = normalize(dim, getattr(model, dim))
             if got:
                 values[dim] = got
         cues = [normalize_phrase(c) for c in model.quality_cues if normalize_phrase(c)]
@@ -561,6 +565,7 @@ def decide(
     fallback: bool = False,
     exposure: Exposure | None = None,
     dismissed: Mapping[str, int] | None = None,
+    cached_tags: TagMap | None = None,
 ) -> Decisions:
     """The preference entries for the session's ratings, and the trace of how each was decided.
 
@@ -569,7 +574,10 @@ def decide(
     (shape, material, finish, frame color, style, size, cues, attribute dislikes): titles alone would
     count only the keyword-bearing ones. Only seller affinity and price are decided then.
     """
-    items = {rid: tag_item(r, None if fallback else tags.get(rid)) for rid, r in rated.items()}
+    items = {
+        rid: tag_item(r, None if fallback else tags.get(rid), (cached_tags or {}).get(rid))
+        for rid, r in rated.items()
+    }
     positives = [i for i in items.values() if i.rated.rating in ("love", "like")]
     disliked = [i for i in items.values() if i.rated.rating == "dislike"]
     exposure = exposure or build_exposure(shown, None, keywords=True)
@@ -818,8 +826,8 @@ def typed_dimensions(base: ShopQuery) -> set[str]:
     batch guard leaves them alone and never warns about them."""
     typed = {"material"} if base.material_terms else set()
     request = base.request
-    for dim in ("shape", "color_finish", "frame_color"):
-        if title_value(dim, request):
+    for dim in ("shape", "color_finish", "frame_color", "color"):
+        if title_value(dim, request) or (dim == "color" and base.color_terms):
             typed.add(dim)
     guesses = {t for t in base.style_terms if not mentions_words(t, request)}
     if any(t not in guesses for t in base.style_terms):

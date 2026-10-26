@@ -403,13 +403,18 @@ def mock_style_payload(request_text: str, *, v2: bool = True) -> dict[str, Any]:
 def _sample(
     search_text: str, category: str, price_min: float | None = None, price_max: float | None = None,
     style: tuple[str, ...] = (), material: tuple[str, ...] = (), must: tuple[str, ...] = (),
-    avoid: tuple[str, ...] = (),
+    avoid: tuple[str, ...] = (), colors: tuple[str, ...] = (),
+    context: tuple[tuple[str, str], ...] = (), suggest: tuple[str, ...] = (),
+    avoid_colors: tuple[str, ...] = (), reason: str = "",
 ) -> dict[str, Any]:  # fmt: skip
     return {
         "search_text": search_text, "category": category,
         "price_min": price_min, "price_max": price_max,
         "style_terms": list(style), "material_terms": list(material),
-        "must_have": list(must), "avoid": list(avoid),
+        "must_have": list(must), "avoid": list(avoid), "color_terms": list(colors),
+        "context": [{"kind": k, "value": v} for k, v in context],
+        "suggested_colors": list(suggest), "avoid_colors": list(avoid_colors),
+        "color_reason": reason,
     }  # fmt: skip
 
 
@@ -426,7 +431,41 @@ MOCK_SHOP_PARSES: dict[str, dict[str, Any]] = {
         material=("wood", "metal"),
         must=("storage",),
     ),
+    "walnut coffee table with storage": _sample(
+        "walnut coffee table with storage", "coffee table", material=("walnut",), must=("storage",)
+    ),
     "boho curtains": _sample("boho curtains", "curtains", style=("boho",)),
+    # stage 2k: the room's colour is context, never part of the product search
+    "boho curtains that pair well with a dark blue room": _sample(
+        "boho curtains",
+        "curtains",
+        style=("boho",),
+        context=(("room_color", "dark blue"),),
+        suggest=("cream", "rust_terracotta", "yellow_mustard", "white"),
+        avoid_colors=("navy_dark_blue", "blue"),
+        reason="Warm light colors stand out in a dark blue room; navy and blue would blend in.",
+    ),
+    "dark blue curtains": _sample("dark blue curtains", "curtains", colors=("dark blue",)),
+    "navy sofa under 1500": _sample("navy sofa", "sofa", price_max=1500.0, colors=("navy",)),
+    "curtains for a navy bedroom": _sample(
+        "curtains",
+        "curtains",
+        context=(("room_color", "navy"), ("room_type", "bedroom")),
+        suggest=("cream", "white", "yellow_mustard", "rust_terracotta"),
+        avoid_colors=("navy_dark_blue", "blue"),
+        reason="Light and warm colors lift a navy bedroom; navy and blue curtains would disappear.",
+    ),
+    "lamp for a brown leather sofa": _sample(
+        "lamp",
+        "lamp",
+        context=(("existing_item", "brown leather sofa"),),
+        suggest=("cream", "metallic", "green", "white"),
+        avoid_colors=("brown",),
+        reason="Cream, metal and green stand apart from brown leather; brown would blend in.",
+    ),
+    "coffee table for a small apartment": _sample(
+        "coffee table", "coffee table", context=(("room_size", "small apartment"),)
+    ),
     "mid century walnut sideboard between 400 and 900": _sample(
         "mid century walnut sideboard",
         "sideboard",
@@ -702,6 +741,71 @@ MOCK_TAGS_FAIL = "MOCK_TAGS_FAIL"  # a title containing this makes the candidate
 MOCK_TAGS_EMPTY = "MOCK_TAGS_EMPTY"  # a title containing this makes the call return no content
 
 
+def mock_refinements(request_text: str) -> list[dict[str, str]]:
+    """What the mock "model" makes of a refine instruction, deterministically ("no walmart", "focus
+    on cream", "under $400", "no black frames", "must have drawers"). Gibberish gives nothing; an
+    attempt to give the model instructions gives a free note, never an action."""
+    found = re.search(r"<instruction>(.*?)</instruction>", request_text, flags=re.DOTALL)
+    text = (found.group(1) if found else request_text).strip().lower()
+
+    def item(kind: str, target: str, label: str) -> dict[str, str]:
+        strength = "hard" if kind.startswith(("exclude", "price")) else "focus"
+        return {"kind": kind, "target": target, "strength": strength, "label": label}
+
+    out: list[dict[str, str]] = []
+    if "ignore previous" in text or "ignore all" in text or "system prompt" in text:
+        return [item("free_note", text[:40], text[:40])]
+    for m in re.finditer(r"(?:under|below|less than|max)\s*\$?(\d[\d,]*)", text):
+        out.append(item("price_max", m.group(1).replace(",", ""), f"under ${m.group(1)}"))
+    for m in re.finditer(r"(?:over|above|at least|min)\s*\$?(\d[\d,]*)", text):
+        out.append(item("price_min", m.group(1).replace(",", ""), f"over ${m.group(1)}"))
+    for m in re.finditer(r"must have ([a-z ]{2,30})", text):
+        out.append(item("must_have", m.group(1).strip(), f"must have {m.group(1).strip()}"))
+    for m in re.finditer(
+        r"(?:no|not|don't show anything from|nothing from|without) ([a-z' ]+?)(?: frames?|$| and )",
+        text,
+    ):
+        word = m.group(1).strip()
+        if word in ("black", "white", "brass", "gold", "chrome"):
+            frame = {
+                "brass": "brass or gold",
+                "gold": "brass or gold",
+                "chrome": "silver or chrome",
+            }
+            out.append(
+                item("exclude_value", f"frame_color:{frame.get(word, word)}", f"no {word} frames")
+            )
+        elif word in ("marketplaces", "marketplace retailers"):
+            out.append(item("exclude_tier", "marketplace_budget", "no marketplaces"))
+        elif word:
+            out.append(item("exclude_seller", word, f"no {word}"))
+    for m in re.finditer(r"(?:focus on|more from|more) ([a-z' &]+?)(?: frames?|$| and )", text):
+        word = m.group(1).strip()
+        if word in ("metal", "wood", "glass", "stone"):
+            out.append(item("focus_value", f"material:{word}", f"focus on {word}"))
+        elif word in ("round", "oval", "rectangular", "square"):
+            out.append(item("focus_value", f"shape:{word}", f"focus on {word}"))
+        elif word in (
+            "cream",
+            "white",
+            "beige",
+            "tan",
+            "brown",
+            "gray",
+            "blue",
+            "green",
+            "red",
+            "pink",
+            "navy",
+            "rust",
+            "mustard",
+        ):
+            out.append(item("focus_value", f"color:{word}", f"focus on {word}"))
+        elif word:
+            out.append(item("focus_seller", word, f"focus on {word}"))
+    return out
+
+
 def mock_queries(request_text: str) -> list[str]:
     """Two queries for a `record_queries` request, the way a careful writer would: each puts one
     leaning value (up to two words) in front of the category, the typed materials and the
@@ -743,6 +847,7 @@ def mock_candidate_tool_input(request_text: str) -> dict[str, Any]:
                 "finish": values["color_finish"],
                 "frame_color": values["frame_color"],
                 "style": [values["style"]] if values["style"] else [],
+                "color": values["color"],
             }
         )
     return {"items": items}
@@ -860,6 +965,12 @@ class MockAnthropicClient:
         self.calls.append(kwargs)
         schema = kwargs.get("output_config", {}).get("format", {}).get("schema")
         choice = kwargs.get("tool_choice") or {}
+        if choice.get("name") == "record_refinements":  # the forced refine interpretation call
+            block = SimpleNamespace(
+                type="tool_use", id="toolu_mock", name="record_refinements",
+                input={"items": mock_refinements(_request_text(kwargs))},
+            )  # fmt: skip
+            return response([block], stop_reason="tool_use", input_tokens=350, output_tokens=60)
         if choice.get("name") == "record_queries":  # the forced query writer tool call
             block = SimpleNamespace(
                 type="tool_use", id="toolu_mock", name="record_queries",

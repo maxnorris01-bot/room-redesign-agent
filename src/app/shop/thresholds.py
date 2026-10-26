@@ -59,6 +59,14 @@ QUERY_MAX_WORDS = 8  # words in a model-written query
 QUERY_LIKED_TITLES = 6  # liked titles shown to the query writer
 QUERY_DISLIKED_TITLES = 4  # disliked titles shown to the query writer
 BASE_PAGE_MAX = 2  # the base query is paged no deeper than this, page 3 only as a last resort
+# stage 2k: colours that complement the room the request names (suggestions, never filters)
+COLOR_SUGGESTED_MIN_SHARE = 0.40  # a batch takes at least this share from suggested colours
+COLOR_AVOID_MAX_SHARE = 0.15  # and at most this share from the colours to avoid
+# stage 2l: refine instructions typed by the shopper
+REFINE_FOCUS_MIN_SHARE = 0.50  # a "focus on" chip takes at least this share of a batch, if supplied
+REFINE_MAX_PER_SUBMIT = 5  # interpretations kept from one instruction
+REFINE_MAX_CHIPS = 12  # active refine chips in a topic
+REFINE_MAX_CHARS = 200  # characters in one instruction
 
 # quality cues (non-exclusive phrases such as "solid wood"): share of the positive items showing it
 QUALITY_CUE_MIN_SHARE = 0.50
@@ -122,6 +130,12 @@ def all_thresholds() -> dict[str, float | int]:
         "QUERY_LIKED_TITLES": QUERY_LIKED_TITLES,
         "QUERY_DISLIKED_TITLES": QUERY_DISLIKED_TITLES,
         "BASE_PAGE_MAX": BASE_PAGE_MAX,
+        "COLOR_SUGGESTED_MIN_SHARE": COLOR_SUGGESTED_MIN_SHARE,
+        "COLOR_AVOID_MAX_SHARE": COLOR_AVOID_MAX_SHARE,
+        "REFINE_FOCUS_MIN_SHARE": REFINE_FOCUS_MIN_SHARE,
+        "REFINE_MAX_PER_SUBMIT": REFINE_MAX_PER_SUBMIT,
+        "REFINE_MAX_CHIPS": REFINE_MAX_CHIPS,
+        "REFINE_MAX_CHARS": REFINE_MAX_CHARS,
         "QUALITY_CUE_MIN_SHARE": QUALITY_CUE_MIN_SHARE,
         "QUALITY_CUE_MIN_ITEMS": QUALITY_CUE_MIN_ITEMS,
         "PRICE_BAND_MIN_MASS": PRICE_BAND_MIN_MASS,
