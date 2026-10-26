@@ -72,6 +72,7 @@ class JobManager:
         kind: str,
         work: Callable[[Progress], dict[str, Any]],
         failure: Callable[[Exception], tuple[int, str]],
+        steps: tuple[tuple[str, str], ...] | None = None,
     ) -> str:
         """Run `work(progress)` in the background; returns the job id. `progress` is callable (the
         phase text) and carries the steps for the status bar. `failure` turns an exception raised by
@@ -84,8 +85,8 @@ class JobManager:
             if len(running) >= MAX_RUNNING:
                 raise JobError(429, "Too many things are running; try again in a moment")
             job = Job(secrets.token_urlsafe(16), session_id, kind, started=self.clock.now())
-            steps = SHOP_AGAIN_STEPS if kind == "shop_again" else SEARCH_STEPS
-            job.progress = Progress(steps, self.clock)
+            chosen = steps or (SHOP_AGAIN_STEPS if kind == "shop_again" else SEARCH_STEPS)
+            job.progress = Progress(chosen, self.clock)
             self._jobs[job.id] = job
         progress = job.progress
 

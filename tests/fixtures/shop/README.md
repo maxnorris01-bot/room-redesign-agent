@@ -64,3 +64,9 @@ rated, West Elm 3 of 5, Article 2 of 4, CB2 2 of 4; marketplace and budget 1 of 
 10, black frame 4 of 31) and 136 authored candidates from West Elm, Article, CB2, marketplaces and others.
 Real sessions are exported with `scripts/shop_export_replay.py` (redacted, thumbnails replaced).
 
+Stage 2k: `serper_curtains.json` has 22 of its 116 titles prefixed Navy, Dark Blue or Blue (so a dark blue room's
+suggestions and avoid colours have something to separate); the mock search puts colours named in a query first.
+Stage 2m: `tests/fixtures/shopping/serpapi_product_article.json` now has `rating` 4.6, `reviews` 1203 and a
+`media` list (six https images and one video, which is ignored); a lookup for a product id ending in 9 still
+returns nothing.
+

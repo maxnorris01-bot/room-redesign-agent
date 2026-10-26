@@ -157,7 +157,7 @@ def test_tolerant_parsing_reads_every_realistic_shape_of_answer(answer: str) -> 
     assert sorted(got) == [1, 2]
     assert got[1] == {
         "shape": "round", "material": "wood", "color_finish": "warm wood",
-        "frame_color": "black", "style": "modern",
+        "frame_color": "black", "style": "modern", "color": None,
     }  # fmt: skip
     assert got[2]["shape"] == "rectangular" and got[2]["material"] == "glass"
     assert got[2]["frame_color"] is None and got[2]["style"] == "industrial,glam"
@@ -179,6 +179,7 @@ def test_short_extra_and_out_of_range_rows_are_handled() -> None:
     assert sorted(got) == [1, 2]  # 7 is outside the batch, the second "1" is a repeat
     assert got[1] == {
         "shape": "round", "material": None, "color_finish": None, "frame_color": None, "style": None,
+        "color": None,
     }  # fmt: skip
     assert got[2]["shape"] == "oval" and got[2]["style"] == "modern"  # extras are ignored
     assert parse_answer("no rows at all", 5) == ({}, False)
@@ -187,7 +188,9 @@ def test_short_extra_and_out_of_range_rows_are_handled() -> None:
 
 def test_the_token_limit_is_twice_the_estimate_and_bounded() -> None:
     assert tag_max_tokens(100) == 2 * (100 + 16 * 100) == 3400  # text rows: about 14 tokens each
-    assert tag_max_tokens(40, "tool") == 2 * (100 + 40 * 40) == 3400  # a tool-call object
+    assert (
+        tag_max_tokens(40, "tool") == 2 * (100 + 48 * 40) == 4040
+    )  # a tool-call object, with color
     assert tag_max_tokens(10) == 2 * (100 + 160)
     assert tag_max_tokens(10_000) == 6000
 
@@ -1145,7 +1148,8 @@ def test_prompts_are_versioned_and_the_old_ones_kept() -> None:
     assert load_prompt("shop_prefs").version == "6"
     for v in ("1", "2", "3", "4", "5"):
         assert load_prompt("shop_prefs", v).version == v
-    assert load_prompt("shop_candidate_tags").version == "4"
+    assert load_prompt("shop_candidate_tags").version == "5"
+    assert load_prompt("shop_candidate_tags", "4").version == "4"
     assert load_prompt("shop_candidate_tags", "3").version == "3"
     assert load_prompt("shop_candidate_tags", "2").version == "2"
     assert load_prompt("shop_candidate_tags", "1").version == "1"
@@ -1183,7 +1187,7 @@ def test_the_trace_panel_renders_peers_tiers_and_tag_calls_from_text() -> None:
 
 
 def test_every_dimension_still_has_its_trace_and_old_decisions_load() -> None:
-    assert DIMENSIONS == ("shape", "material", "color_finish", "frame_color", "style")
+    assert DIMENSIONS == ("shape", "material", "color_finish", "frame_color", "style", "color")
     r = Rated("a", "love", "", "Table", 1.0, "West Elm", "")
     assert r.seller == "West Elm"
     assert ShopQuery(request="x", search_text="x", category="").style_terms == []

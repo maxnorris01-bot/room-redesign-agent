@@ -100,6 +100,12 @@ class ProductDetails:
     # Why there is nothing usable, when there is not: "no product_results" or "no stores". Empty
     # when the lookup returned stores. (An HTTP failure raises `ProviderError` instead.)
     note: str = ""
+    # stage 2m: what a google_product lookup also carries (nothing here is estimated or invented)
+    images: list[str] = field(
+        default_factory=list
+    )  # https product photos (`product_results.media`)
+    rating: float | None = None
+    rating_count: int | None = None
 
 
 class SearchProvider(Protocol):
@@ -365,6 +371,28 @@ def parse_shipping(store: dict[str, Any], price: float | None) -> tuple[float | 
     return None, "unknown"
 
 
+MAX_GALLERY = 12
+
+
+def _gallery(media: Any) -> list[str]:
+    """The https image links of a `media` list, each once, at most `MAX_GALLERY`."""
+    out: list[str] = []
+    for item in media if isinstance(media, list) else []:
+        link = item.get("link") if isinstance(item, dict) else None
+        kind = item.get("type") if isinstance(item, dict) else None
+        if (
+            isinstance(link, str) and kind in (None, "image") and link.startswith("https://")
+            and len(link) <= 2000 and not any(ch.isspace() for ch in link) and link not in out
+        ):  # fmt: skip
+            out.append(link)
+    return out[:MAX_GALLERY]
+
+
+def _rating(value: Any) -> float | None:
+    got = _as_float(value)
+    return round(got, 2) if got is not None and 0 < got <= 5 else None
+
+
 def parse_product_details(payload: dict[str, Any]) -> ProductDetails:
     """Parse a SerpApi `google_product` (or `google_immersive_product`) response."""
     product = payload.get("product_results") or {}
@@ -408,6 +436,9 @@ def parse_product_details(payload: dict[str, Any]) -> ProductDetails:
         attributes=attributes,
         dimensions=parse_dimensions(features, product.get("product_attributes")),
         note=note,
+        images=_gallery(product.get("media")),
+        rating=_rating(product.get("rating")),
+        rating_count=_as_int(product.get("reviews")),
     )
 
 

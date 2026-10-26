@@ -758,6 +758,7 @@ def run_checks(
     ids5: dict[str, str],
     base6: str,
     id6: str,
+    id7: str,
 ) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
@@ -1028,6 +1029,7 @@ def run_checks(
             run_replay_4(browser, base4, shots, ids4, console_errors)
             run_progress(browser, base5, shots, ids5, console_errors)
             run_tailoring(browser, base6, shots, id6, console_errors)
+            run_batch(browser, base, base6, id7, shots, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -1179,6 +1181,250 @@ def run_tailoring(
     context.close()
 
 
+OWNER_REQUEST = "boho curtains that pair well with a dark blue room"
+CREAM_WORDS = ("Cream", "Rust", "Mustard", "White", "Ivory", "Terracotta", "Ochre")
+
+
+def new_page(browser: Any, base: str, width: int = 1280) -> tuple[Any, Page]:
+    context = browser.new_context(viewport={"width": width, "height": 900})
+    install_routes(context, 0)
+    page = context.new_page()
+    page.goto(base)
+    page.wait_for_selector("#examples button")
+    return context, page
+
+
+def rate_nth(page: Page, n: int, rating: str) -> None:
+    page.locator("#grid .card").nth(n).locator(f".rate.{rating}").click()
+
+
+def run_batch(
+    browser: Any,
+    base: str,
+    base_ev: str,
+    id_ev: str,
+    shots: Path,
+    console_errors: list[str],
+) -> None:
+    print("topics: coffee tables with ratings, then couches")
+    context, page = new_page(browser, base)
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, COFFEE)
+    for n, kind in enumerate(("love", "love", "like", "dislike")):
+        rate_nth(page, n, kind)
+    page.wait_for_load_state("networkidle")
+    page.click("#shop-again")
+    wait_for_results(page)
+    page.locator("#prefs").wait_for(state="visible")
+    check(
+        page.locator("#pref-chips .chip.pref").count() >= 1, "chips learned from the coffee tables"
+    )
+    page.fill("#request", "modern couches under $1000")
+    page.click("#search-btn")
+    wait_for_results(page)
+    notice = page.locator("#topic-notice")
+    check(notice.is_visible(), "the topic notice is shown")
+    check(
+        notice.inner_text().startswith(
+            "Started fresh for couches. Your saved coffee tables are still in Saved"
+        ),
+        f"the notice says so: {notice.inner_text()[:90]!r}",
+    )
+    check(page.locator("#pref-chips .chip.pref").count() == 0, "the learned chips are cleared")
+    check(
+        page.locator("#shop-again").is_disabled(), "Shop Again waits for ratings in the new topic"
+    )
+    page.locator(".top").screenshot(path=str(shots / "43-topic-notice.png"))
+    page.click("#saved-toggle")
+    page.locator("#saved .card .topic-tag").first.wait_for(timeout=10000)
+    check(
+        "From an earlier search" in page.locator("#saved .card .topic-tag").first.inner_text(),
+        "saved items from the earlier topic are labelled",
+    )
+    page.locator("#saved").screenshot(path=str(shots / "44-saved-earlier-topic.png"))
+    page.emulate_media(color_scheme="dark")
+    page.locator(".top").screenshot(path=str(shots / "45-topic-notice-dark.png"))
+    page.emulate_media(color_scheme="light")
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.locator(".top").screenshot(path=str(shots / "46-topic-notice-mobile.png"))
+    check(
+        page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+        "no sideways scroll at 390 px (topics)",
+    )
+    page.set_viewport_size({"width": 1280, "height": 900})
+    context.close()
+
+    print("the owner's curtains request: setting, suggestions, stars and the gallery")
+    context, page = new_page(browser, base)
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, OWNER_REQUEST)
+    chips_text = page.inner_text("#chips").lower()
+    check(
+        "search" in chips_text and "boho curtains" in chips_text,
+        "the search chip is 'boho curtains'",
+    )
+    check(
+        page.locator("#chips .chip.ctx", has_text="dark blue").count() == 1
+        and "room" in page.locator("#chips .chip.ctx").first.inner_text().lower(),
+        "the room colour is a setting chip",
+    )
+    suggested = page.locator("#chips .chip.ctx.suggested")
+    avoid = page.locator("#chips .chip.ctx.avoidc")
+    check(
+        suggested.count() == 4 and avoid.count() == 2,
+        f"{suggested.count()} suggested and {avoid.count()} avoid chips",
+    )
+    check(
+        "dark blue"
+        not in page.locator("#chips .chip:not(.ctx)").all_inner_texts().__str__().lower(),
+        "no product chip says dark blue",
+    )
+    page.locator("#request-trace summary").click()
+    check(
+        "only what describes the product" in page.inner_text("#request-trace-body"),
+        "the request trace explains the split",
+    )
+    titles = title_texts(page)
+    warm = sum(1 for t in titles if any(w.lower() in t.lower() for w in CREAM_WORDS))
+    navy = sum(1 for t in titles if any(w in t for w in ("Navy", "Dark Blue", "Blue")))
+    check(
+        warm >= 10 and navy <= 3,
+        f"{warm} of {len(titles)} in suggested colours, {navy} in colours to avoid",
+    )
+    stars = page.locator("#grid .card .rating-row .stars")
+    check(stars.count() >= 10, f"{stars.count()} cards show stars")
+    label = stars.first.get_attribute("aria-label") or ""
+    check(
+        re.match(r"rated \d\.\d out of 5( from [\d,]+ reviews)?$", label) is not None,
+        f"accessible text: {label!r}",
+    )
+    page.locator(".top").screenshot(path=str(shots / "47-curtains-setting-chips.png"))
+    page.locator("#grid .card").first.screenshot(path=str(shots / "48-card-with-stars.png"))
+    # delete one suggestion and the avoid colour
+    count = suggested.count()
+    suggested.first.locator(".x").click()
+    page.locator("#chips .chip.ctx.suggested").nth(count - 1).wait_for(
+        state="detached", timeout=10000
+    )
+    check(
+        page.locator("#chips .chip.ctx.suggested").count() == count - 1,
+        "a suggested colour can be deleted",
+    )
+    # the gallery
+    first_card = page.locator("#grid .card").first
+    button = first_card.locator(".photos")
+    check(
+        button.count() == 1 and button.inner_text() == "More photos",
+        "a card with a product id has More photos",
+    )
+    button.click()
+    gallery = first_card.locator(".gallery")
+    gallery.wait_for(state="visible", timeout=10000)
+    check(first_card.locator(".g-count").inner_text() == "1 of 6", "the gallery has six photos")
+    first_card.locator(".g-nav").nth(1).click()
+    check(first_card.locator(".g-count").inner_text() == "2 of 6", "next shows the second photo")
+    gallery.focus()
+    page.keyboard.press("ArrowRight")
+    check(
+        first_card.locator(".g-count").inner_text() == "3 of 6",
+        "the arrow keys move through the photos",
+    )
+    page.keyboard.press("ArrowLeft")
+    check(first_card.locator(".g-count").inner_text() == "2 of 6", "and back")
+    check(
+        button.get_attribute("aria-expanded") == "true" and button.inner_text() == "Hide photos",
+        "the button toggles",
+    )
+    check("link lookups 1 of 12" in lookups_text(page), "the footer counts the lookup")
+    first_card.screenshot(path=str(shots / "49-gallery.png"))
+    page.emulate_media(color_scheme="dark")
+    first_card.screenshot(path=str(shots / "50-gallery-dark.png"))
+    page.locator(".top").screenshot(path=str(shots / "51-curtains-setting-chips-dark.png"))
+    page.emulate_media(color_scheme="light")
+    page.set_viewport_size({"width": 390, "height": 844})
+    first_card.scroll_into_view_if_needed()
+    first_card.screenshot(path=str(shots / "52-gallery-mobile.png"))
+    page.locator(".top").screenshot(path=str(shots / "53-curtains-setting-chips-mobile.png"))
+    check(
+        page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+        "no sideways scroll at 390 px (curtains)",
+    )
+    page.set_viewport_size({"width": 1280, "height": 900})
+    button.click()
+    check(first_card.locator(".gallery").is_hidden(), "Hide photos closes the gallery")
+    context.close()
+
+    print("refine: typed instructions become chips")
+    context, page = open_session(browser, base_ev, id_ev)
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    box = page.locator("#refine-input")
+    check(box.get_attribute("maxlength") == "200", "the refine box takes 200 characters")
+    box.fill("no target")
+    page.click("#refine-add")
+    page.locator("#refine-chips .chip.askchip").first.wait_for(timeout=10000)
+    check(box.input_value() == "", "the box empties after a submission")
+    chip = page.locator("#refine-chips .chip.askchip").first
+    check(
+        "you asked" in chip.inner_text().lower() and "no target" in chip.inner_text().lower(),
+        "a 'you asked' chip appears",
+    )
+    box.fill("focus on metal frames")
+    box.press("Enter")
+    page.locator("#refine-chips .chip.askchip").nth(1).wait_for(timeout=10000)
+    box.fill("asdf qwer zxcv")
+    page.click("#refine-add")
+    page.locator("#refine-note.error").wait_for(timeout=10000)
+    check(
+        "could not turn that" in page.inner_text("#refine-note"),
+        "nonsense is rejected with a short message",
+    )
+    box.fill("under $400")  # left in the box: read as a step of the next Shop Again
+    page.click("#shop-again")
+    wait_for_results(page)
+    page.locator("#refine-chips .chip.askchip").nth(2).wait_for(timeout=10000)
+    check(
+        box.input_value() == "" and page.locator("#refine-chips .chip.askchip").count() == 3,
+        "text left in the box became a chip",
+    )
+    sellers = page.locator("#grid .card .seller").all_inner_texts()
+    check("Target" not in sellers, "nothing from the excluded seller is in the batch")
+    prices = [
+        price_of(page.locator("#grid .card").nth(i))
+        for i in range(page.locator("#grid .card").count())
+    ]
+    check(
+        bool(prices) and max(prices) <= 400,
+        f"every price is under $400 (max {max(prices) if prices else 0:.0f})",
+    )
+    check(
+        "under $400" in page.inner_text("#chips") or "up to $400" in page.inner_text("#chips"),
+        "the price chip changed",
+    )
+    page.locator("#why-toggle").click()
+    check(
+        "You asked: no target" in page.locator("#why").inner_text().lower()
+        or "you asked: no target" in page.locator("#why").inner_text().lower(),
+        "the trace lists the refine chip",
+    )
+    page.locator("#refine-box").screenshot(path=str(shots / "54-refine-chips.png"))
+    page.locator(".actions").screenshot(path=str(shots / "55-refine-box.png"))
+    page.emulate_media(color_scheme="dark")
+    page.locator("#refine-box").screenshot(path=str(shots / "56-refine-chips-dark.png"))
+    page.emulate_media(color_scheme="light")
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.locator(".actions").scroll_into_view_if_needed()
+    page.locator(".toolbar").screenshot(path=str(shots / "57-refine-mobile.png"))
+    check(
+        page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+        "no sideways scroll at 390 px (refine)",
+    )
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.locator("#refine-chips .chip.askchip").first.locator(".x").click()
+    page.locator("#refine-chips .chip.askchip").nth(2).wait_for(state="detached", timeout=10000)
+    check(page.locator("#refine-chips .chip.askchip").count() == 2, "a refine chip can be deleted")
+    context.close()
+
+
 def _clip(page: Page, chip: Any) -> dict[str, float]:
     box = chip.bounding_box() or {"x": 0, "y": 0, "width": 200, "height": 30}
     top = max(0.0, box["y"] - 10)
@@ -1241,12 +1487,15 @@ def main() -> int:
             tailoring = seed_session(
                 SessionStore(Path(data_dir6)), replay=REPLAY_FILE_EVIDENCE
             ).session_id
+            second_evidence = seed_session(
+                SessionStore(Path(data_dir6)), replay=REPLAY_FILE_EVIDENCE
+            ).session_id
             run_checks(
                 f"http://127.0.0.1:{port}/", OUT, seed_replays(data_dir),
                 f"http://127.0.0.1:{port3}/", seed_replays_3(data_dir3),
                 f"http://127.0.0.1:{port4}/", seed_replays_4(data_dir4),
                 f"http://127.0.0.1:{port5}/", seed_replays_4(data_dir5),
-                f"http://127.0.0.1:{port6}/", tailoring,
+                f"http://127.0.0.1:{port6}/", tailoring, second_evidence,
             )  # fmt: skip
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

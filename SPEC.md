@@ -133,3 +133,11 @@ chip or a "leaning"; marketplace and budget retailers are left out when they wer
 almost never liked (a deletable chip, with a banner under 12 results); liked sellers are searched by name,
 the model writes one or two validated queries, and the base query is paged no deeper than page 2 (page 3 as
 a last resort, never page 4). See ADR 0012, stage 2i.
+
+Stages 2j to 2m: a new search for a different product starts a new topic (what was learned stops shaping it;
+Saved stays). The request is split into product words and setting words ("pair well with a dark blue room"
+suggests cream and rust, it does not search dark blue), with a colour dimension. A "Refine the next Shop
+Again" box turns plain instructions ("no Walmart", "focus on cream", "under $400") into chips that outrank
+what was inferred. Cards show star ratings and review counts where the source gave them, and a "More photos"
+gallery shares the product lookup (and the cap of 12) with Open. See ADR 0012, stages 2j to 2m.
+

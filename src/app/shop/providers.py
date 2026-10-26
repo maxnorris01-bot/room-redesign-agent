@@ -18,6 +18,7 @@ from pathlib import Path
 from app.config import Config
 from app.mock_llm import mock_step_delay
 from app.shop.retailers import RETAILERS, Retailer, seller_key
+from app.shop.vocab import title_value
 from app.shopping import (
     FIXTURE_TITLE_PREFIX,
     ProductDetails,
@@ -97,6 +98,11 @@ class ShopFixtureSearch:
         everything = _shop_fixture(fixture)
         boosted = any(w in lowered for w in BOOST_WORDS)
         shapes = [w for w in SHAPE_WORDS if w in lowered]
+        wanted = {c for w in re.findall(r"[a-z]+", lowered) if (c := title_value("color", w))}
+        if wanted:  # a query that names colours surfaces those colours first (stage 2k)
+            everything = sorted(
+                everything, key=lambda c: 0 if title_value("color", c.title) in wanted else 1
+            )
         if boosted or shapes:  # a more specific query surfaces more specific products (stable sort)
             everything = sorted(
                 everything,

@@ -254,11 +254,14 @@ class PrepManager:
         base = base_query(session)
         if rec is None or rec.comment.strip() != comment or base is None:
             return  # the comment changed or went away while this waited
+        topic = session.current_topic
         budget = Budget(self.config)
         answer, _, error = read_rated_items(session, base, {rid}, budget, self.thumbnailer)
         if state is not None and state.cancelled.is_set():
             return
         with self.store.transaction(sid) as live:
+            if live.current_topic != topic:
+                return  # a new topic began while this ran: nothing learned crosses over
             current = live.ratings.get(rid)
             if answer is not None and current is not None and current.comment.strip() == comment:
                 live.comment_cache[comment_key(rid, comment)] = reading_entry(answer, rid)

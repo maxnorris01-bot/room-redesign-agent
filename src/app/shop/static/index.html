@@ -28,7 +28,12 @@
         aria-label="Describe what you want to buy">
       <button id="search-btn" type="submit" class="primary">Search</button>
     </form>
+    <p id="topic-notice" class="topic-notice" role="status" aria-live="polite" hidden></p>
     <div id="chips" class="chips" aria-label="How your request was understood"></div>
+    <details id="request-trace" class="request-trace" hidden>
+      <summary>How I read your request</summary>
+      <div id="request-trace-body"></div>
+    </details>
     <div id="prefs" class="prefs" hidden>
       <p id="prefs-summary" class="prefs-summary"></p>
       <div id="pref-chips" class="chips" aria-label="What you liked and disliked"></div>
@@ -52,11 +57,23 @@
       <button id="retry" type="button" class="quiet" hidden>Retry</button>
     </div>
     <div class="actions">
+      <form id="refine-form" class="refine" autocomplete="off">
+        <label for="refine-input" class="refine-label">Refine the next Shop Again</label>
+        <span class="refine-row">
+          <input id="refine-input" type="text" maxlength="200"
+            placeholder="e.g. no Walmart, or focus on cream" aria-label="Refine the next Shop Again">
+          <button id="refine-add" type="submit" class="outline" disabled>Add</button>
+        </span>
+      </form>
       <span id="again-wrap" class="again" title="Rate a few results first">
         <button id="shop-again" type="button" class="primary" disabled aria-disabled="true">Shop Again</button>
       </span>
       <button id="saved-toggle" type="button" class="outline" aria-expanded="false" aria-controls="saved">Show saved (0)</button>
     </div>
+  </div>
+  <div id="refine-box" class="refine-box" hidden>
+    <div id="refine-chips" class="chips" aria-label="What you asked for"></div>
+    <p id="refine-note" class="refine-note" role="status" aria-live="polite"></p>
   </div>
   <section id="saved" class="saved" hidden aria-label="Saved results">
     <div class="tabs" role="tablist">

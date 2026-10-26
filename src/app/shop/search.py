@@ -42,9 +42,10 @@ from app.shop.models import (
     is_https_url,
     result_id,
 )
-from app.shop.parse import parse_request
+from app.shop.parse import color_word, parse_request
 from app.shop.progress import Progress, Timeline
 from app.shop.queries import QueryResult
+from app.shop.refine import RefineSet
 from app.shop.retailers import (
     MARKETPLACE_BUDGET,
     canonical_name,
@@ -55,12 +56,15 @@ from app.shop.retailers import (
 from app.shop.thresholds import (
     BASE_PAGE_MAX,
     CANDIDATE_TAG_BATCH,
+    COLOR_AVOID_MAX_SHARE,
+    COLOR_SUGGESTED_MIN_SHARE,
     DIVERSITY_MAX_SHARE,
     LEAN_AWAY_MAX_SHARE,
     LEAN_TOWARD_MIN_SHARE,
     MARKET_MIN_RESULTS,
     MINORITY_POOL_SHARE,
     OPEN_STRATUM_FLOOR,
+    REFINE_FOCUS_MIN_SHARE,
     SELLER_MAX_SHARE,
     SELLER_PINNED_SHARE,
     SELLER_SEARCHES,
@@ -73,7 +77,8 @@ from app.sizes import IN_M, resolve_size
 
 MAX_EXAMPLES = 8  # loved/liked and disliked titles shown to the ranker, each
 RANK_VERSION = "1"  # typed searches
-RANK_VERSION_AGAIN = "5"  # Shop Again: converged, open, leanings, examples (v2 to v4 kept)
+RANK_VERSION_AGAIN = "6"  # Shop Again: converged, open, leanings, setting, examples (v2-v5 kept)
+RANK_VERSION_CONTEXT = "6"  # a typed search whose request has a setting or colour suggestions
 RESULT_COUNT = 24  # results returned, and the fewest that avoid a second Serper page
 SELLER_CAP = 4  # most results one seller may have in the returned list. UNTUNED GUESS.
 MAX_POOL = 60  # candidates shown to the ranker (keeps the prompt small)
@@ -157,6 +162,11 @@ class AgainContext:
     query_result: QueryResult | None = None
     tag_source: dict[str, str] = field(default_factory=dict)
     liked_seller_keys: set[str] = field(default_factory=set)
+    # stage 2l: the shopper's refine chips (they outrank everything inferred), what each removed
+    # from the pool, and the lines the ranker is given
+    refine: RefineSet | None = None
+    refine_dropped: dict[str, set[str]] = field(default_factory=dict)
+    refine_lines: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -187,6 +197,9 @@ class SearchOutcome:
     )  # for the session cache
     peer_log: list[dict[str, Any]] = field(default_factory=list)  # peer searches and their yield
     pool_snapshot: list[dict[str, Any]] = field(default_factory=list)  # compact pool, for replays
+    request_trace: dict[str, Any] = field(
+        default_factory=dict
+    )  # stage 2k: how the request was split
     alignment_signals: int = 0  # decided signals the match was measured against
     alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
 
@@ -302,6 +315,54 @@ def _price(value: float | None) -> str:
     return "no price" if value is None else f"${value:,.0f}"
 
 
+def has_setting(query: ShopQuery) -> bool:
+    """Whether the request carries a setting or colour guidance the ranker should be told about."""
+    return bool(query.context or query.suggested_colors or query.avoid_colors or query.color_terms)
+
+
+def rank_version(query: ShopQuery, again: AgainContext | None) -> str:
+    if again is not None:
+        return RANK_VERSION_AGAIN
+    return RANK_VERSION_CONTEXT if has_setting(query) else RANK_VERSION
+
+
+def setting_lines(query: ShopQuery) -> list[str]:
+    """The setting and colour guidance for the ranker: soft, and never something the product must
+    literally contain (`shop_rank` v6)."""
+    if not has_setting(query):
+        return []
+    kinds: dict[str, list[str]] = {}
+    for item in query.context:
+        kinds.setdefault(item.kind, []).append(
+            item.value + (" (approximate)" if item.approximate else "")
+        )
+    lines: list[str] = []
+    setting = [
+        f"{k.replace('_', ' ')}: {', '.join(v)}"
+        for k, v in kinds.items()
+        if k not in ("room_size", "mood")
+    ]
+    if setting:
+        lines.append(
+            "Setting (where the product goes; NOT what it is, never require it): "
+            + "; ".join(setting)
+        )
+    if query.color_terms:
+        names = ", ".join(color_word(c) for c in query.color_terms)
+        lines.append(f"Colors the product itself must be: {names}")
+    if query.suggested_colors:
+        names = ", ".join(color_word(c) for c in query.suggested_colors)
+        lines.append(f"Suggested product colors (prefer): {names}")
+    if query.avoid_colors:
+        names = ", ".join(color_word(c) for c in query.avoid_colors)
+        lines.append(f"Colors to avoid (demote; the product would blend in or clash): {names}")
+    if "room_size" in kinds:
+        lines.append(f"Size preference: compact ({', '.join(kinds['room_size'])})")
+    if "mood" in kinds:
+        lines.append(f"Mood (a soft style hint): {', '.join(kinds['mood'])}")
+    return lines
+
+
 def rank_user_text(
     query: ShopQuery, pool: list[SearchCandidate], n: int, again: AgainContext | None = None
 ) -> str:
@@ -323,7 +384,9 @@ def rank_user_text(
         line("Must have", query.must_have),
         line("Avoid", query.avoid),
     ]
+    lines += setting_lines(query)
     if again is not None:
+        lines += again.refine_lines
         styles = [t for t in query.style_terms if t not in again.guesses]
         lines[3] = line("Style", styles)
         lines += [
@@ -391,7 +454,7 @@ def order_pool(
     try:
         completion = complete(
             span_name="llm.shop_rank",
-            prompt=load_prompt("shop_rank", RANK_VERSION if again is None else RANK_VERSION_AGAIN),
+            prompt=load_prompt("shop_rank", rank_version(query, again)),
             model=config.rank_model,
             user_text=rank_user_text(query, pool, RESULT_COUNT, again),
             budget=budget,
@@ -412,6 +475,14 @@ def order_pool(
             ordered.append((by_id[f.id], f.reason.strip()))
     ordered.extend((c, "") for c in pool if c.product_id not in used)
     return ordered, ""
+
+
+def _valid_rating(value: float | None) -> float | None:
+    return round(value, 2) if value is not None and 0 < value <= 5 else None
+
+
+def _valid_count(value: int | None) -> int | None:
+    return value if value is not None and value >= 0 else None
 
 
 def _link(candidate: SearchCandidate) -> tuple[str, LinkKind]:
@@ -458,6 +529,8 @@ def build_results(
     strata: tuple[str, dict[str, int]] | None = None,
     tier_limit: tuple[str, int, int] | None = None,
     leanings: tuple[list[tuple[str, str]], list[tuple[str, str]]] | None = None,
+    colors: tuple[list[str], list[str]] | None = None,
+    focus: list[tuple[str, str]] | None = None,
 ) -> tuple[list[ShopResult], int, int]:
     """Walk the ranked order, up to `RESULT_COUNT`, keeping:
 
@@ -481,6 +554,15 @@ def build_results(
     gets at least `LEAN_TOWARD_MIN_SHARE` of the batch where the pool has it (a pass after the
     tier and the strata, never over a guard cap), and each value leaned away from at most
     `LEAN_AWAY_MAX_SHARE`. A leaning never overrides a hard filter or a cap.
+
+    Stage 2k: `colors=(suggested, avoid)` are colour ids from the request's setting. The batch takes
+    at least `COLOR_SUGGESTED_MIN_SHARE` of its results from the suggested colours where the pool
+    has them (a pass before the leanings) and at most `COLOR_AVOID_MAX_SHARE` from the colours to
+    avoid, under every cap and filter. A result with no known colour counts for neither.
+
+    Stage 2l: `focus` lists the shopper's "focus on" chips as (dimension, value) pairs ("seller"
+    and "tier" are pseudo-dimensions). Each takes at least `REFINE_FOCUS_MIN_SHARE` of the batch
+    where the pool has it, in a pass before everything else the ratings inferred.
     """
     affinity = affinity_sellers or set()
     pinned = pinned_sellers or set()
@@ -505,6 +587,11 @@ def build_results(
     away_cap = int(LEAN_AWAY_MAX_SHARE * RESULT_COUNT)
     toward_min = math.ceil(LEAN_TOWARD_MIN_SHARE * RESULT_COUNT)
     away_counts: dict[tuple[str, str], int] = {}
+    suggested_colors = set(colors[0]) if colors else set()
+    avoid_colors = set(colors[1]) if colors else set()
+    avoid_color_cap = int(COLOR_AVOID_MAX_SHARE * RESULT_COUNT)
+    suggested_min = math.ceil(COLOR_SUGGESTED_MIN_SHARE * RESULT_COUNT)
+    avoid_color_count = 0
 
     def holds(candidate: SearchCandidate, dim: str, value: str) -> bool:
         got = tag_of(candidate).get(dim)
@@ -531,12 +618,19 @@ def build_results(
         ):
             diversity_skipped.add(index)
             return False
+        nonlocal avoid_color_count
+        is_avoid = bool(avoid_colors) and tag_of(candidate).get("color") in avoid_colors
+        if is_avoid and avoid_color_count >= avoid_color_cap:
+            diversity_skipped.add(index)
+            return False
         away_held = [(d, v) for d, v in away if holds(candidate, d, v)]
         if any(away_counts.get(pair, 0) >= away_cap for pair in away_held):
             diversity_skipped.add(index)
             return False
         for pair in away_held:
             away_counts[pair] = away_counts.get(pair, 0) + 1
+        if is_avoid:
+            avoid_color_count += 1
         for dim in guard:
             for v in held[dim]:
                 value_counts[(dim, v)] = value_counts.get((dim, v), 0) + 1
@@ -548,6 +642,18 @@ def build_results(
         taken.add(index)
         return True
 
+    refine_min = math.ceil(REFINE_FOCUS_MIN_SHARE * RESULT_COUNT)
+    for f_dim, f_value in focus or []:  # the shopper's own focus chips come first
+        have = sum(1 for i in accepted if _focus_holds(ordered[i][0], f_dim, f_value, tag_of))
+        for index, (candidate, _) in enumerate(ordered):
+            if have >= refine_min or len(accepted) >= RESULT_COUNT:
+                break
+            if (
+                index not in taken
+                and _focus_holds(candidate, f_dim, f_value, tag_of)
+                and try_take(index, candidate)
+            ):
+                have += 1
     if tier_limit is not None:
         for index, (candidate, _) in enumerate(ordered):
             if tier_count >= min(tier_limit[2], tier_limit[1]) or len(accepted) >= RESULT_COUNT:
@@ -575,6 +681,19 @@ def build_results(
             value = tag_of(candidate).get(dim)
             if value in remaining and remaining[value] > 0 and try_take(index, candidate):
                 remaining[value] -= 1
+    if suggested_colors:  # the suggested colours first, where the pool has them
+        have_colors = sum(
+            1 for i in accepted if tag_of(ordered[i][0]).get("color") in suggested_colors
+        )
+        for index, (candidate, _) in enumerate(ordered):
+            if have_colors >= suggested_min or len(accepted) >= RESULT_COUNT:
+                break
+            if (
+                index not in taken
+                and tag_of(candidate).get("color") in suggested_colors
+                and try_take(index, candidate)
+            ):
+                have_colors += 1
     strata_dim = strata[0] if strata is not None else None
     for dim, value in toward:  # leanings toward: their soft share, where the pool has them
         if dim == strata_dim:
@@ -613,6 +732,8 @@ def build_results(
                 rank=len(results) + 1,
                 pool_position=pool_index[candidate.product_id],
                 rank_reason=reason,
+                rating=_valid_rating(candidate.rating),
+                rating_count=_valid_count(candidate.rating_count),
             )
         )
     return results, len(seller_skipped - taken), len(diversity_skipped - taken)
@@ -653,6 +774,45 @@ def _exclusions(
         and normalized_title_key(c.title, c.seller) not in again.exclude_title_keys
     ]
     return kept, len(pool) - len(kept)
+
+
+def drop_refined(pool: list[SearchCandidate], again: AgainContext | None) -> list[SearchCandidate]:
+    """The shopper's exclusions as hard filters on the candidate pool: a seller, a kind of retailer,
+    or a value of a dimension (read from the model's tags where the candidate has them, else from
+    its title). What each chip removes is counted by chip; nothing is ever re-added."""
+    rs = again.refine if again is not None else None
+    if (
+        again is None
+        or rs is None
+        or not (rs.exclude_sellers or rs.exclude_tiers or rs.exclude_values)
+    ):
+        return pool
+    kept = []
+    for c in pool:
+        chip = _excluded_by(c, again, rs)
+        if chip:
+            again.refine_dropped.setdefault(chip, set()).add(c.product_id)
+        else:
+            kept.append(c)
+    return kept
+
+
+def _excluded_by(c: SearchCandidate, again: AgainContext, rs: RefineSet) -> str:
+    """The id of the refine chip that excludes `c`, or ''."""
+    if c.seller:
+        if seller_key(c.seller) in rs.exclude_sellers:
+            return rs.exclude_sellers[seller_key(c.seller)]
+        tier = tier_of(c.seller)
+        if tier and tier in rs.exclude_tiers:
+            return rs.exclude_tiers[tier]
+    if rs.exclude_values:
+        book = again.tag_book
+        cached = (book.get(result_id(c.product_id)) if book else None) or {}
+        tags = {**title_tags(c.title), **{k: v for k, v in cached.items() if v}}
+        for (dim, value), chip in rs.exclude_values.items():
+            if _holds(tags, dim, value):
+                return chip
+    return ""
 
 
 def drop_marketplace(
@@ -831,13 +991,24 @@ def run_query(
     def filtered(raw: list[SearchCandidate]) -> tuple[list[SearchCandidate], FilterCounts]:
         pool, counts = apply_filters(raw, query, seen)
         pool, extra = _exclusions(pool, again)
-        pool = drop_marketplace(pool, again)
+        pool = drop_refined(drop_marketplace(pool, again), again)
         counts.seen_excluded += extra
         counts.kept = len(pool)
         return pool, counts
 
     texts = [query.search_text, *(again.extra_queries if again is not None else [])]
     max_calls = again.max_calls if again is not None else 2
+    color_query = ""
+    if again is None and query.suggested_colors and search.name == "serper":
+        # stage 2k: page 1 of the plain query and page 1 of one that adds the top two suggested
+        # colours, at the same time, instead of page 2 of the plain query (which stays the fallback)
+        words = " ".join(color_word(c) for c in query.suggested_colors[:2])
+        color_query = f"{query.search_text} {words}"[:MAX_SEARCH_TEXT_CHARS]
+        if query_key(color_query) != query_key(query.search_text):
+            texts.append(color_query)
+            max_calls = 3
+        else:
+            color_query = ""
     if search.name != "serper":  # only Serper pages; other providers get one call
         texts, max_calls = texts[:1], 1
     cap = (
@@ -853,6 +1024,8 @@ def run_query(
     plan += [(i, first[i] + k) for k in range(1, max_calls) for i in range(len(texts))]
     if again is not None:  # page 4 is never fetched; page 3 only as a last resort (below)
         plan = [(i, pg) for i, pg in plan if pg <= LAST_RESORT_PAGE]
+    if color_query:  # both first pages, then page 2 of the plain query only if the pool is thin
+        plan = [(0, first[0]), (1, first[1]), (0, first[0] + 1)]
     parallel = getattr(search, "thread_safe", False) and config.shop_search_workers > 1
 
     def enough(pool: list[SearchCandidate]) -> bool:
@@ -903,7 +1076,7 @@ def run_query(
             return
         own, _ = apply_filters(found, query, seen)
         own, _extra = _exclusions(own, again)
-        pipeline.submit(drop_marketplace(own, again))
+        pipeline.submit(drop_refined(drop_marketplace(own, again), again))
 
     def absorb(text: str, page: int, more: list[SearchCandidate]) -> list[SearchCandidate]:
         """Merge a page into the pool; returns the candidates it newly added."""
@@ -1283,8 +1456,23 @@ def run_query(
             strata,
             tier_limit,
             (again.lean_toward, again.lean_away) if again is not None else None,
+            (query.suggested_colors, query.avoid_colors),
+            again.refine.focus_pairs() if again is not None and again.refine else None,
         )
 
+    if again is not None and again.refine is not None and again.refine.exclude_values:
+        kept_pairs = []
+        for pair in ordered:  # the model's tags (better than the title) decide the exclusions
+            chip = ""
+            tags_now = tag_of(pair[0]) if tag_of is not None else title_tags(pair[0].title)
+            for (dim, value), cid in again.refine.exclude_values.items():
+                if _holds(tags_now, dim, value):
+                    chip = cid
+            if chip:
+                again.refine_dropped.setdefault(chip, set()).add(pair[0].product_id)
+            else:
+                kept_pairs.append(pair)
+        ordered = kept_pairs
     results, capped, diversity_skipped = select()
     if (
         again is not None
@@ -1396,6 +1584,15 @@ def run_query(
         )
     elif not results:
         warnings.append("No results matched the filters. Try loosening the price or the wording.")
+    if again is not None and again.refine is not None and len(results) < MARKET_MIN_RESULTS:
+        responsible = [
+            c.label for c in again.refine.chips if again.refine_dropped.get(c.id)
+        ]  # a banner only when a refine chip removed something
+        if responsible:
+            warnings.append(
+                f"Only {len(results)} results after your refinements ({'; '.join(responsible)}). "
+                "Remove those chips to see more."
+            )
     if again is not None and again.exclude_marketplace and len(results) < MARKET_MIN_RESULTS:
         warnings.append(
             f"Only {len(results)} results without marketplace retailers. "
@@ -1411,6 +1608,7 @@ def run_query(
         composition_info["refill"] = refill_log
         composition_info["dedupe"] = dd
         composition_info["marketplace_excluded"] = len(again.marketplace_dropped)
+        composition_info["refine_removed"] = {k: len(v) for k, v in again.refine_dropped.items()}
         composition_info["model_queries"] = {
             "asked": bool(query_result and query_result.asked),
             "accepted": list(query_result.accepted) if query_result else [],
@@ -1456,6 +1654,29 @@ def run_query(
         }
     if pipeline is not None:
         pipeline.close()
+    request_trace: dict[str, Any] = {}
+    if has_setting(query):
+        by_cand = {result_id(c.product_id): c for c, _ in ordered}
+        colors_of = [
+            (
+                tag_of(by_cand[r.id])
+                if tag_of is not None and r.id in by_cand
+                else title_tags(r.title)
+            ).get("color")
+            for r in results
+        ]
+        request_trace = {
+            "search_text": query.search_text,
+            "product_colors": [color_word(c) for c in query.color_terms],
+            "context": [i.model_dump() for i in query.context],
+            "suggested": [color_word(c) for c in query.suggested_colors],
+            "avoid": [color_word(c) for c in query.avoid_colors],
+            "reason": query.color_reason,
+            "second_query": color_query,
+            "from_suggested": sum(1 for c in colors_of if c in query.suggested_colors),
+            "from_avoid": sum(1 for c in colors_of if c in query.avoid_colors),
+            "results": len(results),
+        }
     return SearchOutcome(
         query=query,
         results=results,
@@ -1482,12 +1703,26 @@ def run_query(
         composition=composition_info,
         new_tags=dict(book.new) if book is not None else {},
         peer_log=list(peer_log),
+        request_trace=request_trace,
         pool_snapshot=snapshot_of(
             ordered,
             (lambda c: tag_of(c)) if tag_of is not None else (lambda c: title_tags(c.title)),
             again.tag_source if again is not None else {},
         ),
     )
+
+
+def _focus_holds(
+    c: SearchCandidate,
+    dim: str,
+    value: str,
+    tag_of: Callable[[SearchCandidate], Mapping[str, str | None]],
+) -> bool:
+    if dim == "seller":
+        return seller_key(c.seller) == value
+    if dim == "tier":
+        return tier_of(c.seller) == value
+    return _holds(tag_of(c), dim, value)
 
 
 def _holds(tags: Mapping[str, str | None] | None, dim: str, value: str) -> bool:

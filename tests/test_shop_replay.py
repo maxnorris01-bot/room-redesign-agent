@@ -584,6 +584,7 @@ def test_the_trace_has_the_numbers_for_every_dimension_seller_and_price(tmp_path
         "color_finish",
         "frame_color",
         "style",
+        "color",
     }  # size class and legs no longer decide anything
     shape = trace["dimensions"]["shape"]
     for key in (
@@ -630,14 +631,14 @@ def test_the_trace_has_the_numbers_for_every_dimension_seller_and_price(tmp_path
     sent = {
         k: v
         for k, v in view["search"]["trace"].items()
-        if k not in ("batch", "tag_calls", "alignment_counted", "model_queries")
+        if k not in ("batch", "tag_calls", "alignment_counted", "model_queries", "reviews")
     }
     assert sent == trace and "batch" in view["search"]["trace"]  # the response carries both
     session_file = json.loads((tmp_path / "shop-data" / f"{sid}.json").read_text())
     saved = {
         k: v
         for k, v in session_file["searches"][-1]["trace"].items()
-        if k not in ("batch", "tag_calls", "alignment_counted", "model_queries")
+        if k not in ("batch", "tag_calls", "alignment_counted", "model_queries", "reviews")
     }
     assert session_file["profile"]["trace"] == trace and saved == trace
     assert session_file["profile"]["tagging"]["items_tagged"] == 10

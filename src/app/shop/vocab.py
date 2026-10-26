@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import re
 
-DIMENSIONS = ("shape", "material", "color_finish", "frame_color", "style")
+DIMENSIONS = ("shape", "material", "color_finish", "frame_color", "style", "color")
 LABELS = {
     "shape": "Shape",
     "material": "Material",
     "color_finish": "Finish",
     "frame_color": "Frame color",
     "style": "Style",
+    "color": "Color",
 }
 OTHER = "other"
 STRUCTURAL = ("shape",)  # converges at the structural share; the rest at the soft share
@@ -41,6 +42,30 @@ VOCAB: dict[str, tuple[str, ...]] = {
         OTHER,
     ),  # fmt: skip
     "frame_color": ("black", "brass or gold", "silver or chrome", "natural wood", "white", OTHER),
+    # stage 2k: the dominant colour of the whole product (the colour you would name first). A fixed,
+    # small, unambiguous list: neutrals first, then hues. "navy_dark_blue" is separate from "blue"
+    # because a navy room and a light blue product are different matches.
+    "color": (
+        "white",
+        "cream",
+        "beige",
+        "tan",
+        "brown",
+        "black",
+        "gray",
+        "blue",
+        "navy_dark_blue",
+        "green",
+        "red",
+        "rust_terracotta",
+        "yellow_mustard",
+        "pink",
+        "purple",
+        "orange",
+        "metallic",
+        "multicolor_pattern",
+        OTHER,
+    ),  # fmt: skip
     "style": (
         "modern",
         "mid-century",
@@ -52,6 +77,36 @@ VOCAB: dict[str, tuple[str, ...]] = {
         OTHER,
     ),  # fmt: skip
 }
+
+COLOR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("white", ("white", "snow")),
+    ("cream", ("cream", "ivory", "off white", "ecru", "oatmeal", "natural linen")),
+    ("beige", ("beige", "sand", "taupe", "khaki", "stone color")),
+    ("tan", ("tan", "camel", "caramel")),
+    ("brown", ("brown", "walnut", "chocolate", "espresso", "mocha", "chestnut", "cognac")),
+    ("black", ("black", "onyx", "ebony", "jet")),
+    ("gray", ("gray", "grey", "charcoal", "slate", "graphite")),
+    ("blue", ("blue", "sky", "denim", "cobalt", "teal")),
+    ("navy_dark_blue", ("navy", "dark blue", "midnight blue", "midnight", "indigo")),
+    ("green", ("green", "sage", "olive", "emerald", "forest")),
+    ("red", ("red", "burgundy", "crimson", "maroon", "wine")),
+    ("rust_terracotta", ("rust", "terracotta", "terra cotta", "burnt orange", "brick")),
+    ("yellow_mustard", ("mustard", "yellow", "ochre", "saffron")),
+    ("pink", ("pink", "blush", "rose", "mauve")),
+    ("purple", ("purple", "plum", "lavender", "violet", "lilac")),
+    ("orange", ("orange", "tangerine", "peach")),
+    ("metallic", ("metallic", "gold", "silver", "brass", "chrome", "bronze", "copper", "nickel")),
+    (
+        "multicolor_pattern",
+        ("multicolor", "multi color", "multicolored", "striped", "stripe", "floral", "plaid",
+         "patterned", "geometric", "tie dye"),
+    ),
+]  # fmt: skip
+# short names for chips and the page ("navy", "rust"); the stored value is the id above
+COLOR_LABELS = {
+    "navy_dark_blue": "navy", "rust_terracotta": "rust", "yellow_mustard": "mustard",
+    "multicolor_pattern": "multicolor",
+}  # fmt: skip
 
 # value -> keywords (a whole word or phrase; "-" and " " are interchangeable). Lists are in the order
 # of precedence for `PRIORITY` dimensions, and the earliest match in the text wins for the rest.
@@ -108,6 +163,7 @@ SYNONYMS: dict[str, list[tuple[str, tuple[str, ...]]]] = {
         ("boho", ("boho", "bohemian")),
         ("glam", ("glam", "glamorous")),
     ],
+    "color": COLOR_KEYWORDS,
 }  # fmt: skip
 PRIORITY = (
     "color_finish",
@@ -135,6 +191,7 @@ TITLE_SYNONYMS: dict[str, list[tuple[str, tuple[str, ...]]]] = {
         ("natural wood", ("natural wood", "wood legs", "wooden legs", "wood frame", "wood base")),
         ("white", ("white frame", "white legs", "white metal", "white base")),
     ],
+    "color": COLOR_KEYWORDS,
 }  # fmt: skip
 
 # the words a search carries for a value (search text for "warm wood" finish is "walnut")
@@ -221,7 +278,9 @@ STYLE_FAMILY = {
     "traditional": TRADITIONAL_LEANING, "farmhouse": TRADITIONAL_LEANING,
     "boho": TRADITIONAL_LEANING, "rustic": TRADITIONAL_LEANING,
 }  # fmt: skip
-FAMILY_LABELS = {MODERN_LEANING: "modern-leaning", TRADITIONAL_LEANING: "traditional-leaning"}
+FAMILY_LABELS = {
+    MODERN_LEANING: "modern-leaning", TRADITIONAL_LEANING: "traditional-leaning", **COLOR_LABELS,
+}  # fmt: skip
 MAX_STYLE_LABELS = 2
 
 

@@ -132,7 +132,15 @@ def test_the_tagging_call_is_a_forced_tool_call_with_a_strict_schema_and_no_samp
     schema = TAG_TOOL_DEF["input_schema"]
     item = schema["properties"]["items"]["items"]
     assert TAG_TOOL_DEF["strict"] is True and schema["additionalProperties"] is False
-    assert item["required"] == ["index", "shape", "material", "finish", "frame_color", "style"]
+    assert item["required"] == [
+        "index",
+        "shape",
+        "material",
+        "finish",
+        "frame_color",
+        "style",
+        "color",
+    ]
     assert item["properties"]["style"] == {"type": "array", "items": {"type": "string"}}
     assert item["additionalProperties"] is False
     assert book.tagged == 5 and book.log[0]["mode"] == MODE_TOOL
@@ -156,7 +164,7 @@ def test_tool_input_is_parsed_and_folded_into_the_vocabularies() -> None:
     assert sorted(got) == [1, 2, 3]
     assert got[1] == {
         "shape": "round", "material": "wood", "color_finish": "warm wood",
-        "frame_color": "other", "style": "industrial,glam",
+        "frame_color": "other", "style": "industrial,glam", "color": None,
     }  # fmt: skip
     assert (
         got[2] == dict.fromkeys(got[2]) and got[3]["shape"] == "other" and got[3]["style"] is None

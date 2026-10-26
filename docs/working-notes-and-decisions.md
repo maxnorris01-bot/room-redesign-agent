@@ -161,6 +161,16 @@ this choice over the alternatives. Note what's still open or deferred within it,
   keywords for a dimension the tags left empty; query writing is off in a bare `Config` and on from the
   environment; the fifth replay fixture was not built (the newest session predates pool snapshots), a
   synthetic evidence fixture stands in. See `docs/sessions/2026-10-25-shop-tailoring.md`.
+- **2026-10-25, stages 2j to 2m (ADR 0012 amended): topics, request understanding, refine, reviews and photos.**
+  Decisions: a topic is the canonical category (owner's rule: reset on a different product, keep on a refinement,
+  Saved always stays); the parse separates product words from setting words and suggests colours as soft guidance
+  (never filters, 40% and 15% shares); refine chips outrank inferred chips and live in the topic; reviews are
+  display only; More photos shares one cached lookup and the cap with Open. My choices where the brief was
+  silent: a missing category resets with its own notice; deleting the setting chip also removes its colour
+  suggestions; colour of rated items comes from cached photo or title tags (the preference prompt is
+  unchanged); a refinement that cannot be read does not stop a Shop Again; a mock-only deterministic reader
+  stands in for the three new model calls; the ranker's candidate line still shows ratings (as since stage 1).
+  See `docs/sessions/2026-10-25-shop-batch.md`.
 
 ## See also
 

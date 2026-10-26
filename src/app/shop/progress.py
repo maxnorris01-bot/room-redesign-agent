@@ -29,6 +29,7 @@ SHOP_AGAIN_STEPS = (
     ("tagging", "Tagging"),
     ("ranking", "Ranking"),
 )
+SHOP_AGAIN_REFINE_STEPS = (("refine", "Reading your refinement"), *SHOP_AGAIN_STEPS)
 SEARCH_STEPS = (("searching", "Searching"), ("tagging", "Tagging"), ("ranking", "Ranking"))
 
 

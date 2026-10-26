@@ -283,6 +283,12 @@ eval to tune):
 | QUERY_LIKED_TITLES | 6 | liked titles shown to the query writer (stage 2i) |
 | QUERY_DISLIKED_TITLES | 4 | disliked titles shown to the query writer (stage 2i) |
 | BASE_PAGE_MAX | 2 | the base query is paged no deeper than this; page 3 only as a last resort, page 4 never (stage 2i) |
+| COLOR_SUGGESTED_MIN_SHARE | 0.40 | a batch takes at least this share from the suggested colours (a colour that complements the room the request names), where the pool has them (stage 2k; judgment, not measured) |
+| COLOR_AVOID_MAX_SHARE | 0.15 | and at most this share from the colours to avoid because the product would blend in or clash (stage 2k) |
+| REFINE_FOCUS_MIN_SHARE | 0.50 | a "focus on" refine chip takes at least this share of a batch where the pool has it (stage 2l; judgment) |
+| REFINE_MAX_PER_SUBMIT | 5 | interpretations kept from one refine instruction (stage 2l) |
+| REFINE_MAX_CHIPS | 12 | active refine chips in a topic (stage 2l) |
+| REFINE_MAX_CHARS | 200 | characters in one refine instruction (stage 2l) |
 | TIER_BATCH_SHARE | 0.50 | most of a batch the affinity tier may take, 0.80 when pinned (stage 2f) |
 | MAX_PEER_SEARCHES | 3 | peer retailer searches per Shop Again (stage 2f) |
 | QUALITY_CUE_MIN_SHARE | 0.50 | share of loved and liked items showing a quality cue |
@@ -821,3 +827,93 @@ is a synthetic fixture with the numbers above.
 **Open.** Unmeasured live: how the batches feel, the cost of the query writer (a fraction of a cent), and
 whether 1.5 times, 35% and 30% are right. A like-rate baseline over the session treats an unrated result as
 unseen, not as disliked.
+
+## Amendment, stage 2j (2026-10-25): topics
+
+In one session a new search for a different product (couches after coffee tables) kept everything learned
+from the earlier ratings. A session now has topics. A topic is identified by the canonical category of the
+parsed request (`app.categories.canonical_category`: "couch" and "sofa" are one; a category the table does not
+know, such as "curtains", is its own key; a missing category always starts a new topic). Ratings, searches,
+comment readings (by their rating) and pool snapshots are stamped with their topic; session files from
+before topics migrate on load (everything belongs to the topic of the last typed search; nothing is dropped).
+
+A search of the same category is a refinement: the learned state stays ("Kept what I learned in this session
+(same product type)."). Any other search starts a new topic: the profile (chips, leanings, seller and tier
+chips, the marketplace exclusion and its dismissal, comment-derived chips), the peer rotation and the refine
+chips reset, and the baseline like rate and every evidence table are computed from the new topic's ratings
+only. The tag cache and the seen-results memory stay (a result already shown is never shown again). Saved
+items stay in Saved with a small "From an earlier search" label and do not count toward the new topic;
+re-rating one in the new topic counts it there. A Shop Again or a comment reading that finishes after a new
+topic began writes nothing (HTTP 409 for the Shop Again); the page ignores a late answer for an earlier
+topic. The notice under the search box says what happened, including when a missing category caused the
+reset; How I decided shows the topic, the ratings counted and those left out. Start over still clears all.
+
+## Amendment, stage 2k (2026-10-25): request understanding and colour
+
+"boho curtains that pair well with a dark blue room" searched "boho curtains dark blue": the colour belongs
+to the room, not the product. `shop_parse` v2 (v1 kept) separates product fields (search text, category, style,
+materials, must-haves, price, `color_terms` for a colour the product itself should be) from `context` items
+(room_color, wall_color, existing_item, room_type, room_size, mood, other). When the context names a colour
+the parse also gives up to 4 suggested product colours and up to 3 to avoid, from the fixed colour list, with a
+one-line reason. Code validates everything: kinds against the fixed list, colours against the vocabulary (no
+overlap; suggestions only with a colour-bearing setting and no product colour), the room's colour is stripped
+from the search text, and an unknown value becomes an approximate free context item (a soft hint only).
+Suggestions are never hard filters. A typed product colour ("dark blue curtains", "navy sofa under $1500")
+stays a product attribute and triggers no suggestions.
+
+Colour is a new tagging dimension `color` (white, cream, beige, tan, brown, black, gray, blue, navy_dark_blue,
+green, red, rust_terracotta, yellow_mustard, pink, purple, orange, metallic, multicolor_pattern; `other` is a
+read value never learned). It is in the forced strict `record_tags` tool (required, nullable; prompt v5, v4
+kept; photo for shown items, title for candidates; tokens per item 40 to 48, so a batch of 40 gets 4040 as its
+limit) and is a soft dimension in the evidence and decision layers (group like rates, leanings, converged and
+open logic; thresholds unchanged). Rated items take their colour from the cached photo or title tags.
+
+The ranker gets the setting, the suggested colours and the colours to avoid as soft guidance (`shop_rank` v6,
+v5 kept; never something the product must contain). Selection takes at least 40% of a batch from suggested
+colours and at most 15% from colours to avoid where the pool has them (`COLOR_SUGGESTED_MIN_SHARE`,
+`COLOR_AVOID_MAX_SHARE`: judgment, not measured), under every cap and filter. The first search runs page 1 of
+the plain query and page 1 of a second query with the top two suggested colours at the same time instead of
+page 2 (the same two Serper calls; page 2 of the plain query only if the pool is thin: three). Chips for the
+setting, each suggestion and each colour to avoid are deletable (`POST /api/context/remove`; deleting the
+setting removes the whole colour effect); they belong to the topic. The trace shows how the request was
+split, the reasons and how many results came from suggested and avoided colours. The query writer
+(`shop_queries` v2, v1 kept) also receives the setting and the suggestions. Parse tokens 600 to 900.
+
+## Amendment, stage 2l (2026-10-25): refine search
+
+A "Refine the next Shop Again" box (200 characters) turns plain instructions into deletable chips that change
+every later Shop Again in the topic and outrank everything inferred from ratings. One forced tool call
+(`record_refinements`, `shop_refine` v1, strict schema, thinking disabled, 500 tokens, the only tool in that
+call) returns at most 5 items of the fixed kinds (exclude_seller, exclude_tier, exclude_value, focus_value,
+focus_seller, price_max, price_min, must_have, free_note). Code validates each against the retailer table, the
+tiers and the vocabularies; anything else becomes an approximate free note (a soft hint). The instruction is
+untrusted: links and angle brackets are stripped, it sits between delimiters, it cannot select anything
+outside the fixed kinds, and strength follows the kind. At most 12 chips are active; an opposite instruction
+on the same target replaces the old chip and says so.
+
+Effects: exclusions are hard filters on the pool before ranking and the seller caps (seller, tier, and values
+by title keywords and then by the model's tags), and no search is spent on them; focus chips take at least 50%
+of a batch where supplied (`REFINE_FOCUS_MIN_SHARE`, a pass before the tier pass) and go to the ranker as
+must-favor; a seller focus is searched by name; prices replace the typed range (the price chip changes);
+must-haves extend the request's; the query writer receives every chip as a hard constraint. An inferred chip
+that contradicts a refine chip is suppressed and the trace says so. Fewer than 12 results names the
+responsible chips in a banner; nothing excluded is re-added. Chips live in the topic until deleted, a new topic
+(the notice says so) or Start over. Text left in the box when Shop Again is pressed is read first as a step
+("Reading your refinement"); a refinement that cannot be read adds a warning and the Shop Again goes on. The
+call's cost is in the session total and the footer.
+
+## Amendment, stage 2m (2026-10-25): customer reviews and more photos
+
+Ratings: Serper results carry `rating` and `ratingCount` (SerpApi shopping: `rating`, `reviews`); the
+`google_product` lookup may carry `product_results.rating`, `reviews` and `media`. A result stores them only
+as given (rating in (0, 5], count at least 0), the Open lookup fills a missing one and never overwrites, and
+cards and Saved show "stars 4.6 (1,203)" with an accessible label and nothing when absent. Display only: not
+in evidence, decisions or caps (the ranker's candidate line has shown the rating since stage 1; unchanged,
+nothing new uses it). The trace says how many shown results carried a rating.
+
+More photos: each card with a product id has a button that runs the same SerpApi product lookup as Open. One
+lookup per result is cached in the session (`Session.product_cache`, failures too) and counted once against
+the shared cap of 12; a gallery after Open, and Open after a gallery, cost nothing more. Up to 6 https images
+appear inline with previous and next buttons and the arrow keys; past the cap the button is disabled with the
+reason; a failed lookup shows a short message. No CSP change was needed (`img-src https:` already allows the
+images); the trace shows lookups used.
