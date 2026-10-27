@@ -292,6 +292,7 @@ eval to tune):
 | NEAR_TITLE_PRICE | 0.25 | prices within this share of each other, for a title match (stage 2n) |
 | NEAR_FP_TOP | 48 | best ranked candidates whose thumbnails are fingerprinted live (stage 2n) |
 | NEAR_FP_WORKERS | 10 | parallel fingerprint fetches (stage 2n) |
+| OPEN_UI_TIMEOUT_S | 12 | seconds the page waits for a store link before it shows the Google product page instead (stage 2o; judgment) |
 | NEAR_FP_BUDGET_S | 2.0 | seconds allowed for the whole fingerprint step; the rest fall back to titles (stage 2n) |
 | REFINE_MAX_PER_SUBMIT | 5 | interpretations kept from one refine instruction (stage 2l) |
 | REFINE_MAX_CHIPS | 12 | active refine chips in a topic (stage 2l) |
@@ -954,3 +955,38 @@ whether the automatic check would have caught each.
 
 Small: when chips only narrow the search the footer says "matches your preferences: none yet (n chips only narrow
 the search)"; the refine box's placeholder is "e.g. no Walmart" with the full examples in its title and label.
+
+## Amendment, stage 2o (2026-10-26): the gallery goes dormant, Open is fixed, store links are resolved ahead
+
+Gallery dormant. "More photos" needs the SerpApi product lookup, which takes a few seconds, and there is no faster
+source: Serper results link only to google.com, and fetching retailer pages ourselves is blocked by many retailers,
+brittle and a terms risk. So `APP_SHOP_GALLERY` (default 0) hides it: no button, no gallery, no photos state, no
+`/api/photos` (it answers 404), and no image wording in the footer or trace. A lookup still parses the rating, the
+review count and the retailer link; with the flag off its image lists are dropped before they are cached, so they
+are never sent to the page. All gallery code and its tests stay; the tests run with the flag on. What would reopen
+it: a faster provider or a paid plan that makes the lookup fast.
+
+Blank tab, the cause. `openResult` opened `about:blank` inside the click and wrote nothing into it, then waited for
+`/api/resolve`, which runs the lookup (seconds) with no limit on the page's side. The tab sat empty for the whole
+wait; on a failed lookup it was closed without ever showing a page; and a result with an empty or non-https link was
+closed too, with the reason only in the status line. (The check reproduced this before the fix: the tab was empty
+while the lookup was held, and a failed lookup never reached any page.) The lookup also ran under the session's lock.
+
+Open now. The tab is opened synchronously in the click (so a popup blocker allows it), its opener is cut, and it
+shows "Finding the store page..." as text nodes. A store link is accepted only if it is https without credentials;
+the tab then goes to it. On failure, on `OPEN_UI_TIMEOUT_S` (12 s, in `thresholds.py`) or with no usable store link
+it goes to the item's Google link (https, google.com or a subdomain) and the card says "Could not find the store
+page; showing Google's product page." With neither link usable the tab is closed and the card says so. If the
+browser blocks the tab (`window.open` returns null) the card says so and, once the link is known, shows one inline
+"Go to store" link (rel noopener); no repeated popups. The button reads "Finding store..." and is disabled while a
+lookup is in flight (a second click reuses it). A result without a product id, or one whose lookup is cached, opens
+at once with no loading page.
+
+Resolve ahead. Loving or liking an item queues a background lookup (never a dislike) when it has a product id, is
+not cached and the automatic budget is left: `APP_SHOP_AUTO_LOOKUPS_MAX` (8) of the session's 12, so Open keeps at
+least 4; `APP_SHOP_AUTO_LOOKUPS=0` turns it off. At most 2 run at once, at most 16 wait, they never run on the
+request's thread and never hold the session lock while the provider answers. One cache serves Open and the automatic
+lookups (a per-product lock makes the second wait for the first); a failure is cached, counted once and never
+retried. A lookup that finishes after Start over (queued ones are dropped) or a topic change may fill the cache but
+writes nothing learned. The footer reads "link lookups n of 12 (auto m, by you k), median s", and the trace lists each
+lookup as made ahead or by you with its seconds.

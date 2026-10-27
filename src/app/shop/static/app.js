@@ -22,7 +22,8 @@
     profile: null, summary: '', used: 0, cap: 0, againsUsed: 0, againsCap: 0,
     sessionUsd: 0, prepUsd: 0, prep: null, busy: 0, busyMessage: '', savedOpen: false, savedTab: 'love',
     confirming: false, whyOpen: false, topic: null, refine: [], refineUsd: 0, refinePending: false,
-    photosCached: {}, gallery: {}, photosNone: {}, lookupTrace: []
+    photosCached: {}, gallery: {}, photosNone: {}, lookupTrace: [], galleryOn: false,
+    lookupSummary: { auto: 0, you: 0, median_s: null }, openTimeoutS: 12
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -612,15 +613,20 @@
       ]));
     }
     state.lookupTrace.forEach(function (l) {
-      var names = Object.keys(l.fields || {}).map(function (k) { return k + ' ' + l.fields[k]; });
-      panel.appendChild(h('p', { class: 'why-line' }, [
-        'Lookup ' + l.n + ': ' + (l.ok ? 'images found in ' + (names.join(', ') || 'no field') +
-          '; ' + l.usable + ' usable' : 'the request failed') + '.'
-      ]));
+      var text = 'Lookup ' + l.n + ' (' + (l.by === 'auto' ? 'made ahead' : 'by you') + ', ' +
+        (l.seconds === null || l.seconds === undefined ? 'time unknown' : Number(l.seconds).toFixed(1) + ' s') + '): ' +
+        (l.ok ? 'found' : 'the request failed');
+      if (state.galleryOn && l.ok) {  // only with the gallery on: which fields held images, counts only
+        var names = Object.keys(l.fields || {}).map(function (k) { return k + ' ' + l.fields[k]; });
+        text += '; images in ' + (names.join(', ') || 'no field') + ', ' + l.usable + ' usable';
+      }
+      panel.appendChild(h('p', { class: 'why-line' }, [text + '.']));
     });
     panel.appendChild(h('p', { class: 'why-line' }, [
-      'Product lookups used: ' + state.used + ' of ' + state.cap + ' this session (Open and More photos share them; ' +
-      'a product already looked up costs nothing more).'
+      'Product lookups used: ' + state.used + ' of ' + state.cap + ' this session (' + lookupSplit() + '; ' +
+      'Open' + (state.galleryOn ? ' and More photos' : '') + ' share them; a product already looked up costs nothing more).' +
+      (state.lookupSummary.median_s !== null && state.lookupSummary.median_s !== undefined
+        ? ' Median lookup time ' + Number(state.lookupSummary.median_s).toFixed(1) + ' s.' : '')
     ]));
     var dup = state.search && state.search.trace && state.search.trace.duplicates;
     if (dup && dup.before !== undefined) {
@@ -835,15 +841,21 @@
     return bits.join(', ');
   }
 
+  function lookupSplit() {
+    return 'auto ' + (state.lookupSummary.auto || 0) + ', by you ' + (state.lookupSummary.you || 0);
+  }
+
   function renderStats() {
     var s = state.search;
     var el = $('stats');
-    var lookups = state.cap ? 'link lookups ' + state.used + ' of ' + state.cap : '';
-    if (lookups && state.lookupTrace.length) {  // which response fields held images, counts only
-      lookups += ' (' + state.lookupTrace.slice(0, 3).map(function (l) {
+    var lookups = state.cap ? 'link lookups ' + state.used + ' of ' + state.cap + ' (' + lookupSplit() + ')' : '';
+    var med = state.lookupSummary.median_s;
+    if (lookups && med !== null && med !== undefined) lookups += ', median ' + Number(med).toFixed(1) + ' s';
+    if (lookups && state.galleryOn && state.lookupTrace.length) {  // which response fields held images
+      lookups += ' [' + state.lookupTrace.slice(0, 3).map(function (l) {
         var names = Object.keys(l.fields || {}).map(function (k) { return k + ' ' + l.fields[k]; });
         return names.length ? names.join(', ') : 'no images';
-      }).join('; ') + (state.lookupTrace.length > 3 ? '; …' : '') + ')';
+      }).join('; ') + (state.lookupTrace.length > 3 ? '; …' : '') + ']';
     }
     if (!s) { el.textContent = lookups ? lookups + ' this session' : ''; return; }
     var calls = s.serper_calls;
@@ -1108,25 +1120,122 @@
       });
   }
 
-  function openResult(id, button) {
-    // Open the tab now (inside the click) so it is not blocked, then send it to the retailer.
-    var tab = window.open('about:blank', '_blank');
-    button.disabled = true;
-    button.textContent = 'Opening…';
-    resolve(id, false).then(function (r) {
-      var url = safeUrl(r.link);
-      if (tab && url) {
-        tab.opener = null;
-        tab.location.href = url;
-      } else if (tab) {
-        tab.close();
+  /* ---- Open: a new tab that is never left blank ---- */
+
+  var GOOGLE_NOTE = "Could not find the store page; showing Google's product page.";
+  var openFlight = {};  // result id -> true while its store lookup is in flight (a second click reuses it)
+
+  function httpsUrl(value) {  // https only: no other scheme, no embedded credentials
+    try {
+      var u = new URL(value);
+      return (u.protocol === 'https:' && !u.username && !u.password) ? u.href : null;
+    } catch (e) { return null; }
+  }
+
+  function googleUrl(value) {  // an https google.com address (the product page the search gave)
+    var u = httpsUrl(value);
+    if (!u) return null;
+    var host = new URL(u).hostname.toLowerCase();
+    return (host === 'google.com' || host.slice(-11) === '.google.com') ? u : null;
+  }
+
+  function setOpenNote(id, text, linkText, href) {
+    cardsFor(id).forEach(function (card) {
+      var note = card.querySelector('.open-note');
+      if (!note) return;
+      note.textContent = '';
+      note.hidden = !text;
+      if (!text) return;
+      note.appendChild(document.createTextNode(text));
+      if (linkText && href) {
+        note.appendChild(document.createTextNode(' '));
+        note.appendChild(h('a', { href: href, target: '_blank', rel: 'noopener noreferrer' }, [linkText]));
       }
-      if (!url) fail('No link is available for this product.', null);
-    }).catch(function () {
-      if (tab) tab.close();
-    }).then(function () {
+    });
+  }
+
+  function newTab(loadingText) {
+    // Opened synchronously inside the click so popup blockers allow it; the opener is cut and the
+    // tab says what it is doing (DOM text nodes), so it is never an empty page.
+    var tab = null;
+    try { tab = window.open('about:blank', '_blank'); } catch (e) { tab = null; }
+    if (!tab) return null;
+    try { tab.opener = null; } catch (e) { /* the tab still works */ }
+    if (loadingText) {
+      try {
+        tab.document.title = 'Opening…';
+        var p = tab.document.createElement('p');
+        p.appendChild(tab.document.createTextNode(loadingText));
+        tab.document.body.appendChild(p);
+      } catch (e) { /* a tab we cannot write to still gets navigated */ }
+    }
+    return tab;
+  }
+
+  function goTo(tab, url) {
+    try { tab.location.href = url; return true; } catch (e) { return false; }
+  }
+
+  function openResult(id, button) {
+    if (openFlight[id]) return;  // one lookup in flight per product
+    var r = state.known[id];
+    if (!r) return;
+    var cached = state.resolved[id];
+    var store = cached && cached.status === 'resolved' ? httpsUrl(cached.link) : null;
+    var google = googleUrl(r.link);
+    setOpenNote(id, '');
+    // Known without a lookup: a cached store link, a cached "no store page", or no product id.
+    var instant = store || ((cached || !r.product_id) ? google : null);
+    if (instant || cached || !r.product_id) {
+      var direct = newTab('');
+      var fellBack = !store && !!r.product_id;
+      if (!instant) {
+        if (direct) direct.close();
+        setOpenNote(id, 'No link is available for this product.');
+        return;
+      }
+      if (direct && goTo(direct, instant)) {
+        if (fellBack) setOpenNote(id, GOOGLE_NOTE);
+      } else {
+        setOpenNote(id, 'Your browser blocked the new tab.', fellBack ? "Go to Google's page" : 'Go to store', instant);
+      }
+      return;
+    }
+    // A lookup is needed: the tab opens now, then goes to the store (or Google's page).
+    var tab = newTab('Finding the store page…');
+    openFlight[id] = true;
+    button.disabled = true;
+    button.textContent = 'Finding store…';
+    if (!tab) setOpenNote(id, 'Your browser blocked the new tab. Finding the store page…');
+    var done = false;
+    var timer = null;
+
+    function finish(storeUrl, why) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      delete openFlight[id];
       button.disabled = false;
       button.textContent = 'Open';
+      var target = storeUrl || google;
+      var label = storeUrl ? 'Go to store' : "Go to Google's page";
+      if (!target) {
+        if (tab) tab.close();
+        setOpenNote(id, 'No link is available for this product.');
+        return;
+      }
+      if (tab && goTo(tab, target)) {
+        setOpenNote(id, storeUrl ? '' : GOOGLE_NOTE);
+      } else {
+        setOpenNote(id, 'Your browser blocked the new tab.' + (storeUrl ? '' : ' ' + GOOGLE_NOTE), label, target);
+      }
+    }
+
+    timer = setTimeout(function () { finish(null, 'timeout'); }, state.openTimeoutS * 1000);
+    resolve(id, true).then(function (res) {
+      finish(res && res.status === 'resolved' ? httpsUrl(res.link) : null, 'answered');
+    }, function () {
+      finish(null, 'failed');
     });
   }
 
@@ -1158,6 +1267,7 @@
       h('div', { class: 'seller' }, [r.seller || 'Seller not listed'])
     ]);
     body.appendChild(h('div', { class: 'rating-row', hidden: '' }));
+    body.appendChild(h('p', { class: 'open-note', role: 'status', hidden: '' }));
     if (r.also_at && r.also_at.length) {  // the same product from other sellers (text only, no links)
       var shownSellers = r.also_at.slice(0, 3).map(function (a) {
         return a.seller + (a.price === null || a.price === undefined ? '' : ' $' + Number(a.price).toFixed(2));
@@ -1199,7 +1309,7 @@
     open.addEventListener('click', function () { openResult(r.id, open); });
     var openRow = h('div', { class: 'open-row' }, [open]);
     body.appendChild(openRow);
-    if (r.product_id) {  // a card without a product id has no gallery to look up
+    if (r.product_id && state.galleryOn) {  // dormant unless APP_SHOP_GALLERY is on
       var photos = h('button', {
         type: 'button', class: 'open photos', 'aria-expanded': 'false',
         title: 'Look up more photos of this product'
@@ -1307,6 +1417,9 @@
     state.photosNone = {};
     (data.photos_none || []).forEach(function (id) { state.photosNone[id] = true; });
     state.lookupTrace = data.lookup_trace || [];
+    state.lookupSummary = data.lookup_summary || { auto: 0, you: 0, median_s: null };
+    state.galleryOn = !!data.gallery;
+    state.openTimeoutS = data.open_timeout_s || 12;
     state.prep = data.prep || null;
     (data.saved || []).forEach(function (r) { state.known[r.id] = r; });
     if (state.search) state.search.results.forEach(function (r) { state.known[r.id] = r; });

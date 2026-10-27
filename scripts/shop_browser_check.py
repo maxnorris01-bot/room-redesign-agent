@@ -760,6 +760,7 @@ def run_checks(
     id6: str,
     id7: str,
     base7: str,
+    base8: str,
 ) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
@@ -1032,6 +1033,7 @@ def run_checks(
             run_tailoring(browser, base6, shots, id6, console_errors)
             run_batch(browser, base, base6, id7, shots, console_errors)
             run_fixes(browser, base7, shots, console_errors)
+            run_open(browser, base8, shots, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -1198,6 +1200,162 @@ def new_page(browser: Any, base: str, width: int = 1280) -> tuple[Any, Page]:
 
 def rate_nth(page: Page, n: int, rating: str) -> None:
     page.locator("#grid .card").nth(n).locator(f".rate.{rating}").click()
+
+
+def resolved_json(link: str, status: str = "resolved") -> str:
+    body = {
+        "rating": {"rating": None, "rating_count": None},
+        "resolved": {
+            "result_id": "x", "status": status, "link": link, "link_kind": "retailer_product",
+            "seller": "Mock retailer", "price": 10.0, "shipping": None,
+            "shipping_status": "unknown", "total": None, "note": "", "cost_usd": 0.0,
+            "resolved_at": "2026-10-26T00:00:00+00:00",
+        },
+        "lookups_used": 1, "lookups_cap": 12,
+    }  # fmt: skip
+    return json.dumps(body)
+
+
+def open_button(page: Page) -> Any:
+    return page.locator("#grid .card").first.locator(".open:not(.photos)")
+
+
+def popup_text(popup: Page) -> str:
+    try:
+        return str(popup.inner_text("body"))
+    except Exception:  # a page with no body yet
+        return ""
+
+
+def run_open(browser: Any, base: str, shots: Path, console_errors: list[str]) -> None:
+    """Stage 2o: Open never leaves a blank tab. The store lookup is held, failed or answered by
+    this script (the page's /api/resolve), so each case is deterministic."""
+    print("stage 2o: Open success, failure, timeout and a blocked popup")
+    shop = "https://shop.example.test/product/1"
+
+    def fresh() -> tuple[Any, Page]:
+        context, page = new_page(browser, base)
+        page.on("pageerror", lambda e: console_errors.append(str(e)))
+        search(page, COFFEE)
+        return context, page
+
+    # success: a loading message while the lookup is held, then the store page
+    context, page = fresh()
+    check(
+        page.locator("#grid .photos").count() == 0, "no More photos button while the gallery is off"
+    )
+    check(
+        page.locator("#grid .gallery").count() == 0, "no gallery element while the gallery is off"
+    )
+    held: list[Route] = []
+    page.route("**/api/resolve", lambda route: held.append(route))
+    with context.expect_page() as info:
+        open_button(page).click()
+    popup = info.value
+    page.wait_for_function(
+        "el => el.disabled", arg=open_button(page).element_handle(), timeout=5000
+    )
+    check(open_button(page).inner_text() == "Finding store…", "the button reads Finding store...")
+    check("Finding the store page" in popup_text(popup), "the new tab says what it is doing")
+    check(
+        popup.url != "about:blank" or bool(popup_text(popup)), "the tab is not blank while waiting"
+    )
+    open_button(page).click(force=True)  # a second click reuses the one lookup in flight
+    check(len(held) == 1, f"one lookup in flight after a second click ({len(held)})")
+    held[0].fulfill(status=200, content_type="application/json", body=resolved_json(shop))
+    popup.wait_for_url(shop, timeout=10000)
+    check(
+        popup.url == shop and "Mock retailer" in popup_text(popup), "the tab went to the store page"
+    )
+    check(
+        not open_button(page).is_disabled() and open_button(page).inner_text() == "Open",
+        "button back",
+    )
+    context.close()
+
+    # failure: the Google product page and one line on the card
+    context, page = fresh()
+    page.route(
+        "**/api/resolve",
+        lambda route: route.fulfill(
+            status=502, content_type="application/json", body='{"error": "lookup failed"}'
+        ),
+    )
+    with context.expect_page() as info:
+        open_button(page).click()
+    popup = info.value
+    popup.wait_for_url(re.compile(r"https://www\.google\.com/"), timeout=10000)
+    check(popup.url != "about:blank", "a failed lookup does not leave a blank tab")
+    note = page.locator("#grid .card").first.locator(".open-note")
+    note.wait_for(state="visible", timeout=5000)
+    check(
+        note.inner_text() == "Could not find the store page; showing Google's product page.",
+        f"the card says so: {note.inner_text()!r}",
+    )
+    card = page.locator("#grid .card").first
+    card.screenshot(path=str(shots / "70-open-fallback.png"))
+    page.emulate_media(color_scheme="dark")
+    card.screenshot(path=str(shots / "71-open-fallback-dark.png"))
+    page.emulate_media(color_scheme="light")
+    page.set_viewport_size({"width": 390, "height": 844})
+    card.scroll_into_view_if_needed()
+    card.screenshot(path=str(shots / "72-open-fallback-mobile.png"))
+    check(
+        page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+        "no sideways scroll at 390 px (open message)",
+    )
+    context.close()
+
+    # timeout: the lookup never answers; after 12 s the Google page opens
+    context, page = fresh()
+    stuck: list[Route] = []
+    page.route("**/api/resolve", lambda route: stuck.append(route))
+    with context.expect_page() as info:
+        open_button(page).click()
+    popup = info.value
+    popup.wait_for_url(re.compile(r"https://www\.google\.com/"), timeout=20000)
+    check(popup.url != "about:blank", "a lookup that times out does not leave a blank tab")
+    check(
+        "Could not find the store page" in page.locator("#grid .card").first.inner_text(),
+        "the card explains the timeout",
+    )
+    for route in stuck:  # the lookup that never answered is dropped before the page closes
+        route.abort()
+    context.close()
+
+    # a blocked popup: a message, then one inline link when the store is found
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    install_routes(context, 0)
+    context.add_init_script("window.open = function () { return null; };")
+    page = context.new_page()
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    page.goto(base)
+    page.wait_for_selector("#examples button")
+    search(page, COFFEE)
+    page.route(
+        "**/api/resolve",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=resolved_json(shop)
+        ),
+    )
+    open_button(page).click()
+    card = page.locator("#grid .card").first
+    link = card.locator(".open-note a")
+    link.wait_for(state="visible", timeout=5000)
+    check(link.inner_text() == "Go to store", "a blocked tab leaves a Go to store link")
+    check(
+        link.get_attribute("href") == shop and "noopener" in (link.get_attribute("rel") or ""),
+        "the link is the store page with rel noopener",
+    )
+    check(
+        "blocked" in card.locator(".open-note").inner_text().lower(),
+        "the card says the tab was blocked",
+    )
+    card.screenshot(path=str(shots / "73-open-blocked.png"))
+    page.emulate_media(color_scheme="dark")
+    card.screenshot(path=str(shots / "74-open-blocked-dark.png"))
+    page.emulate_media(color_scheme="light")
+    context.close()
 
 
 def run_fixes(browser: Any, base: str, shots: Path, console_errors: list[str]) -> None:
@@ -1566,9 +1724,10 @@ def main() -> int:
         tempfile.TemporaryDirectory() as data_dir5,
         tempfile.TemporaryDirectory() as data_dir6,
         tempfile.TemporaryDirectory() as data_dir7,
+        tempfile.TemporaryDirectory() as data_dir8,
     ):
         try:
-            first, port = start_server(data_dir)
+            first, port = start_server(data_dir, {"APP_SHOP_GALLERY": "1"})
             servers.append(first)
             # the third replay's server serves its authored candidate pool (mock only)
             third, port3 = start_server(data_dir3, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_3})
@@ -1582,9 +1741,16 @@ def main() -> int:
             sixth, port6 = start_server(data_dir6, {"APP_SHOP_MOCK_POOL": REPLAY_FILE_EVIDENCE})
             servers.append(sixth)
             seventh, port7 = start_server(
-                data_dir7, {"APP_SHOP_MOCK_DUPLICATES": "1", "APP_SHOP_MOCK_ONE_PHOTO": "1"}
+                data_dir7,
+                {
+                    "APP_SHOP_MOCK_DUPLICATES": "1",
+                    "APP_SHOP_MOCK_ONE_PHOTO": "1",
+                    "APP_SHOP_GALLERY": "1",
+                },
             )
             servers.append(seventh)
+            eighth, port8 = start_server(data_dir8)
+            servers.append(eighth)
             tailoring = seed_session(
                 SessionStore(Path(data_dir6)), replay=REPLAY_FILE_EVIDENCE
             ).session_id
@@ -1598,6 +1764,7 @@ def main() -> int:
                 f"http://127.0.0.1:{port5}/", seed_replays_4(data_dir5),
                 f"http://127.0.0.1:{port6}/", tailoring, second_evidence,
                 f"http://127.0.0.1:{port7}/",
+                f"http://127.0.0.1:{port8}/",
             )  # fmt: skip
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

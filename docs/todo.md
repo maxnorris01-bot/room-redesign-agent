@@ -10,6 +10,8 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- The most important items, in the order you'd actually tackle them. -->
 
+- [ ] **Max: live check of stage 2o (`make shop-live`)**: Open on a card right after loving it (should be instant) and on one you did not rate (a loading tab, then the store); read the footer's "link lookups n of 12 (auto m, by you k), median s" for the real lookup latency; if the median is under about a second, the gallery can be turned on with `APP_SHOP_GALLERY=1`.
+
 - [ ] **Max: live check of stage 2n (`make shop-live`)**: More photos on a product (does the footer show `thumbnails N`?); a search where one product is sold by several vendors (cards say "Also at"; the panel's "Same product from other vendors" line); rate an item with the comment "duplicate" and Shop Again (no chip, listed under "Comments about the listing"). Tune the `NEAR_*` thresholds from what you see.
 
 - [ ] **Max: live test of stages 2j to 2m (`make shop-live`)**: (1) coffee tables, rate, Shop Again, then a couch search: read the notice and that the chips are gone; (2) "boho curtains that pair well with a dark blue room": the chips (room, suggested, avoid), "How I read your request", whether the batch is cream, rust, mustard and white rather than navy, and whether the model's colour tags look right on the photos; (3) type refinements ("no Walmart", "focus on cream", "under $400") and check the batch and the banner; (4) the star ratings on cards (Serper's own numbers) and "More photos" (SerpApi lookups count toward the 12; check what real `media` returns). Tune `COLOR_SUGGESTED_MIN_SHARE` (40%), `COLOR_AVOID_MAX_SHARE` (15%) and `REFINE_FOCUS_MIN_SHARE` (50%).

@@ -137,6 +137,11 @@ class Config:
     # written) so a Shop Again finds its inputs ready; the limits that keep it cheap and bounded
     shop_prep_enabled: bool = False  # off for a bare Config (tests); `from_env` turns it on
     shop_near_duplicates: bool = False  # stage 2n: collapse the same product from other vendors
+    shop_gallery: bool = False  # stage 2o: "More photos" (dormant: the lookup takes seconds)
+    shop_auto_lookups: bool = (
+        False  # stage 2o: resolve loved and liked items ahead (off bare; env on)
+    )
+    shop_auto_lookups_max: int = 8  # automatic lookups per session; Open keeps the rest of the 12
     shop_model_queries: bool = False  # stage 2i: model-written queries (off bare; `from_env` on)
     shop_prep_wait_s: float = 8.0  # the most a Shop Again waits for preparation still running
     shop_prep_max_concurrent: int = 4  # model calls at once across all background jobs
@@ -191,6 +196,8 @@ class Config:
             raise ValueError("APP_MAX_REVISIONS must be >= 0")
         if self.shop_lookups_per_session < 0:
             raise ValueError("APP_SHOP_LOOKUPS_PER_SESSION must be >= 0")
+        if self.shop_auto_lookups_max < 0:
+            raise ValueError("APP_SHOP_AUTO_LOOKUPS_MAX must be >= 0")
         if self.shop_agains_per_session < 0:
             raise ValueError("APP_SHOP_AGAINS_PER_SESSION must be >= 0")
         if self.shop_again_max_serper_calls < 1:
@@ -300,6 +307,13 @@ class Config:
             ),
             shop_prep_enabled=os.environ.get("APP_SHOP_PREP", "1").strip()
             not in ("0", "false", "no"),
+            shop_gallery=os.environ.get("APP_SHOP_GALLERY", "0").strip().lower()
+            in ("1", "true", "yes"),
+            shop_auto_lookups=os.environ.get("APP_SHOP_AUTO_LOOKUPS", "1").strip()
+            not in ("0", "false", "no"),
+            shop_auto_lookups_max=int(
+                os.environ.get("APP_SHOP_AUTO_LOOKUPS_MAX", cls.shop_auto_lookups_max)
+            ),
             shop_near_duplicates=os.environ.get("APP_SHOP_NEAR_DUPLICATES", "1").strip()
             not in ("0", "false", "no"),
             shop_model_queries=os.environ.get("APP_SHOP_MODEL_QUERIES", "1").strip()
