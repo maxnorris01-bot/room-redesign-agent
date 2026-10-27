@@ -22,6 +22,7 @@ REPLAY_FILE_3 = "owner_session_replay_3.json"  # the third (West Elm, design ret
 REPLAY_FILE_4 = (
     "owner_session_replay_4.json"  # the fourth (46 ratings, duplicates, tagging failures)
 )
+REPLAY_FILE_5 = "owner_session_replay_5.json"  # the fifth (boho curtains, 24 rated, a "duplicate")
 REPLAY_FILE_EVIDENCE = "tailoring_evidence.json"  # synthetic: 48 rated, the 2i evidence numbers
 REPLAY_PATH = REPLAY_DIR / REPLAY_FILE
 

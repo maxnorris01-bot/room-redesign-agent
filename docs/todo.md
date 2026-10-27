@@ -10,6 +10,11 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- The most important items, in the order you'd actually tackle them. -->
 
+- [ ] **Max: commit `evals/shop/thresholds.json` and `THRESHOLDS.md` on their own, then the first live eval** (`make eval-shop-plan`, then `make eval-shop-live EVAL_SHOP_CONFIRM=yes`; the plan prints the estimate and the hard stops first). Render the report with `make eval-shop-report OUT=docs/evals/shop-<run>.md`.
+- [ ] **Judge calibration**: label a sample of items yourself (category, attribute, persona love/like/dislike) and have the harness report judge agreement; until then treat judge scores as a relative signal.
+- [ ] **Repeat runs**: run the live eval two or three times and record the spread in `evals/shop/known_instability.md` before trusting any single threshold failure.
+- [ ] **Bigger case set**: more than 12 requests, more than one persona per request, and requests that categories.py handles badly (the four coverage findings are the first ones to fix or accept).
+
 - [ ] **Max: live check of stage 2o (`make shop-live`)**: Open on a card right after loving it (should be instant) and on one you did not rate (a loading tab, then the store); read the footer's "link lookups n of 12 (auto m, by you k), median s" for the real lookup latency; if the median is under about a second, the gallery can be turned on with `APP_SHOP_GALLERY=1`.
 
 - [ ] **Max: live check of stage 2n (`make shop-live`)**: More photos on a product (does the footer show `thumbnails N`?); a search where one product is sold by several vendors (cards say "Also at"; the panel's "Same product from other vendors" line); rate an item with the comment "duplicate" and Shop Again (no chip, listed under "Comments about the listing"). Tune the `NEAR_*` thresholds from what you see.

@@ -1,0 +1,27 @@
+{
+  "id": "case-04",
+  "version": 1,
+  "request": "mid-century dining chairs under $150 each",
+  "category_noun": "dining chairs",
+  "expected_category": "dining chair",
+  "expected_price": {
+    "min": null,
+    "max": 150.0
+  },
+  "kind": "plain",
+  "context_items": [],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [
+    "mid-century"
+  ],
+  "materials": [],
+  "must_have": [],
+  "refine": null,
+  "fixture": "generic",
+  "persona": {
+    "id": "persona-04",
+    "text": "You like slim tapered wood legs, a curved back, and warm walnut or oak. You dislike upholstered seats in bright colours, metal industrial frames and plastic."
+  }
+}

@@ -74,3 +74,9 @@ Stage 2n: that fixture now has the live shape (`product_results.thumbnails` with
 `media` shape. In mock mode `APP_SHOP_MOCK_DUPLICATES=1` adds same-product listings from eBay, Lowe's and Overstock and
 `APP_SHOP_MOCK_ONE_PHOTO=1` makes every product lookup return one photo.
 
+
+Stage 3: `owner_session_replay_5.json` is the owner's fifth real session, exported with
+`scripts/shop_export_replay.py` from the session of the first live curtains run ("boho curtains that pair well
+with a dark blue room"): 24 rated items, a 75-item candidate pool from its pool snapshots, one comment
+("duplicate"), ids renumbered, thumbnails placeholders, nothing identifying. It has no authored shown extras
+(the session showed only the rated items), so a replay of it starts from the 24 rated results.

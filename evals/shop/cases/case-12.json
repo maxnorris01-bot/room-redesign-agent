@@ -1,0 +1,24 @@
+{
+  "id": "case-12",
+  "version": 1,
+  "request": "navy velvet accent chairs",
+  "category_noun": "accent chairs",
+  "expected_category": "armchair",
+  "expected_price": null,
+  "kind": "contrast",
+  "context_items": [],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": "navy_dark_blue",
+  "styles": [],
+  "materials": [
+    "velvet"
+  ],
+  "must_have": [],
+  "refine": null,
+  "fixture": "generic",
+  "persona": {
+    "id": "persona-12",
+    "text": "You like rounded barrel shapes, deep navy velvet and slim brass legs. You dislike tufting, bright patterns and very low-priced listings."
+  }
+}

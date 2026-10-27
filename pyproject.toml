@@ -43,6 +43,8 @@ select = ["E", "F", "I", "B", "UP"]
 "src/photoreal/*.py" = ["E501"]
 "tests/test_photoreal.py" = ["E501"]
 "tests/test_shop_learn.py" = ["E501"]  # long fixture titles and ids
+"evals/shop/*.py" = ["E501"]  # report tables and mock catalogues read worse wrapped
+"tests/test_eval_shop_scoring.py" = ["E501"]
 "tests/test_shop_decide.py" = ["E501"]
 "tests/test_shop_replay.py" = ["E501"]
 "tests/test_shop_stage2e.py" = ["E501"]
@@ -77,3 +79,4 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # the evals package (stage 3)

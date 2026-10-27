@@ -1,0 +1,24 @@
+{
+  "id": "case-07",
+  "version": 1,
+  "request": "brass floor lamps",
+  "category_noun": "floor lamps",
+  "expected_category": "lamp",
+  "expected_price": null,
+  "kind": "plain",
+  "context_items": [],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [],
+  "materials": [
+    "brass"
+  ],
+  "must_have": [],
+  "refine": null,
+  "fixture": "generic",
+  "persona": {
+    "id": "persona-07",
+    "text": "You like arc and slim tripod shapes in warm brushed brass, with a linen or paper shade. You dislike chunky bases, plastic, and chrome or black finishes."
+  }
+}

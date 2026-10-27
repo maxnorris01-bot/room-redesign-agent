@@ -1,0 +1,29 @@
+{
+  "id": "case-05",
+  "version": 1,
+  "request": "small bookshelves for a studio apartment under $200",
+  "category_noun": "bookshelves",
+  "expected_category": "bookshelf",
+  "expected_price": {
+    "min": null,
+    "max": 200.0
+  },
+  "kind": "context",
+  "context_items": [
+    "studio apartment"
+  ],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [],
+  "materials": [],
+  "must_have": [
+    "small"
+  ],
+  "refine": null,
+  "fixture": "generic",
+  "persona": {
+    "id": "persona-05",
+    "text": "You like open shelving with thin black metal frames and light wood, tidy and compact. You dislike heavy closed cabinets, glossy white laminate and fake wood-grain prints."
+  }
+}

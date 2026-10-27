@@ -1,0 +1,33 @@
+{
+  "id": "case-03",
+  "version": 1,
+  "request": "boho curtains that pair well with a dark blue room",
+  "category_noun": "curtains",
+  "expected_category": "curtains",
+  "expected_price": null,
+  "kind": "context",
+  "context_items": [
+    "dark blue room"
+  ],
+  "context_colors": [
+    "navy",
+    "dark blue",
+    "blue"
+  ],
+  "avoid_colors": [
+    "navy_dark_blue",
+    "blue"
+  ],
+  "product_color": null,
+  "styles": [
+    "boho"
+  ],
+  "materials": [],
+  "must_have": [],
+  "refine": null,
+  "fixture": "curtains",
+  "persona": {
+    "id": "persona-03",
+    "text": "You like natural linen and cotton in warm cream, rust or mustard, with a loose airy drape and some texture. You dislike shiny synthetic fabric, busy patterns and anything dark."
+  }
+}

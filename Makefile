@@ -1,5 +1,6 @@
 .PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-standard-live \
-	eval-nightly eval-nightly-live spike spike-live report reports render render-live shop shop-live shop-check shop-diagnose
+	eval-nightly eval-nightly-live spike spike-live report reports render render-live shop shop-live shop-check shop-diagnose \
+	eval-shop-plan eval-shop-mock eval-shop-live eval-shop-report
  
 install:
 	uv sync
@@ -93,3 +94,25 @@ shop-check:
 # first 300 characters of any text. Never prints keys or the environment.
 shop-diagnose:
 	APP_LLM_MODE=live uv run python scripts/shop_diagnose_tagging.py $(ARGS)
+
+# Shop Mode eval (stage 3, evals/shop/README.md). Not wired into eval-fast: that target runs the
+# template's placeholder pipeline; this one is its own harness with its own cases and thresholds.
+# Lists cases, personas, the thresholds hash and the estimated cost and credits. Spends nothing.
+eval-shop-plan:
+	APP_LLM_MODE=mock uv run python -m evals.shop plan
+
+# The whole harness on fixtures and deterministic judges. Free, no key; safe for CI. Mock numbers
+# show that the harness works, not how good Shop Mode is.
+eval-shop-mock:
+	APP_LLM_MODE=mock uv run python -m evals.shop mock $(ARGS)
+
+# Costs real money (Anthropic and Serper). Refuses to start unless the command line says
+# EVAL_SHOP_CONFIRM=yes, and never runs under CI or tests:
+#   make eval-shop-live EVAL_SHOP_CONFIRM=yes
+# One case again: ARGS='--case case-04'.
+eval-shop-live:
+	EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop live $(ARGS)
+
+# Markdown report from a results file (default: the newest). Pass RESULTS=path and OUT=path.
+eval-shop-report:
+	APP_LLM_MODE=mock uv run python -m evals.shop report $(RESULTS) $(if $(OUT),--out $(OUT),)
