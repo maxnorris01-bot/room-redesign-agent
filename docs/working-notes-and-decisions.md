@@ -177,6 +177,12 @@ this choice over the alternatives. Note what's still open or deferred within it,
   every taste calculation but the item stays in seen memory; an unknown label from the reader is ignored. Mock-only
   switches `APP_SHOP_MOCK_DUPLICATES` and `APP_SHOP_MOCK_ONE_PHOTO` exist for the browser check. Existing tests edited:
   the prompt-version asserts (6 to 7) and the footer wording assert. See `docs/sessions/2026-10-25-shop-fixes.md`.
+- **2026-10-26, stage 2o (ADR 0012 amended): gallery dormant, Open fixed, store links resolved ahead.** Decisions: the
+  gallery stays in the code behind `APP_SHOP_GALLERY` because the lookup takes seconds and no faster source exists;
+  Open opens its tab in the click with a loading message and falls back to Google's page (never a blank tab); loved
+  and liked items are looked up in the background, 8 of the 12 lookups at most, 2 at a time. Existing tests edited:
+  gallery tests now run with the flag on, two page-text asserts changed, and the lookup-trace assert gained the new
+  keys. See `docs/sessions/2026-10-26-shop-open-fix.md`.
 
 ## See also
 

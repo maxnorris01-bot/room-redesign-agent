@@ -10,7 +10,9 @@ from typing import Any
 
 import pytest
 
+from app.shop.providers import build_shop_providers
 from app.shop.service import ShopService
+from app.shop.store import SessionStore
 from app.shopping import ProductDetails, parse_product_details
 from test_shop import (  # noqa: F401  (the autouse guard must be imported to apply here)
     FakeLookup,
@@ -23,7 +25,7 @@ from test_shop import (  # noqa: F401  (the autouse guard must be imported to ap
     query,
     use_client,
 )
-from test_shop_learn import COFFEE, mock_service
+from test_shop_learn import COFFEE
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "src" / "app" / "shop" / "static"
@@ -37,6 +39,13 @@ def load(name: str) -> dict[str, Any]:
 
 
 # ---- part 1: the gallery reads the documented field ------------------------------------------------
+
+
+def gallery_service(tmp_path: Path, **kw: Any) -> ShopService:
+    """The gallery is dormant by default (stage 2o); these tests run with it on."""
+    cfg = config(shop_gallery=True)
+    search, lookup = build_shop_providers(cfg)
+    return ShopService(cfg, SessionStore(tmp_path / "shop-data"), search, lookup, **kw)
 
 
 def test_the_gallery_reads_thumbnails_as_documented_and_keeps_customer_photos_out() -> None:
@@ -88,8 +97,9 @@ class Sparse:
 def sparse_service(tmp_path: Path, images: list[str]) -> tuple[ShopService, Sparse, str, str]:
     use = Sparse(images)
     svc = make_service(
-        tmp_path, FakeSearch([[cand("a1", 40.0, title="Wood Table")]]), use, config()
-    )
+        tmp_path, FakeSearch([[cand("a1", 40.0, title="Wood Table")]]), use,
+        config(shop_gallery=True),
+    )  # fmt: skip
     view = svc.search(None, "tables")
     return svc, use, view["session_id"], view["search"]["results"][0]["id"]
 
@@ -119,17 +129,18 @@ def test_two_images_are_enough_for_a_gallery(tmp_path: Path) -> None:
 
 
 def test_each_lookup_reports_the_field_names_and_counts_never_a_url(tmp_path: Path) -> None:
-    svc = mock_service(tmp_path)
+    svc = gallery_service(tmp_path)
     view = svc.search(None, COFFEE)
     sid, rid = view["session_id"], view["search"]["results"][0]["id"]
     svc.photos(sid, rid)
     trace = svc.session_view(sid)["lookup_trace"]
-    assert trace == [
-        {"n": 1, "ok": True, "fields": {"thumbnails": 6, "reviews_images": 3}, "usable": 6}
-    ]
+    assert len(trace) == 1 and trace[0]["by"] == "you"  # stage 2o added who made it and how long
+    assert {k: trace[0][k] for k in ("n", "ok", "fields", "usable")} == {
+        "n": 1, "ok": True, "fields": {"thumbnails": 6, "reviews_images": 3}, "usable": 6,
+    }  # fmt: skip
     assert "http" not in json.dumps(trace) and "key" not in json.dumps(trace)
     js = (STATIC / "app.js").read_text()
-    assert "images found in" in js and "state.lookupTrace" in js  # the footer and the trace show it
+    assert "; images in " in js and "state.lookupTrace" in js  # the footer and the trace show it
 
 
 # ---- part 2: the same product from different vendors ---------------------------------------------------
@@ -163,7 +174,6 @@ from app.shop.nearby import (  # noqa: E402
 )
 from app.shop.providers import ShopFixtureSearch  # noqa: E402
 from app.shop.search import build_results  # noqa: E402
-from app.shop.store import SessionStore  # noqa: E402
 from app.thumbnails import HttpThumbnailer  # noqa: E402
 
 

@@ -13,7 +13,8 @@ rejected, shipping known / free / unknown kept apart.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import time
+from dataclasses import asdict, replace
 from typing import Any
 
 from app.config import Config
@@ -87,11 +88,39 @@ def details_from_json(raw: dict[str, Any]) -> ProductDetails:
     )
 
 
+def record_lookup(
+    session: Session,
+    result: ShopResult,
+    details: ProductDetails | None,
+    error: ProviderError | None,
+    seconds: float,
+    by: str,
+    config: Config,
+) -> None:
+    """Store one finished lookup (details or failure) in the session's one cache and count it once.
+    `by` is "you" (Open or More photos) or "auto" (resolved ahead). With the gallery off the image
+    lists are dropped here, so they are never cached or sent to the page."""
+    entry: dict[str, Any] = {"seconds": round(seconds, 3), "by": by}
+    if details is None:
+        entry.update(error=True, status=error.status if error is not None else None)
+    else:
+        if not config.shop_gallery:
+            details = replace(details, images=[], image_fields={})
+        entry.update(error=False, details=details_to_json(details))
+    session.product_cache[result.id] = entry
+    session.lookups_used += 1
+
+
+def auto_lookups_used(session: Session) -> int:
+    """Lookups made ahead of time (they share the cap with the ones the shopper made)."""
+    return sum(1 for row in session.product_cache.values() if row.get("by") == "auto")
+
+
 def product_lookup(
     session: Session, result: ShopResult, lookup: ProductLookup, config: Config
 ) -> tuple[ProductDetails | None, ProviderError | None, bool]:
-    """The one SerpApi product lookup of a result, shared by Open and "More photos": (details, the
-    provider error if it failed, whether a lookup was made just now).
+    """The one SerpApi product lookup of a result, shared by Open, "More photos" and the lookups
+    made ahead: (details, the provider error if it failed, whether a lookup was made just now).
 
     The outcome, including a failure, is cached in the session, so a result is looked up once and
     counted once against `shop_lookups_per_session`; a later call is free. A 401 or 403 (a bad key
@@ -105,17 +134,17 @@ def product_lookup(
                 False,
             )
         return details_from_json(cached["details"]), None, False
+    started = time.monotonic()
     try:
         details = lookup.lookup(result.product_id)
     except ProviderError as exc:
         if exc.status in (401, 403):
             raise
-        session.product_cache[result.id] = {"error": True, "status": exc.status}
-        session.lookups_used += 1
+        record_lookup(session, result, None, exc, time.monotonic() - started, "you", config)
         return None, exc, True
-    session.product_cache[result.id] = {"error": False, "details": details_to_json(details)}
-    session.lookups_used += 1
-    return details, None, True
+    record_lookup(session, result, details, None, time.monotonic() - started, "you", config)
+    stored = session.product_cache[result.id]["details"]
+    return details_from_json(stored), None, True
 
 
 def fill_rating(session: Session, result: ShopResult, details: ProductDetails | None) -> None:

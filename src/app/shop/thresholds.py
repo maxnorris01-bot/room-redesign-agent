@@ -71,6 +71,7 @@ NEAR_TITLE_JACCARD = 0.8  # normalized titles sharing at least this share of the
 NEAR_TITLE_PRICE = 0.25  # ... with prices within this share, are the same product
 NEAR_FP_TOP = 48  # candidates (best ranked first) whose thumbnails are fingerprinted live
 NEAR_FP_WORKERS = 10  # parallel fingerprint fetches
+OPEN_UI_TIMEOUT_S = 12  # the page waits this long for a store link before showing the Google page
 NEAR_FP_BUDGET_S = 2.0  # seconds for the whole fingerprint step; the rest fall back to titles
 # stage 2l: refine instructions typed by the shopper
 REFINE_FOCUS_MIN_SHARE = 0.50  # a "focus on" chip takes at least this share of a batch, if supplied
@@ -150,6 +151,7 @@ def all_thresholds() -> dict[str, float | int]:
         "NEAR_FP_TOP": NEAR_FP_TOP,
         "NEAR_FP_WORKERS": NEAR_FP_WORKERS,
         "NEAR_FP_BUDGET_S": NEAR_FP_BUDGET_S,
+        "OPEN_UI_TIMEOUT_S": OPEN_UI_TIMEOUT_S,
         "REFINE_MAX_PER_SUBMIT": REFINE_MAX_PER_SUBMIT,
         "REFINE_MAX_CHIPS": REFINE_MAX_CHIPS,
         "REFINE_MAX_CHARS": REFINE_MAX_CHARS,

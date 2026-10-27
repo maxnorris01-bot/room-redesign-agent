@@ -13,6 +13,7 @@ from app.config import BudgetExceededError, Config
 from app.llm import Budget
 from app.shop import store as store_mod
 from app.shop.again import run_shop_again
+from app.shop.ahead import LookAhead
 from app.shop.clock import Clock
 from app.shop.jobs import JobError, JobManager
 from app.shop.models import (
@@ -37,7 +38,13 @@ from app.shop.prefs import (
 from app.shop.prep import PrepManager
 from app.shop.progress import SHOP_AGAIN_REFINE_STEPS, Progress
 from app.shop.refine import REJECTED, add_chips, clean_instruction, interpret
-from app.shop.resolve import UnknownResult, fill_rating, product_lookup, resolve
+from app.shop.resolve import (
+    UnknownResult,
+    auto_lookups_used,
+    fill_rating,
+    product_lookup,
+    resolve,
+)
 from app.shop.search import SearchOutcome, near_context, run_search
 from app.shop.store import (
     MAX_SEARCHES_PER_SESSION,
@@ -57,6 +64,7 @@ from app.shop.store import (
     saved_ids,
 )
 from app.shop.textutil import normalize_phrase
+from app.shop.thresholds import OPEN_UI_TIMEOUT_S
 from app.shop.vocab import normalize
 from app.shopping import ProductLookup, ProviderError, SearchProvider
 from app.thumbnails import Thumbnailer, build_thumbnailer
@@ -125,6 +133,7 @@ class ShopService:
         self.search_provider = search
         self.lookup_provider = lookup
         self.fingerprinter = build_fingerprinter(config)
+        self.ahead = LookAhead(config, store, lookup)
         self.prep = PrepManager(config, store, self.thumbnailer, self.clock, self.fingerprinter)
 
     # ---- views ----------------------------------------------------------------------------
@@ -133,6 +142,9 @@ class ShopService:
         base: dict[str, Any] = {
             "mode": self.config.llm_mode,
             "lookups_cap": self.config.shop_lookups_per_session,
+            "gallery": self.config.shop_gallery,
+            "open_timeout_s": OPEN_UI_TIMEOUT_S,
+            "lookup_summary": {"auto": 0, "you": 0, "median_s": None},
             "session_id": None,
             "search": None,
             "ratings": {},
@@ -183,13 +195,18 @@ class ShopService:
             prep_usd=round(float(session.prep.get("usd", 0.0)), 6),
             photos_cached=sorted(
                 rid for rid, row in session.product_cache.items() if self._gallery_ok(row)
-            ),
+            )
+            if self.config.shop_gallery
+            else [],
             photos_none=sorted(
                 rid
                 for rid, row in session.product_cache.items()
                 if not row.get("error") and not self._gallery_ok(row)
-            ),
+            )
+            if self.config.shop_gallery
+            else [],
             lookup_trace=self._lookup_trace(session),
+            lookup_summary=self._lookup_summary(session),
             refine=[c.model_dump(mode="json") for c in self._refinements(session)],
             refine_usd=round(session.refine_usd, 6),
             prep={
@@ -267,21 +284,36 @@ class ShopService:
         details = row.get("details") or {}
         return len([u for u in details.get("images", []) if is_https_url(u)]) >= MIN_GALLERY
 
-    @staticmethod
-    def _lookup_trace(session: Session) -> list[dict[str, Any]]:
-        """Per product lookup: which response fields held images and how many (names and counts
-        only, never a URL), and how many images were usable. Makes a field mismatch visible."""
+    def _lookup_trace(self, session: Session) -> list[dict[str, Any]]:
+        """Per product lookup: whether it was made ahead of time or by the shopper, how long it took
+        (seconds), and, only when the gallery is on, which response fields held images and how many
+        (names and counts, never a URL)."""
         out = []
         for n, row in enumerate(session.product_cache.values(), start=1):
-            details = row.get("details") or {}
-            out.append(
-                {
-                    "n": n, "ok": not row.get("error"),
-                    "fields": dict(details.get("image_fields", {})),
-                    "usable": len(details.get("images", [])),
-                }
-            )  # fmt: skip
+            entry: dict[str, Any] = {
+                "n": n,
+                "ok": not row.get("error"),
+                "by": row.get("by", "you"),
+                "seconds": row.get("seconds"),
+            }
+            if self.config.shop_gallery:
+                details = row.get("details") or {}
+                entry["fields"] = dict(details.get("image_fields", {}))
+                entry["usable"] = len(details.get("images", []))
+            out.append(entry)
         return out
+
+    @staticmethod
+    def _lookup_summary(session: Session) -> dict[str, Any]:
+        """Lookups made ahead (auto) and by the shopper (you), and the median duration."""
+        rows = list(session.product_cache.values())
+        times = sorted(float(r["seconds"]) for r in rows if r.get("seconds") is not None)
+        median = None
+        if times:
+            mid = len(times) // 2
+            median = times[mid] if len(times) % 2 else round((times[mid - 1] + times[mid]) / 2, 3)
+        return {"auto": auto_lookups_used(session), "you": len(rows) - auto_lookups_used(session),
+                "median_s": median}  # fmt: skip
 
     @staticmethod
     def _refinements(session: Session) -> list[RefineChip]:
@@ -539,6 +571,8 @@ class ShopService:
             answer = {"result_id": result_id, "rating": record.rating, "comment": record.comment}
         if comment is not UNSET and record.comment.strip():
             self.prep.submit_comment(session_id, result_id, record.comment)
+        if rating in ("love", "like"):  # look its store link up in the background (never a dislike)
+            self.ahead.submit(session_id, result_id)
         return answer
 
     # ---- resolve --------------------------------------------------------------------------
@@ -549,7 +583,10 @@ class ShopService:
         self._load(session_id)
         assert isinstance(session_id, str)
         try:
-            with self.store.transaction(session_id) as session:
+            with (
+                self.ahead.key_lock(session_id, result_id),
+                self.store.transaction(session_id) as session,
+            ):
                 link = resolve(session, result_id, self.lookup_provider, self.config)
                 shown = session.results[result_id]
                 return {
@@ -575,8 +612,13 @@ class ShopService:
             raise ApiError(400, "result_id must be text")
         self._load(session_id)
         assert isinstance(session_id, str)
+        if not self.config.shop_gallery:
+            raise ApiError(404, "not found")  # the gallery is off (APP_SHOP_GALLERY)
         try:
-            with self.store.transaction(session_id) as session:
+            with (
+                self.ahead.key_lock(session_id, result_id),
+                self.store.transaction(session_id) as session,
+            ):
                 result = session.results.get(result_id)
                 if result is None:
                     raise ApiError(404, "unknown result")
@@ -736,6 +778,7 @@ class ShopService:
         if not isinstance(session_id, str) or not self.store.exists(session_id):
             raise ApiError(404, "unknown session")
         self.prep.cancel(session_id)
+        self.ahead.cancel(session_id)
         return {"ok": True}
 
     def shop_again(self, session_id: Any) -> dict[str, Any]:

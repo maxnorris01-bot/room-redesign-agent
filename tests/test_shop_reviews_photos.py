@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from app.config import Config
+from app.shop.providers import build_shop_providers
 from app.shop.search import build_results
 from app.shop.service import ApiError, ShopService
 from app.shop.store import SessionStore
@@ -40,6 +41,13 @@ def shown_ids(view: dict[str, Any]) -> list[str]:
 
 
 # ---- what the providers give for ratings ---------------------------------------------------------
+
+
+def gallery_service(tmp_path: Path, **kw: Any) -> ShopService:
+    """The gallery is dormant by default (stage 2o); these tests run with it on."""
+    cfg = config(shop_gallery=True)
+    search, lookup = build_shop_providers(cfg)
+    return ShopService(cfg, SessionStore(tmp_path / "shop-data"), search, lookup, **kw)
 
 
 def test_the_serper_fixtures_carry_rating_and_review_count_for_most_results() -> None:
@@ -182,7 +190,7 @@ def first_with(view: dict[str, Any], ends_with_nine: bool = False) -> dict[str, 
 
 
 def test_the_gallery_returns_up_to_six_https_photos_from_one_shared_lookup(tmp_path: Path) -> None:
-    svc = mock_service(tmp_path)
+    svc = gallery_service(tmp_path)
     view = svc.search(None, COFFEE)
     sid, card = view["session_id"], first_with(view)
     out = svc.photos(sid, card["id"])
@@ -201,7 +209,7 @@ def test_the_gallery_returns_up_to_six_https_photos_from_one_shared_lookup(tmp_p
 def test_a_gallery_after_open_costs_nothing_and_open_after_a_gallery_does_not_look_up_twice(
     tmp_path: Path,
 ) -> None:
-    svc = mock_service(tmp_path)
+    svc = gallery_service(tmp_path)
     view = svc.search(None, COFFEE)
     sid = view["session_id"]
     a, b = view["search"]["results"][0], view["search"]["results"][1]
@@ -216,7 +224,7 @@ def test_a_gallery_after_open_costs_nothing_and_open_after_a_gallery_does_not_lo
 
 
 def test_the_cap_is_shared_and_the_refusal_says_why(tmp_path: Path) -> None:
-    cfg = Config(tracing_disabled=True, shop_lookups_per_session=1)
+    cfg = Config(tracing_disabled=True, shop_lookups_per_session=1, shop_gallery=True)
     from app.shop.providers import build_shop_providers
 
     search, lookup = build_shop_providers(cfg)
@@ -236,7 +244,7 @@ def test_the_cap_is_shared_and_the_refusal_says_why(tmp_path: Path) -> None:
 
 
 def test_a_product_with_nothing_more_says_so_and_is_counted_once(tmp_path: Path) -> None:
-    svc = mock_service(tmp_path)
+    svc = gallery_service(tmp_path)
     view = svc.search(None, COFFEE)
     sid = view["session_id"]
     odd = None
@@ -270,7 +278,10 @@ class FailingLookup:
 def test_a_failed_lookup_shows_a_short_message_and_does_not_count_twice(tmp_path: Path) -> None:
     use = FailingLookup()
     svc = make_service(
-        tmp_path, FakeSearch([[cand("a1", 40.0, title="Wood Table")]]), use, config()
+        tmp_path,
+        FakeSearch([[cand("a1", 40.0, title="Wood Table")]]),
+        use,
+        config(shop_gallery=True),
     )
     view = svc.search(None, "tables")
     sid, rid = view["session_id"], view["search"]["results"][0]["id"]
@@ -287,7 +298,10 @@ def test_a_failed_lookup_shows_a_short_message_and_does_not_count_twice(tmp_path
 def test_a_bad_key_is_an_error_and_is_not_cached(tmp_path: Path) -> None:
     use = FailingLookup(status=401)
     svc = make_service(
-        tmp_path, FakeSearch([[cand("a1", 40.0, title="Wood Table")]]), use, config()
+        tmp_path,
+        FakeSearch([[cand("a1", 40.0, title="Wood Table")]]),
+        use,
+        config(shop_gallery=True),
     )
     view = svc.search(None, "tables")
     sid, rid = view["session_id"], view["search"]["results"][0]["id"]
@@ -314,7 +328,10 @@ def test_only_https_images_reach_the_page_and_a_card_without_an_id_has_no_galler
             )
 
     svc = make_service(
-        tmp_path, FakeSearch([[cand("a1", 40.0, title="Wood Table")]]), Mixed(), config()
+        tmp_path,
+        FakeSearch([[cand("a1", 40.0, title="Wood Table")]]),
+        Mixed(),
+        config(shop_gallery=True),
     )
     view = svc.search(None, "tables")
     sid, rid = view["session_id"], view["search"]["results"][0]["id"]
@@ -341,7 +358,7 @@ def test_the_page_has_an_accessible_gallery_and_the_csp_needed_no_change() -> No
     assert "ArrowLeft" in js and "ArrowRight" in js and "indexOf('https://') === 0" in js
     assert "referrerPolicy = 'no-referrer'" in js and "aria-live" in js
     assert "no more photos can be loaded" in js and "/api/photos" in js
-    assert "if (r.product_id)" in js  # a card without a product id gets no button
+    assert "if (r.product_id && state.galleryOn)" in js  # no id, or the gallery off: no button
     assert ".gallery" in css and "innerHTML" not in js
     from app.shop.server import API_PATHS, CSP
 

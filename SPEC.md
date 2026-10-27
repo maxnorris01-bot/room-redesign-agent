@@ -145,3 +145,8 @@ Stage 2n: the gallery reads the product lookup's `thumbnails` field first; the s
 is shown once with an "Also at" line (image hash and title similarity); a comment that reports a duplicate, a broken
 image or a wrong item is not taste and teaches nothing. See ADR 0012, stage 2n.
 
+Stage 2o: "More photos" is off unless `APP_SHOP_GALLERY=1` (its lookup takes seconds; no faster source exists). Open opens
+its tab at once with a loading message and always ends on the store page or Google's product page, never a blank
+tab; loved and liked items have their store link looked up in the background (8 of the 12 lookups at most). See
+ADR 0012, stage 2o.
+
