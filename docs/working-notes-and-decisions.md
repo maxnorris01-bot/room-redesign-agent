@@ -183,6 +183,12 @@ this choice over the alternatives. Note what's still open or deferred within it,
   and liked items are looked up in the background, 8 of the 12 lookups at most, 2 at a time. Existing tests edited:
   gallery tests now run with the flag on, two page-text asserts changed, and the lookup-trace assert gained the new
   keys. See `docs/sessions/2026-10-26-shop-open-fix.md`.
+- **2026-10-26, stage 3 (ADR 0012 amended): the Shop Mode eval.** Decisions: 12 cases kept exactly as listed, with the
+  four category gaps reported as findings instead of substitutions; personas are hidden and reach only the persona judge;
+  thresholds are judgment values set before any live run and hashed into every result; the eval has its own Makefile
+  targets rather than riding on `eval-fast` (that runs the template's placeholder pipeline); the live target needs
+  `EVAL_SHOP_CONFIRM=yes` and refuses under CI and pytest; the judges are Haiku (the pipeline's family), uncalibrated.
+  The estimate is close to the hard stops, see the plan output. See `docs/sessions/2026-10-26-shop-eval.md`.
 
 ## See also
 

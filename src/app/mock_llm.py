@@ -962,6 +962,84 @@ def mock_prefs_v3_payload(request_text: str) -> dict[str, Any]:
     }
 
 
+# ---- Shop eval judges (stage 3): deterministic stand-ins, mock mode only ------------------------
+
+_JUDGE_ROW = re.compile(
+    r"^(\d+) \| (.*?) \| (\$[\d,.]+|no price) \| (.*?) \| (image \d+|image none)$"
+)
+_ACCESSORY = ("replacement", "cover", "cushion", "slipcover", "hardware", "spare", "kit", "leg set")
+_JUDGE_STOP = frozenset(
+    "with and for that the this very which from your have into than then them they their who "
+    "what when where are was were has had not but you can all any too its one two".split()
+)
+
+
+def _judge_rows(text: str) -> list[tuple[int, str]]:
+    rows = []
+    for line in text.splitlines():
+        m = _JUDGE_ROW.match(line.strip())
+        if m:
+            rows.append((int(m.group(1)), m.group(2).lower()))
+    return rows
+
+
+def _words(sentence: str) -> set[str]:
+    return {
+        w for w in re.findall(r"[a-z]+", sentence.lower()) if len(w) >= 4 and w not in _JUDGE_STOP
+    }
+
+
+def mock_category_judge_input(text: str) -> dict[str, Any]:
+    """Category: `accessory_or_part` when the title names one, `no` when it carries none of the
+    words that signal the product type, else `yes`; attributes: `yes` when a stated attribute word
+    is in the title (or none is stated), otherwise `cannot_tell`."""
+    from app.categories import category_words
+
+    noun = re.search(r"^Product type: (.*)$", text, flags=re.MULTILINE)
+    attrs = re.search(r"^Stated attributes: (.*)$", text, flags=re.MULTILINE)
+    signals = category_words(noun.group(1).strip()) if noun else set()
+    for word in re.findall(r"[a-z]+", (noun.group(1) if noun else "").lower()):
+        signals |= {word, word.rstrip("s"), word[:-2] if word.endswith("es") else word}
+        if word.endswith("ves"):
+            signals.add(word[:-3] + "f")  # shelves -> shelf
+    wanted = re.findall(r"[a-z0-9]+", (attrs.group(1) if attrs else "").lower())
+    wanted = [w for w in wanted if w not in ("none", "and") and len(w) > 2]
+    items = []
+    for index, title in _judge_rows(text):
+        if any(a in title for a in _ACCESSORY):
+            category = "accessory_or_part"
+        elif signals and not any(w in title for w in signals):
+            category = "no"
+        else:
+            category = "yes"
+        attributes = "yes" if not wanted or any(w in title for w in wanted) else "cannot_tell"
+        items.append({"index": index, "category": category, "attributes": attributes})
+    return {"items": items}
+
+
+def mock_persona_judge_input(text: str) -> dict[str, Any]:
+    """Persona: `love` for two or more words of the "likes" sentences in the title and none of the
+    "dislikes"; `like` for one; `dislike` for any disliked word or no liked one."""
+    found = re.search(r"<persona>(.*?)</persona>", text, flags=re.DOTALL)
+    persona = found.group(1) if found else ""
+    liked: set[str] = set()
+    disliked: set[str] = set()
+    for sentence in re.split(r"(?<=[.!?])\s+", persona):
+        low = sentence.lower()
+        if re.match(r"\s*you dislike", low):
+            disliked |= _words(low.replace("you dislike", ""))
+        elif re.match(r"\s*you like", low):
+            liked |= _words(low.replace("you like", ""))
+    items = []
+    for index, title in _judge_rows(text):
+        have = {w for w in re.findall(r"[a-z]+", title)}
+        bad = sum(1 for w in disliked if w in have)
+        good = sum(1 for w in liked if w in have)
+        answer = "dislike" if bad or not good else ("love" if good >= 2 else "like")
+        items.append({"index": index, "answer": answer})
+    return {"items": items}
+
+
 def _request_text(kwargs: dict[str, Any]) -> str:
     content = kwargs["messages"][0]["content"]
     if isinstance(content, str):
@@ -1009,6 +1087,23 @@ class MockAnthropicClient:
                 input={"items": mock_refinements(_request_text(kwargs))},
             )  # fmt: skip
             return response([block], stop_reason="tool_use", input_tokens=350, output_tokens=60)
+        if choice.get("name") in ("record_category_judgements", "record_persona_judgements"):
+            ask = _request_text(kwargs)  # the stage 3 eval judges (mock: deterministic rules)
+            made = (
+                mock_category_judge_input(ask)
+                if choice["name"] == "record_category_judgements"
+                else mock_persona_judge_input(ask)
+            )
+            block = SimpleNamespace(
+                type="tool_use", id="toolu_mock", name=choice["name"], input=made
+            )
+            n = len(made["items"])
+            return response(
+                [block],
+                stop_reason="tool_use",
+                input_tokens=500 + 60 * n,
+                output_tokens=20 + 12 * n,
+            )
         if choice.get("name") == "record_queries":  # the forced query writer tool call
             block = SimpleNamespace(
                 type="tool_use", id="toolu_mock", name="record_queries",

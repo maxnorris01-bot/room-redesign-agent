@@ -1,0 +1,29 @@
+{
+  "id": "case-06",
+  "version": 1,
+  "request": "8x10 neutral area rugs under $400",
+  "category_noun": "area rugs",
+  "expected_category": "rug",
+  "expected_price": {
+    "min": null,
+    "max": 400.0
+  },
+  "kind": "plain",
+  "context_items": [],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [
+    "neutral"
+  ],
+  "materials": [],
+  "must_have": [
+    "8x10"
+  ],
+  "refine": null,
+  "fixture": "generic",
+  "persona": {
+    "id": "persona-06",
+    "text": "You like soft low-pile wool-look rugs in cream, oat and beige with subtle texture. You dislike bold patterns, shaggy high pile and plastic-looking synthetic sheen."
+  }
+}

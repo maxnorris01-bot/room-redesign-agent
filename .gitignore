@@ -19,3 +19,4 @@ render-inputs/
 render-output/
 # Shop Mode sessions (ratings, comments, searches)
 shop-data/
+evals/shop/results/

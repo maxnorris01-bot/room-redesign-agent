@@ -150,3 +150,6 @@ its tab at once with a loading message and always ends on the store page or Goog
 tab; loved and liked items have their store link looked up in the background (8 of the 12 lookups at most). See
 ADR 0012, stage 2o.
 
+Stage 3: a Shop Mode eval under `evals/shop/` (12 requests, hidden personas, code scorers, two Haiku judges,
+thresholds in `thresholds.json` with their hash recorded in every result). `make eval-shop-plan` and
+`make eval-shop-mock` are free; `make eval-shop-live` needs `EVAL_SHOP_CONFIRM=yes`. See ADR 0012, stage 3.

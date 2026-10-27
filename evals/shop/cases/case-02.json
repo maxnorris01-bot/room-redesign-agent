@@ -1,0 +1,33 @@
+{
+  "id": "case-02",
+  "version": 1,
+  "request": "coffee tables with a mix of wood and metal with storage",
+  "category_noun": "coffee tables",
+  "expected_category": "coffee table",
+  "expected_price": null,
+  "kind": "plain",
+  "context_items": [],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [],
+  "materials": [
+    "wood",
+    "metal"
+  ],
+  "must_have": [
+    "storage"
+  ],
+  "refine": {
+    "text": "no Walmart",
+    "effect": "exclude_seller",
+    "sellers": [
+      "Walmart"
+    ]
+  },
+  "fixture": "coffee_tables",
+  "persona": {
+    "id": "persona-02",
+    "text": "You like round tables with a warm walnut top and thin brass legs, a low profile, and an open shelf rather than drawers. You dislike glass tops, chunky black frames and anything that looks flimsy."
+  }
+}

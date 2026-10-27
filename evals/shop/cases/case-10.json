@@ -1,0 +1,31 @@
+{
+  "id": "case-10",
+  "version": 1,
+  "request": "ergonomic desk chairs under $300",
+  "category_noun": "desk chairs",
+  "expected_category": "desk chair",
+  "expected_price": {
+    "min": null,
+    "max": 300.0
+  },
+  "kind": "plain",
+  "context_items": [],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [],
+  "materials": [],
+  "must_have": [
+    "ergonomic"
+  ],
+  "refine": {
+    "text": "focus on mesh backs",
+    "effect": "focus_term",
+    "title_term": "mesh"
+  },
+  "fixture": "generic",
+  "persona": {
+    "id": "persona-10",
+    "text": "You like breathable mesh backs, adjustable lumbar support, black or grey finishes and a plain office look. You dislike leather-look gaming chairs with racing stripes and bulky padded headrests."
+  }
+}

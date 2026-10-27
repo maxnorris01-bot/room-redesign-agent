@@ -1,0 +1,27 @@
+{
+  "id": "case-08",
+  "version": 1,
+  "request": "queen bed frames with storage in wood",
+  "category_noun": "bed frames",
+  "expected_category": "bed frame",
+  "expected_price": null,
+  "kind": "plain",
+  "context_items": [],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [],
+  "materials": [
+    "wood"
+  ],
+  "must_have": [
+    "storage",
+    "queen"
+  ],
+  "refine": null,
+  "fixture": "generic",
+  "persona": {
+    "id": "persona-08",
+    "text": "You like low platform frames in solid oak or walnut with drawers and clean lines. You dislike tufted headboards, metal frames and anything glam."
+  }
+}

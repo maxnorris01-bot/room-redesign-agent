@@ -1,0 +1,26 @@
+{
+  "id": "case-11",
+  "version": 1,
+  "request": "sectional sofas for a small living room",
+  "category_noun": "sectional sofas",
+  "expected_category": "sofa",
+  "expected_price": null,
+  "kind": "context",
+  "context_items": [
+    "small living room"
+  ],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [],
+  "materials": [],
+  "must_have": [
+    "sectional"
+  ],
+  "refine": null,
+  "fixture": "couches",
+  "persona": {
+    "id": "persona-11",
+    "text": "You like low profile modular sectionals in light linen or boucle, with deep seats and slim legs. You dislike dark leather, recliners built into the seat and oversized rolled arms."
+  }
+}

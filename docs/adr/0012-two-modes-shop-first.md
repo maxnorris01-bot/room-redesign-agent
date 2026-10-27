@@ -990,3 +990,43 @@ lookups (a per-product lock makes the second wait for the first); a failure is c
 retried. A lookup that finishes after Start over (queued ones are dropped) or a topic change may fill the cache but
 writes nothing learned. The footer reads "link lookups n of 12 (auto m, by you k), median s", and the trace lists each
 lookup as made ahead or by you with its seconds.
+
+## Amendment, stage 3 (2026-10-26): the Shop Mode eval
+
+What it is. `evals/shop/` holds twelve requests (the owner's list, unchanged), each with a hidden persona of two
+to four sentences that does not restate the request. A run searches through the service layer (not the browser),
+judges every shown item, has the persona rate the first twelve in display order, applies the case's refine step
+("no Walmart" on the coffee tables, "focus on mesh backs" on the desk chairs) and runs Shop Again twice, judging and
+rating each batch. Automatic lookups, Open and the gallery are off, so no SerpApi call is made. The pipeline gets the
+request, the ratings and the refine text; persona text goes to the persona judge only.
+
+What it measures. Code scorers (no model): price compliance against the parsed range in every batch, repeats across
+rounds, seller diversity, near-duplicate groups (the pipeline's own `nearby.py` signals), context colours in the
+search text, avoid-colour and product-colour shares, refine exclusions and focus share, latency and cost. Two Haiku
+judges (forced tool call, strict schema, thinking off, at most 12 items per call, thumbnails through the guarded
+fetch): a category and attribute judge, and a persona judge that answers love, like or dislike. Judges see numbered
+listings only, never tags, chips, ranker output or other items; an invalid answer is retried once and then recorded
+as "judge failed", never scored. Shop Again lift is the persona match rate (love or like) in round 2 minus round 1,
+in points; round 3 minus round 1 is reported without a gate.
+
+Thresholds. `evals/shop/thresholds.json`, with the reason for each number in `THRESHOLDS.md`: judgment values set
+before any live run, never tuned on a result. Every results file records the SHA-256 of the file, and a test checks
+that. Hard stops: $0.60 Anthropic and 500 Serper credits; at a stop the run writes partial results with the reason.
+
+Conventions. The repo's existing evals use `evals/cases/*.jsonl`, `thresholds.yaml`, gitignored reports, a
+`known-unstable/` folder and mock-forced Makefile targets with `-live` twins. The shop eval follows the repo for mock
+and live handling and the brief for file shapes. It is not wired into `make eval-fast`, which runs the template's
+placeholder pipeline: `make eval-shop-plan`, `eval-shop-mock`, `eval-shop-live` (refuses without
+`EVAL_SHOP_CONFIRM=yes` and under CI or pytest) and `eval-shop-report` are its own targets. Results are JSON in the
+gitignored `evals/shop/results/` (third-party titles and thumbnail URLs); the Markdown report has neither and cuts
+titles, so it can be committed under `docs/evals/`.
+
+Coverage findings. `categories.py` cannot represent four of the twelve requests exactly: curtains and bookshelves
+are not in its synonym groups or size table, "dining chairs" and "dining chair" are different topic keys, and "desk
+chairs" folds into "desk". They are kept as written and reported as findings.
+
+What it cannot tell you. The judges are the pipeline's own model family, so blind spots may be shared; a persona is a
+text, not a person; neither judge is calibrated against human labels (todo: the owner labels a sample and the harness
+reports agreement). Twelve requests are a small sample, live results vary run to run (`known_instability.md`), and a
+mock run shows that the harness works, not that Shop Mode is good. The fifth replay fixture
+(`owner_session_replay_5.json`, the live curtains session) was added with this stage.

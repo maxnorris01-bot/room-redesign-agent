@@ -1,0 +1,27 @@
+{
+  "id": "case-09",
+  "version": 1,
+  "request": "round black metal side tables",
+  "category_noun": "side tables",
+  "expected_category": "side table",
+  "expected_price": null,
+  "kind": "plain",
+  "context_items": [],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [],
+  "materials": [
+    "metal"
+  ],
+  "must_have": [
+    "round",
+    "black"
+  ],
+  "refine": null,
+  "fixture": "generic",
+  "persona": {
+    "id": "persona-09",
+    "text": "You like small tables with thin matte black legs and a marble or stone-look top. You dislike boxy shapes, wood tops and clutter."
+  }
+}

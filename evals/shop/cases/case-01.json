@@ -1,0 +1,27 @@
+{
+  "id": "case-01",
+  "version": 1,
+  "request": "modern couches under $1000",
+  "category_noun": "couches",
+  "expected_category": "sofa",
+  "expected_price": {
+    "min": null,
+    "max": 1000.0
+  },
+  "kind": "plain",
+  "context_items": [],
+  "context_colors": [],
+  "avoid_colors": [],
+  "product_color": null,
+  "styles": [
+    "modern"
+  ],
+  "materials": [],
+  "must_have": [],
+  "refine": null,
+  "fixture": "couches",
+  "persona": {
+    "id": "persona-01",
+    "text": "You like soft curved shapes, boucle or textured light fabric, cream and neutral colours, and slim tapered legs. You dislike leather, big rolled arms, and anything that looks like a bargain-marketplace listing."
+  }
+}
