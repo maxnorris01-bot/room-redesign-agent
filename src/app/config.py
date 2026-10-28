@@ -137,6 +137,8 @@ class Config:
     # written) so a Shop Again finds its inputs ready; the limits that keep it cheap and bounded
     shop_prep_enabled: bool = False  # off for a bare Config (tests); `from_env` turns it on
     shop_near_duplicates: bool = False  # stage 2n: collapse the same product from other vendors
+    shop_photo_tag_top_n: int = 0  # stage 2p: candidates tagged from their photo (off bare; env 36)
+    shop_thin_variants: bool = False  # stage 2p: variant searches when a typed search is thin
     shop_gallery: bool = False  # stage 2o: "More photos" (dormant: the lookup takes seconds)
     shop_auto_lookups: bool = (
         False  # stage 2o: resolve loved and liked items ahead (off bare; env on)
@@ -196,6 +198,8 @@ class Config:
             raise ValueError("APP_MAX_REVISIONS must be >= 0")
         if self.shop_lookups_per_session < 0:
             raise ValueError("APP_SHOP_LOOKUPS_PER_SESSION must be >= 0")
+        if self.shop_photo_tag_top_n < 0:
+            raise ValueError("APP_SHOP_PHOTO_TAG_TOP_N must be >= 0")
         if self.shop_auto_lookups_max < 0:
             raise ValueError("APP_SHOP_AUTO_LOOKUPS_MAX must be >= 0")
         if self.shop_agains_per_session < 0:
@@ -306,6 +310,9 @@ class Config:
                 os.environ.get("APP_SHOP_AGAIN_MAX_SERPER_CALLS", cls.shop_again_max_serper_calls)
             ),
             shop_prep_enabled=os.environ.get("APP_SHOP_PREP", "1").strip()
+            not in ("0", "false", "no"),
+            shop_photo_tag_top_n=int(os.environ.get("APP_SHOP_PHOTO_TAG_TOP_N", "36")),
+            shop_thin_variants=os.environ.get("APP_SHOP_THIN_VARIANTS", "1").strip()
             not in ("0", "false", "no"),
             shop_gallery=os.environ.get("APP_SHOP_GALLERY", "0").strip().lower()
             in ("1", "true", "yes"),

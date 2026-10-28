@@ -382,7 +382,7 @@ def test_judges_see_only_the_request_or_persona_and_the_listings() -> None:
         seen[kw["tool_choice"]["name"]] = kw
         rows = [ln for ln in kw["user_text"].splitlines() if ln.split(" | ")[0].isdigit()]
         key = "category" if kw["tool_choice"]["name"] == CATEGORY_TOOL else "answer"
-        extra = {"attributes": "yes"} if key == "category" else {}
+        extra = {"attributes": "yes", "color_match": "not_asked"} if key == "category" else {}
         return Completion(
             text="",
             tool_input={
@@ -427,7 +427,17 @@ def test_clean_title_and_index_checks() -> None:
 def test_the_judge_schemas_are_strict() -> None:
     with pytest.raises(ValueError):
         CategoryJudgements.model_validate(
-            {"items": [{"index": 1, "category": "yes", "attributes": "yes", "x": 1}]}
+            {
+                "items": [
+                    {
+                        "index": 1,
+                        "category": "yes",
+                        "attributes": "yes",
+                        "color_match": "yes",
+                        "x": 1,
+                    }
+                ]
+            }
         )
     with pytest.raises(ValueError):
         PersonaJudgements.model_validate({"items": [{"index": 1, "answer": "adore"}]})
@@ -439,7 +449,8 @@ def test_the_judge_schemas_are_strict() -> None:
 def test_judge_prompts_are_versioned_and_recorded() -> None:
     from app.prompts import load_prompt
 
-    assert load_prompt("eval_shop_category_judge").version == "1"
+    assert load_prompt("eval_shop_category_judge").version == "2"  # stage 2p: adds color_match
+    assert load_prompt("eval_shop_category_judge", "1").version == "1"  # the baseline's judge, kept
     assert load_prompt("eval_shop_persona_judge").version == "1"
-    assert mock_judge().versions == {"category": "1", "persona": "1"}
+    assert mock_judge().versions == {"category": "2", "persona": "1"}
     assert Budget(Config(llm_mode="mock")).cost_usd == 0.0

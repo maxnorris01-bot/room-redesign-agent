@@ -197,6 +197,13 @@ this choice over the alternatives. Note what's still open or deferred within it,
   The harness now keeps a richer trace and has a `rejudge` command (persona judge only, about $0.03 for the saved file) to
   measure judge repeatability before any fix is judged by lift. See `docs/evals/shop-eval-baseline-2026-10-26.md` and
   `docs/sessions/2026-10-26-shop-eval-baseline.md`.
+- **2026-10-27, stage 2p (ADR 0012 amended): eval-driven fixes.** Decisions: fix what the baseline showed as real (empty Shop
+  Agains, typed colour not enforced, free notes reserving nothing, category folding, the count cap) and leave the thresholds and the
+  baseline untouched; the quota is 70% (not 100%) because only what can be tagged can be enforced; the product-colour measurement
+  moved to the thumbnail (title keywords miss untitled colours) with the old figure kept beside it; the seller cap shortens a
+  thin batch rather than allow a third to one seller; "no leather" is a note because `upholstered` covers all fabric. New switches
+  default off in a bare Config and on from the environment (`APP_SHOP_PHOTO_TAG_TOP_N` 36, `APP_SHOP_THIN_VARIANTS`). The rejudge
+  put judge noise on one case's lift at about 6 points (1.8 on the mean). See `docs/sessions/2026-10-27-shop-fixes.md`.
 
 ## See also
 

@@ -20,12 +20,13 @@ from typing import Any
 
 from app.config import Config
 from app.llm import Budget
-from app.shop.candidates import TagBook, Taggable, tag_results
+from app.shop.candidates import TagBook, Taggable, note_key, tag_results
 from app.shop.clock import Clock
 from app.shop.decide import Exposure, build_exposure, typed_dimensions
 from app.shop.evidence import seller_entries
 from app.shop.models import MAX_SEARCH_TEXT_CHARS, ShopQuery, StoredProfile
 from app.shop.nearby import Fingerprinter, meta_trace
+from app.shop.phototags import ThumbCache
 from app.shop.prefs import (
     alignment_counts,
     alignment_detail,
@@ -38,7 +39,7 @@ from app.shop.prefs import (
     seller_name,
 )
 from app.shop.progress import Progress, Timeline
-from app.shop.queries import QueryInput, write_queries
+from app.shop.queries import QueryInput, variant_queries
 from app.shop.refine import (
     RefineSet,
     apply_to_query,
@@ -77,6 +78,7 @@ from app.shop.thresholds import (
     REFINE_FOCUS_MIN_SHARE,
     SELLER_SEARCHES,
 )
+from app.shop.typed import typed_attributes
 from app.shop.vocab import DIMENSIONS, title_tags
 from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.thumbnails import Thumbnailer
@@ -87,6 +89,22 @@ def base_query(session: Session) -> ShopQuery | None:
     so adjustments do not stack on themselves (the profile is already cumulative)."""
     typed = [s for s in session.searches if s.kind == "search"]
     return typed[-1].query if typed else None
+
+
+def used_queries(session: Session) -> list[str]:
+    """Every search phrasing already used in the current topic, oldest first, each once: what the
+    searches of this topic recorded (`SearchRecord.queries`, and the phrasings in `pages`)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for rec in session.searches:
+        if rec.topic is not None and rec.topic != session.current_topic:
+            continue
+        for text in [*rec.queries, *rec.pages]:
+            key = query_key(text)
+            if key and key not in seen:
+                seen.add(key)
+                out.append(text)
+    return out
 
 
 def pages_fetched(session: Session) -> dict[str, int]:
@@ -347,6 +365,28 @@ def refine_trace(
                     held += _holds(tags, pair[0], pair[1])
             applied["in_batch"] = held
             applied["reserved"] = math.ceil(REFINE_FOCUS_MIN_SHARE * len(outcome.results))
+        elif c.kind == "free_note":
+            flag = note_key(c.id)
+            book_tags = ctx.tag_book.merged() if ctx.tag_book is not None else {}
+            flags = [t.get(flag) for t in book_tags.values() if flag in t]
+            applied["mode"] = c.note_mode or "prefer"
+            applied["matched_by_description"] = bool(flags)  # the tagging returned flags for it
+            applied["flagged"] = {
+                "true": flags.count("true"), "false": flags.count("false"),
+                "unknown": flags.count("unknown"), "pool_tagged": len(book_tags),
+            }  # fmt: skip
+            if c.note_mode == "focus":
+                held = sum(
+                    1
+                    for r in outcome.results
+                    if ((ctx.tag_book.get(r.id) if ctx.tag_book else None) or {}).get(flag)
+                    == "true"
+                )
+                applied["in_batch"] = held
+                applied["reserved"] = math.ceil(REFINE_FOCUS_MIN_SHARE * len(outcome.results))
+            elif c.note_mode == "exclude":
+                applied["removed"] = len(ctx.refine_dropped.get(c.id, ()))
+            applied["rank_hint"] = c.note_mode != "exclude"
         elif c.kind in ("price_max", "price_min"):
             applied["price"] = c.target
             applied["rank_hint"] = False
@@ -371,11 +411,11 @@ def _query_input(
     planned: list[str],
 ) -> QueryInput | None:
     """What the model query writer sees: the typed constraints, the leanings, the settled values,
-    the liked sellers and a few liked and disliked titles. None when nothing was rated up."""
+    the liked sellers, a few liked and disliked titles, and (stage 2p) the queries already used in
+    this topic and how much has been seen. It is built even when nothing was rated up or learned:
+    the writer then exists to find results the used queries cannot."""
     rows = rated_results(session)
     liked = [r["result"].title for r in rows if r["rating"] in ("love", "like")]
-    if not liked:
-        return None
     disliked = [r["result"].title for r in rows if r["rating"] == "dislike"]
     names = [seller_name(e) for e in profile.inferred if e.attr_kind == "seller"]
     toward = [
@@ -394,6 +434,7 @@ def _query_input(
         disliked_titles=disliked[:QUERY_DISLIKED_TITLES],
         existing=[*planned, *(p[2] for p in ctx.peer_queries)],
         setting=setting_lines(adjusted),
+        used=used_queries(session), seen=len(session.results), rated=len(rows),
     )  # fmt: skip
 
 
@@ -405,6 +446,7 @@ def run_shop_again(
     clock: Clock | None = None,
     progress: Callable[[str], None] | None = None,
     fingerprinter: Fingerprinter | None = None,
+    photos: ThumbCache | None = None,
 ) -> tuple[SearchOutcome, StoredProfile, ShopQuery]:
     """Build the profile and search again. Returns (outcome, new profile, the query used).
 
@@ -428,6 +470,8 @@ def run_shop_again(
     budget = Budget(replace(config, max_steps=max(config.max_steps, config.shop_max_steps)))
     warnings: list[str] = []
     book = TagBook(cache=session.tag_cache)
+    topic_now = current_topic(session)
+    book.notes = build_set(topic_now.refinements if topic_now is not None else []).note_specs()
     shown = list(session.results.values())
     skip_pages = pages_fetched(session)
     prefetched: dict[tuple[str, int], list[SearchCandidate] | Exception] = {}
@@ -508,6 +552,7 @@ def run_shop_again(
     )  # the seller searches are planned by the evidence, not by a chip's phrasing
     ctx = again_context(session, profile, config, queries, dropped, book, query)
     ctx.refine, ctx.refine_lines = rs, ranker_lines(rs)
+    ctx.typed = typed_attributes(base)  # stage 2p: the typed request's colour, material, finish
     for name in rs.focus_sellers:  # a focus on a seller searches that seller by name
         key = seller_key(name)
         ctx.affinity_sellers.add(key)
@@ -520,13 +565,13 @@ def run_shop_again(
     if qinput is not None:
         qinput.setting += writer_lines(rs)
     if config.shop_model_queries and qinput is not None:
-        ctx.query_writer = partial(write_queries, qinput, budget, config)
+        ctx.query_writer = partial(variant_queries, qinput, budget, config)
     ctx.clock, ctx.progress, ctx.hard_stop_at = clock, progress, started + config.shop_hard_stop_s
     ctx.prefetched = prefetched
     ctx.timeline = timeline
     near = near_context(session, fingerprinter, config)
     outcome = run_query(
-        query, search, config, budget, warnings, started, ctx, clock, progress, near
+        query, search, config, budget, warnings, started, ctx, clock, progress, near, photos
     )
     # the request chips keep showing only what the parser read, and a refined price
     outcome.display_query = (

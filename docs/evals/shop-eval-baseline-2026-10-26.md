@@ -247,6 +247,16 @@ estimates 35 non-empty batches (case 06 round 3 is empty), 781 items, 67 judge c
 calls cost $0.055). It was not run. Until it is, the binomial argument above is the only noise estimate; the rejudge measures
 the judge's own repeatability, which is a part of that noise.
 
+**Rejudge result (recorded afterwards; the baseline numbers above are unchanged).** The owner ran the rejudge on run
+`20261027-041854-b00d9f`: 35 batches, 781 items. The persona judge agreed with itself on 90% of the three-way answers
+(love, like, dislike) and on 93% of the match / no-match answers (love or like against dislike). The mean absolute difference
+in a batch's match rate between the two judgements was 3.6 points, the mean difference -0.3 points, the spread (standard
+deviation) 6.1 points, and the cost $0.0256. The noisiest cases were case-12, case-04, case-08, case-09 and case-11 (85 to 88%
+three-way agreement). Reading: judge noise on one case's lift is about 6 points, which is about 1.8 points on the 12-case mean
+(6.1 divided by the square root of 12). The mean lift shortfall against +15 (+6.2 measured) is therefore not judge noise. The
+sampling argument above (14.3 points between two different batches) still holds: most of the spread of single-case lifts is
+the batches, not the judge.
+
 ### 7. Ranking of the findings, and what is real
 
 Expected impact on the failed checks and on real use, against effort:

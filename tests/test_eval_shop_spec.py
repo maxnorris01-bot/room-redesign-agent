@@ -121,10 +121,20 @@ def test_every_threshold_key_is_explained() -> None:
             assert f"`{key}`" in doc, key
 
 
-def test_category_gaps_are_findings_not_substitutions() -> None:
-    findings = {f["case"]: f for f in category_findings(load_cases())}
-    assert set(findings) == {"case-03", "case-04", "case-05", "case-10"}
-    assert findings["case-10"]["categories_py_says"] == "desk"
-    assert findings["case-10"]["kind"] == "folds into another category"
-    assert findings["case-03"]["known_category"] is None
-    assert findings["case-05"]["noun"] == "bookshelves"
+def test_the_twelve_cases_are_all_represented_since_stage_2p() -> None:
+    """The first live run had four findings (curtains, bookshelves, dining chairs, desk chairs);
+    stage 2p folded plurals and added the missing categories, so none is left. The baseline
+    document keeps the old four."""
+    assert category_findings(load_cases()) == []
+
+
+def test_a_case_with_an_unknown_noun_is_still_reported_as_a_finding() -> None:
+    raw = json.loads((SHOP / "cases" / "case-07.json").read_text())
+    raw.update(
+        category_noun="chandeliers", expected_category="chandelier", request="brass chandeliers"
+    )
+    findings = category_findings([Case.model_validate(raw)])
+    assert len(findings) == 1 and findings[0]["known_category"] is None
+    assert findings[0]["kind"] == "not in the synonym groups or size table"
+    raw.update(category_noun="desk chairs", expected_category="desk")  # wrong expectation
+    assert category_findings([Case.model_validate(raw)])[0]["kind"] != ""

@@ -114,6 +114,21 @@ def build_env(mode: str, caller: Caller | None = None, config: Config | None = N
     return Env(mode, config, thumbnailer, judge, RunState(thresholds), providers)
 
 
+def product_color_row(
+    listings: list[sc.Listing], color: str, verdicts: list[Any]
+) -> dict[str, Any]:
+    """The product-colour score of a batch. Since stage 2p the share is what the category judge
+    (prompt v2) says of each thumbnail: yes over the items it could judge (cannot tell counts as not
+    matching, a judge failure is left out); the title-keyword share the baseline used is kept as a
+    second figure."""
+    judged = sc.color_match_share([v.color_match if v is not None else None for v in verdicts])
+    title = sc.product_color_share(listings, color)
+    return {
+        "share": judged["share"], "count": judged["count"], "measure": "judge",
+        "judged": judged, "title_share": title["share"], "title_count": title["count"],
+    }  # fmt: skip
+
+
 # ---- one round ------------------------------------------------------------------------------
 
 
@@ -172,6 +187,9 @@ def trace_summary(view: dict[str, Any]) -> dict[str, Any]:
             },
             "marketplace": (trace.get("marketplace") or {}).get("decision"),
         },
+        "exhausted": batch.get("exhausted"),
+        "thin": trace.get("thin"),
+        "typed": trace.get("typed") or batch.get("typed"),
         "pool": {
             k: batch.get(k)
             for k in ("pool_before", "pool_after", "shortfall", "serper_calls", "marketplace_excluded", "refine_removed")
@@ -251,11 +269,14 @@ def play_round(
         "attributes": attr_rate,
         "persona": persona_rate,
         "ratings_submitted": submitted,
+        "exhausted": s["kind"] == "shop_again" and not listings,  # nothing unseen was left
         "sellers": sc.seller_diversity(listings),
         "near_dups": sc.near_duplicate_groups(listings),
         "avoid": sc.avoid_color_share(listings, case.avoid_colors) if case.avoid_colors else None,
         "product_color": (
-            sc.product_color_share(listings, case.product_color) if case.product_color else None
+            product_color_row(listings, case.product_color, [cat.get(n) for n in range(1, len(listings) + 1)])
+            if case.product_color
+            else None
         ),
         "refine": None,
         "footer": footer_line(view),

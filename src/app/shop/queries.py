@@ -27,9 +27,14 @@ from app.shop.thresholds import (
     QUERY_DISLIKED_TITLES,
     QUERY_LIKED_TITLES,
     QUERY_MAX_WORDS,
+    QUERY_NOVELTY_JACCARD,
 )
 
 QUERY_TOOL = "record_queries"
+QUERY_USED_SHOWN = 12  # used queries listed to the writer (the most recent)
+VARIANT_MODIFIERS = (
+    "modern", "classic", "premium", "affordable", "designer", "contemporary", "quality", "stylish",
+)  # fmt: skip
 QUERY_MAX_TOKENS = 300
 QUERY_TOOL_DEF: dict[str, Any] = {
     "name": QUERY_TOOL,
@@ -60,6 +65,9 @@ class QueryInput:
     disliked_titles: list[str] = field(default_factory=list)
     existing: list[str] = field(default_factory=list)  # queries already planned (normalized)
     setting: list[str] = field(default_factory=list)  # stage 2k: setting and colour guidance lines
+    used: list[str] = field(default_factory=list)  # stage 2p: queries already used in this topic
+    seen: int = 0  # results already shown in this topic
+    rated: int = 0  # results already rated in this topic
 
 
 @dataclass
@@ -69,6 +77,7 @@ class QueryResult:
     error: str = ""
     usd: float = 0.0
     asked: bool = False
+    fallback: int = 0  # accepted queries that came from `fallback_variants`, not the model
 
 
 def _singular(word: str) -> str:
@@ -83,6 +92,25 @@ def _words(text: str) -> list[str]:
 def _has(words: set[str], term: str) -> bool:
     parts = [_singular(w) for w in _words(term) if len(w) >= 3]
     return all(p in words for p in parts) if parts else True
+
+
+def _word_set(text: str) -> frozenset[str]:
+    return frozenset(_singular(w) for w in _words(text) if len(w) >= 2)
+
+
+def too_close_to_used(cleaned: str, used: list[str]) -> str:
+    """Why `cleaned` repeats a query already used ("" when it is new): the same words, or at least
+    `QUERY_NOVELTY_JACCARD` of its words shared with one (a reordering, one word more or less)."""
+    mine = _word_set(cleaned)
+    for old in used:
+        theirs = _word_set(old)
+        if not mine or not theirs:
+            continue
+        if mine == theirs:
+            return "the same as a query already used"
+        if len(mine & theirs) / len(mine | theirs) >= QUERY_NOVELTY_JACCARD:
+            return "too close to a query already used"
+    return ""
 
 
 def user_text(inp: QueryInput) -> str:
@@ -103,12 +131,15 @@ def user_text(inp: QueryInput) -> str:
         *inp.setting,
         line("Leaning toward", inp.toward),
         line("Leaning away from", inp.away),
+        f"Results already seen: {inp.seen}; rated: {inp.rated}",
+        "Queries already used for this topic (write different ones):",
+        *[f"  * {u[:80]}" for u in inp.used[-QUERY_USED_SHOWN:]],
         line("Liked retailers (you may name one)", inp.liked_sellers),
         "Titles the shopper liked:",
         *[f"  * {t[:100]}" for t in inp.liked_titles[:QUERY_LIKED_TITLES]],
         "Titles the shopper disliked:",
         *[f"  * {t[:100]}" for t in inp.disliked_titles[:QUERY_DISLIKED_TITLES]],
-        f"Write one or two queries of at most {QUERY_MAX_WORDS} words.",
+        f"Write two NEW queries of at most {QUERY_MAX_WORDS} words, each unlike every used query.",
     ]
     return "\n".join(lines)
 
@@ -183,6 +214,8 @@ def write_queries(inp: QueryInput, budget: Budget, config: Config | None = None)
         cleaned, why = validate_query(item, inp)
         if not why and " ".join(_words(cleaned)) in seen:
             why = "the same as a search already planned"
+        if not why:
+            why = too_close_to_used(cleaned, inp.used)
         if why:
             result.dropped.append({"query": item[:80], "reason": why})
             continue
@@ -191,4 +224,51 @@ def write_queries(inp: QueryInput, budget: Budget, config: Config | None = None)
             continue
         seen.add(" ".join(_words(cleaned)))
         result.accepted.append(cleaned)
+    return result
+
+
+def fallback_variants(inp: QueryInput, limit: int = MODEL_QUERIES) -> list[str]:
+    """Variants without a model: the request's search words with one modifier word in front (modern,
+    premium, affordable, ...), every typed word kept, checked by the same rules and the same novelty
+    test as a model query. Used when the writer is off, fails or gives nothing new."""
+    out: list[str] = []
+    base = inp.adjusted.search_text or inp.base.search_text
+    singles = [(m,) for m in VARIANT_MODIFIERS]
+    pairs = [(a, b) for a in VARIANT_MODIFIERS for b in VARIANT_MODIFIERS if a < b]
+    for modifiers in [
+        *singles,
+        *pairs,
+    ]:  # one word first; two when one is too close to a used query
+        if len(out) >= limit:
+            break
+        if any(m in _words(base) for m in modifiers):
+            continue
+        words = [*modifiers, *base.split()]
+        present = {_singular(w) for w in _words(" ".join(words))}
+        for term in [*inp.adjusted.must_have, *inp.adjusted.material_terms]:
+            if not _has(present, term):  # a typed constraint the search words lack is added back
+                words += term.split()
+                present |= {_singular(w) for w in _words(term)}
+        text = " ".join(words[:QUERY_MAX_WORDS])
+        cleaned, why = validate_query(text, inp)
+        if why or too_close_to_used(cleaned, [*inp.used, *inp.existing, *out]):
+            continue
+        out.append(cleaned)
+    return out
+
+
+def variant_queries(inp: QueryInput, budget: Budget, config: Config | None = None) -> QueryResult:
+    """Two new queries for a search that came up thin or dry: the model writer first (prompt
+    `shop_queries` v3), then the deterministic `fallback_variants` for whatever is still missing.
+    The result says which came from where (`fallback` rows in `dropped` never appear: they pass the
+    same rules)."""
+    config = config or budget.config
+    result = write_queries(inp, budget, config) if config.shop_model_queries else QueryResult()
+    if len(result.accepted) < MODEL_QUERIES:
+        extra = fallback_variants(
+            QueryInput(**{**inp.__dict__, "existing": [*inp.existing, *result.accepted]}),
+            MODEL_QUERIES - len(result.accepted),
+        )
+        result.accepted.extend(extra)
+        result.fallback = len(extra)
     return result

@@ -761,6 +761,7 @@ def run_checks(
     id7: str,
     base7: str,
     base8: str,
+    scenarios: dict[str, str],
 ) -> None:
     console_errors: list[str] = []
     with sync_playwright() as p:
@@ -1034,6 +1035,7 @@ def run_checks(
             run_batch(browser, base, base6, id7, shots, console_errors)
             run_fixes(browser, base7, shots, console_errors)
             run_open(browser, base8, shots, console_errors)
+            run_dry(browser, scenarios, shots, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -1225,6 +1227,99 @@ def popup_text(popup: Page) -> str:
         return str(popup.inner_text("body"))
     except Exception:  # a page with no body yet
         return ""
+
+
+def run_dry(browser: Any, bases: dict[str, str], shots: Path, console_errors: list[str]) -> None:
+    """Stage 2p: a thin first search, an exhausted Shop Again, a typed colour the pool cannot
+    fill, a deletable typed chip and a written refinement matched by description (mock scenario
+    servers)."""
+    print("stage 2p: thin results, exhaustion, colour shortfall, chip wording")
+
+    def shoot(page: Page, name: str, locator: str) -> None:
+        box = page.locator(locator).first
+        box.screenshot(path=str(shots / f"{name}.png"))
+        page.emulate_media(color_scheme="dark")
+        box.screenshot(path=str(shots / f"{name}-dark.png"))
+        page.emulate_media(color_scheme="light")
+        page.set_viewport_size({"width": 390, "height": 844})
+        box.scroll_into_view_if_needed()
+        box.screenshot(path=str(shots / f"{name}-mobile.png"))
+        check(
+            page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+            f"no sideways scroll at 390 px ({name})",
+        )
+        page.set_viewport_size({"width": 1280, "height": 900})
+
+    # a thin first search: how many matched, and the way to broaden it
+    context, page = new_page(browser, bases["thin"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, "dining chairs")
+    status = page.locator("#status").inner_text()
+    check(
+        re.search(r"Only \d+ results matched.*try broadening the request\.", status) is not None,
+        f"the thin banner: {status[:110]!r}",
+    )
+    check(0 < page.locator("#grid .card").count() < 24, "fewer than 24 cards are shown")
+    shoot(page, "80-thin-banner", "#status")
+    context.close()
+
+    # an exhausted Shop Again says so instead of showing an empty page
+    context, page = new_page(browser, bases["dry"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, "dining chairs")
+    rate_nth(page, 0, "love")
+    page.click("#shop-again")
+    page.locator("#status", has_text="I ran out of new results for this search").wait_for(
+        timeout=30000
+    )
+    check(page.locator("#grid .card").count() == 0, "nothing is shown after the exhausted search")
+    check(
+        "Try changing the request or the refine chips." in page.locator("#status").inner_text(),
+        "the exhaustion message names what to do",
+    )
+    shoot(page, "81-exhausted", "#status")
+    context.close()
+
+    # a typed colour the pool cannot fill: a banner naming it; chips that can be deleted
+    context, page = new_page(browser, bases["navy"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, "navy velvet accent chairs")
+    status = page.locator("#status").inner_text()
+    check(
+        re.search(r"Only \d+ of \d+ results match your color navy: the pool had \d+", status)
+        is not None,
+        f"the colour banner: {status[:120]!r}",
+    )
+    colour_chip = page.locator("#chips .chip.ctx", has_text="Color")
+    check(
+        colour_chip.count() == 1 and colour_chip.locator(".x").count() == 1,
+        "the colour chip can be deleted",
+    )
+    shoot(page, "82-colour-shortfall", "#status")
+    shoot(page, "84-typed-chips", "#chips")
+    material_chip = page.locator("#chips .chip.ctx", has_text="Material")
+    check(material_chip.locator(".x").count() == 1, "the material chip can be deleted")
+    colour_chip.locator(".x").click()
+    colour_chip.wait_for(state="detached", timeout=10000)
+    check(
+        page.locator("#chips .chip.ctx", has_text="Color").count() == 0,
+        "deleting the chip removes it",
+    )
+    rate_nth(page, 0, "love")
+    page.fill("#refine-input", "focus on fluted")
+    page.click("#refine-add")
+    page.locator("#refine-chips .chip").first.wait_for(timeout=10000)
+    first = page.locator("#refine-chips .chip").first.inner_text()
+    check(
+        "approximate" in first.lower(),
+        f"before any Shop Again the note says approximate: {first!r}",
+    )
+    page.click("#shop-again")
+    wait_for_results(page)
+    page.locator("#refine-chips .chip", has_text="matched by description").wait_for(timeout=15000)
+    check(True, "after a Shop Again the written note says matched by description")
+    shoot(page, "83-matched-by-description", "#refine-box")
+    context.close()
 
 
 def run_open(browser: Any, base: str, shots: Path, console_errors: list[str]) -> None:
@@ -1542,7 +1637,8 @@ def run_batch(
     warm = sum(1 for t in titles if any(w.lower() in t.lower() for w in CREAM_WORDS))
     navy = sum(1 for t in titles if any(w in t for w in ("Navy", "Dark Blue", "Blue")))
     check(
-        warm >= 10 and navy <= 3,
+        warm >= 8
+        and navy <= 3,  # stage 2p: photo tags (mock: pseudo photos) pick some untitled colours
         f"{warm} of {len(titles)} in suggested colours, {navy} in colours to avoid",
     )
     stars = page.locator("#grid .card .rating-row .stars")
@@ -1725,6 +1821,9 @@ def main() -> int:
         tempfile.TemporaryDirectory() as data_dir6,
         tempfile.TemporaryDirectory() as data_dir7,
         tempfile.TemporaryDirectory() as data_dir8,
+        tempfile.TemporaryDirectory() as dir_thin,
+        tempfile.TemporaryDirectory() as dir_dry,
+        tempfile.TemporaryDirectory() as dir_navy,
     ):
         try:
             first, port = start_server(data_dir, {"APP_SHOP_GALLERY": "1"})
@@ -1751,6 +1850,18 @@ def main() -> int:
             servers.append(seventh)
             eighth, port8 = start_server(data_dir8)
             servers.append(eighth)
+            scenario_dirs = {"thin": dir_thin, "dry": dir_dry, "navy": dir_navy}
+            scenario_ports: dict[str, str] = {}
+            for name, extra in (
+                ("thin", {"APP_SHOP_MODEL_QUERIES": "0"}),
+                ("dry", {"APP_SHOP_MODEL_QUERIES": "0", "APP_SHOP_THIN_VARIANTS": "0"}),
+                ("navy", {}),
+            ):
+                server_n, port_n = start_server(
+                    scenario_dirs[name], {"APP_SHOP_MOCK_SCENARIO": name, **extra}
+                )
+                servers.append(server_n)
+                scenario_ports[name] = f"http://127.0.0.1:{port_n}/"
             tailoring = seed_session(
                 SessionStore(Path(data_dir6)), replay=REPLAY_FILE_EVIDENCE
             ).session_id
@@ -1764,7 +1875,7 @@ def main() -> int:
                 f"http://127.0.0.1:{port5}/", seed_replays_4(data_dir5),
                 f"http://127.0.0.1:{port6}/", tailoring, second_evidence,
                 f"http://127.0.0.1:{port7}/",
-                f"http://127.0.0.1:{port8}/",
+                f"http://127.0.0.1:{port8}/", scenario_ports,
             )  # fmt: skip
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

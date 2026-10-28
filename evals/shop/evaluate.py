@@ -77,7 +77,11 @@ def evaluate(results: list[dict[str, Any]], t: Thresholds) -> list[dict[str, Any
                          total_leaks, "<=", t.context_colors_in_search_text_max,
                          None if total_leaks is None
                          else total_leaks <= t.context_colors_in_search_text_max, len(leaks)))  # fmt: skip
-    pc = [_first(r)["product_color"]["share"] for r in ok if _first(r).get("product_color")]
+    pc = [
+        _first(r)["product_color"]["share"]
+        for r in ok
+        if _first(r).get("product_color") and _first(r)["product_color"].get("share") is not None
+    ]
     worst_pc = min(pc) if pc else None
     checks.append(_check("product_color_share_min", "product-colour share of the first batch",
                          worst_pc, ">=", t.product_color_share_min,

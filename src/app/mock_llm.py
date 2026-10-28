@@ -509,11 +509,25 @@ def _heuristic_shop_parse(request: str) -> dict[str, Any]:
     over = re.search(r"(?:over|above|at least|min)\s*\$?(\d+)", low)
     words = re.sub(r"(?:under|below|less than|max|over|above|at least|min)\s*\$?\d+", " ", low)
     text = " ".join(words.split()) or "furniture"
+    from app.categories import category_phrase
+    from app.shop.vocab import COLOR_KEYWORDS, normalize
+
+    tokens = re.findall(r"[a-z]+", text)
+    colors = tuple(
+        cid
+        for cid, keywords in COLOR_KEYWORDS
+        if any(k in tokens for k in keywords if " " not in k and k not in ("sky", "jet", "stone"))
+    )  # a colour word typed with the product is the product's colour (the setting parses are above)
+    materials = tuple(
+        w for w in dict.fromkeys(tokens) if normalize("material", w) not in (None, "other")
+    )
     return _sample(
         text,
-        text.split()[-1] if text.split() else "",
+        category_phrase(text) or (text.split()[-1] if text.split() else ""),
         float(over.group(1)) if over else None,
         float(under.group(1)) if under else None,
+        material=materials,
+        colors=colors,
     )
 
 
@@ -769,6 +783,23 @@ def _replay_attrs() -> dict[str, dict[str, Any]]:
     return out
 
 
+_NOTE_STOP = frozenset("with from that this have look looks like more most some very".split())
+
+
+def _mock_note_flag(phrase: str, title: str, has_image: bool) -> bool | None:
+    """Whether a title matches a free note, the way a model might: true when a significant word of
+    the note is in the title; with a photo and no such word, a deterministic pseudo-photo answer;
+    without a photo and without the word, unknown (null)."""
+    low = title.lower()
+    words = [w.rstrip("s") for w in re.findall(r"[a-z]{4,}", phrase.lower()) if w not in _NOTE_STOP]
+    if any(w in low for w in words):
+        return True
+    if has_image:
+        return sum(map(ord, title)) % 3 == 0
+    return None
+
+
+MOCK_PHOTO_PALETTE = ("navy_dark_blue", "cream", "black", "gray", "brown", "white", "green")
 _CAND_ROW = re.compile(r"^(\d+) \| (.*) \| (\$[\d,]+|no price) \| (.*)$")
 MOCK_TAGS_FAIL = "MOCK_TAGS_FAIL"  # a title containing this makes the candidate tagging call fail
 
@@ -783,13 +814,17 @@ def mock_refinements(request_text: str) -> list[dict[str, str]]:
     found = re.search(r"<instruction>(.*?)</instruction>", request_text, flags=re.DOTALL)
     text = (found.group(1) if found else request_text).strip().lower()
 
-    def item(kind: str, target: str, label: str) -> dict[str, str]:
+    from app.shop.retailers import retailer_of
+
+    def item(kind: str, target: str, label: str, mode: str = "none") -> dict[str, str]:
         strength = "hard" if kind.startswith(("exclude", "price")) else "focus"
-        return {"kind": kind, "target": target, "strength": strength, "label": label}
+        return {
+            "kind": kind, "target": target, "strength": strength, "label": label, "note_mode": mode,
+        }  # fmt: skip
 
     out: list[dict[str, str]] = []
     if "ignore previous" in text or "ignore all" in text or "system prompt" in text:
-        return [item("free_note", text[:40], text[:40])]
+        return [item("free_note", text[:40], text[:40], "prefer")]
     for m in re.finditer(r"(?:under|below|less than|max)\s*\$?(\d[\d,]*)", text):
         out.append(item("price_max", m.group(1).replace(",", ""), f"under ${m.group(1)}"))
     for m in re.finditer(r"(?:over|above|at least|min)\s*\$?(\d[\d,]*)", text):
@@ -812,12 +847,15 @@ def mock_refinements(request_text: str) -> list[dict[str, str]]:
             )
         elif word in ("marketplaces", "marketplace retailers"):
             out.append(item("exclude_tier", "marketplace_budget", "no marketplaces"))
-        elif word:
+        elif word and retailer_of(word) is not None:
             out.append(item("exclude_seller", word, f"no {word}"))
+        elif word:  # outside the vocabulary and not a retailer: a written note that excludes
+            out.append(item("free_note", word, f"no {word}", "exclude"))
     for m in re.finditer(r"(?:focus on|more from|more) ([a-z' &]+?)(?: frames?|$| and )", text):
         word = m.group(1).strip()
-        if word in ("metal", "wood", "glass", "stone"):
-            out.append(item("focus_value", f"material:{word}", f"focus on {word}"))
+        if word in ("metal", "wood", "glass", "stone") or word.startswith("mesh"):
+            value = "mesh" if word.startswith("mesh") else word
+            out.append(item("focus_value", f"material:{value}", f"focus on {value}"))
         elif word in ("round", "oval", "rectangular", "square"):
             out.append(item("focus_value", f"shape:{word}", f"focus on {word}"))
         elif word in (
@@ -836,9 +874,23 @@ def mock_refinements(request_text: str) -> list[dict[str, str]]:
             "mustard",
         ):
             out.append(item("focus_value", f"color:{word}", f"focus on {word}"))
-        elif word:
+        elif word and retailer_of(word) is not None:
             out.append(item("focus_seller", word, f"focus on {word}"))
+        elif word:  # a written note the shopper wants a lot of
+            out.append(item("free_note", word, f"focus on {word}", "focus"))
+    for m in re.finditer(r"must (?:look|be|feel) ([a-z ]{2,30})", text):
+        phrase = f"look {m.group(1).strip()}" if "look" in m.group(0) else m.group(1).strip()
+        out.append(item("free_note", phrase, f"must {phrase}", "focus"))
+    for m in re.finditer(r"(?:prefer|ideally|would like|would be nice) ([a-z' ]{2,30})", text):
+        out.append(item("free_note", m.group(1).strip(), f"prefer {m.group(1).strip()}", "prefer"))
     return out
+
+
+def fresh_pair(a: str, b: str) -> bool:
+    """Whether two mock queries differ by more than a reordering or one word."""
+    wa = {w.rstrip("s") for w in re.findall(r"[a-z0-9']+", a.lower())}
+    wb = {w.rstrip("s") for w in re.findall(r"[a-z0-9']+", b.lower())}
+    return len(wa & wb) / max(1, len(wa | wb)) < 0.8
 
 
 def mock_queries(request_text: str) -> list[str]:
@@ -860,7 +912,31 @@ def mock_queries(request_text: str) -> list[str]:
                 core.append(word)
     leanings = [re.sub(r"\s*\(.*\)", "", v) for v in field_of("Leaning toward")]
     out = [" ".join([*lean.split()[:2], *core][:8]) for lean in leanings[:2]]
-    return out or [" ".join(core[:8])]
+    out = out or [" ".join(core[:8])]
+    used = re.findall(
+        r"^  \* (.*)$", request_text.split("Queries already used")[-1], flags=re.MULTILINE
+    )
+    used = [u for u in used if u and not u.startswith("Titles")]
+    if "Queries already used" not in request_text:
+        return out
+
+    def words(text: str) -> frozenset[str]:
+        return frozenset(w.rstrip("s") for w in re.findall(r"[a-z0-9']+", text.lower()))
+
+    def fresh(text: str) -> bool:
+        mine = words(text)
+        return all(len(mine & words(u)) / max(1, len(mine | words(u))) < 0.8 for u in used)
+
+    # novel variants: the leaning queries first, then one modifier word in front of the core words
+    modifiers = ("modern", "classic", "premium", "affordable", "designer", "contemporary")
+    candidates = [*out, *(" ".join([m, *core][:8]) for m in modifiers)]
+    picked: list[str] = []
+    for text in candidates:
+        if fresh(text) and all(fresh_pair(text, p) for p in picked):
+            picked.append(text)
+        if len(picked) == 2:
+            break
+    return picked
 
 
 def mock_candidate_tool_input(request_text: str) -> dict[str, Any]:
@@ -869,22 +945,30 @@ def mock_candidate_tool_input(request_text: str) -> dict[str, Any]:
     from app.shop.vocab import DIMENSIONS, title_value
 
     items: list[dict[str, Any]] = []
+    notes = re.findall(r"<note \d+>(.*?)</note>", request_text)
     for line in request_text.splitlines():
         m = _CAND_ROW.match(line)
         if not m:
             continue
         values = {dim: title_value(dim, m.group(2)) for dim in DIMENSIONS}
-        items.append(
-            {
-                "index": int(m.group(1)),
-                "shape": values["shape"],
-                "material": values["material"],
-                "finish": values["color_finish"],
-                "frame_color": values["frame_color"],
-                "style": [values["style"]] if values["style"] else [],
-                "color": values["color"],
-            }
-        )
+        has_image = bool(re.search(r"\| image \d+$", m.group(4)))
+        if has_image and values["color"] is None:
+            # a photo shows the colour a title leaves out: a deterministic pseudo-photo colour
+            values["color"] = MOCK_PHOTO_PALETTE[
+                sum(map(ord, m.group(2))) % len(MOCK_PHOTO_PALETTE)
+            ]
+        row: dict[str, Any] = {
+            "index": int(m.group(1)),
+            "shape": values["shape"],
+            "material": values["material"],
+            "finish": values["color_finish"],
+            "frame_color": values["frame_color"],
+            "style": [values["style"]] if values["style"] else [],
+            "color": values["color"],
+        }
+        if notes:
+            row["notes"] = [_mock_note_flag(p, m.group(2), has_image) for p in notes]
+        items.append(row)
     return {"items": items}
 
 
@@ -997,7 +1081,11 @@ def mock_category_judge_input(text: str) -> dict[str, Any]:
 
     noun = re.search(r"^Product type: (.*)$", text, flags=re.MULTILINE)
     attrs = re.search(r"^Stated attributes: (.*)$", text, flags=re.MULTILINE)
+    from app.shop.vocab import normalize, title_value
+
     signals = category_words(noun.group(1).strip()) if noun else set()
+    ask = re.search(r"^Requested product color: (.*)$", text, flags=re.MULTILINE)
+    asked = normalize("color", ask.group(1)) if ask and ask.group(1).strip() != "none" else None
     for word in re.findall(r"[a-z]+", (noun.group(1) if noun else "").lower()):
         signals |= {word, word.rstrip("s"), word[:-2] if word.endswith("es") else word}
         if word.endswith("ves"):
@@ -1013,7 +1101,21 @@ def mock_category_judge_input(text: str) -> dict[str, Any]:
         else:
             category = "yes"
         attributes = "yes" if not wanted or any(w in title for w in wanted) else "cannot_tell"
-        items.append({"index": index, "category": category, "attributes": attributes})
+        if asked is None:
+            color_match = "not_asked"
+        else:
+            seen_color = title_value("color", title)
+            color_match = (
+                "cannot_tell" if seen_color is None else ("yes" if seen_color == asked else "no")
+            )
+        items.append(
+            {
+                "index": index,
+                "category": category,
+                "attributes": attributes,
+                "color_match": color_match,
+            }
+        )
     return {"items": items}
 
 

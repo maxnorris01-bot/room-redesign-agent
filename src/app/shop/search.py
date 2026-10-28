@@ -23,12 +23,13 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.categories import category_hits
+from app.categories import canonical_category, category_hits
 from app.config import Config
 from app.llm import Budget, LLMOutputError, complete
 from app.prompts import load_prompt
 from app.schemas import DimensionsM, RankedFinalists, SchemaError, parse_model, to_output_schema
-from app.shop.candidates import TagBook, Taggable, tag_results
+from app.shop import typed as typed_mod
+from app.shop.candidates import TagBook, Taggable, note_key, tag_results
 from app.shop.clock import Clock
 from app.shop.decide import composition, top_share
 from app.shop.dedupe import Dedupe, Index, Listing
@@ -52,8 +53,9 @@ from app.shop.nearby import (
     seen_items,
 )
 from app.shop.parse import color_word, parse_request
+from app.shop.phototags import ThumbCache, photo_tag_top
 from app.shop.progress import Progress, Timeline
-from app.shop.queries import QueryResult
+from app.shop.queries import QueryInput, QueryResult, variant_queries
 from app.shop.refine import RefineSet
 from app.shop.retailers import (
     MARKETPLACE_BUDGET,
@@ -78,22 +80,30 @@ from app.shop.thresholds import (
     NEAR_FP_WORKERS,
     OPEN_STRATUM_FLOOR,
     REFINE_FOCUS_MIN_SHARE,
+    SELLER_CAP_MAX,
     SELLER_MAX_SHARE,
     SELLER_PINNED_SHARE,
     SELLER_SEARCHES,
+    THIN_VARIANT_SEARCHES,
     TIER_BATCH_SHARE,
+    TYPED_MATCH_MIN_SHARE,
+    seller_cap,
 )
+from app.shop.typed import TypedAttr, typed_attributes
 from app.shop.vocab import OTHER, PHRASE_DIMS, phrase_word, style_leaves, tag_values, title_tags
 from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.shopping_retrieval import _record_provider_call, cap_per_seller
-from app.sizes import IN_M, resolve_size
+from app.sizes import FT_M, IN_M, resolve_size
 
 MAX_EXAMPLES = 8  # loved/liked and disliked titles shown to the ranker, each
 RANK_VERSION = "1"  # typed searches
 RANK_VERSION_AGAIN = "6"  # Shop Again: converged, open, leanings, setting, examples (v2-v5 kept)
 RANK_VERSION_CONTEXT = "6"  # a typed search whose request has a setting or colour suggestions
 RESULT_COUNT = 24  # results returned, and the fewest that avoid a second Serper page
-SELLER_CAP = 4  # most results one seller may have in the returned list. UNTUNED GUESS.
+EXHAUSTED_MESSAGE = (
+    "I ran out of new results for this search. Try changing the request or the refine chips."
+)
+SELLER_CAP = SELLER_CAP_MAX  # most results one seller may have in a full batch (see `seller_cap`)
 MAX_POOL = 60  # candidates shown to the ranker (keeps the prompt small)
 MAX_POOL_AGAIN = 80  # a Shop Again pools several phrasings, so the ranker sees more
 POOL_TARGET_AGAIN = 36  # a Shop Again pages deeper only while the pool is smaller than a batch (24)
@@ -173,6 +183,7 @@ class AgainContext:
     lean_away: list[tuple[str, str]] = field(default_factory=list)
     query_writer: Callable[[], QueryResult] | None = None
     query_result: QueryResult | None = None
+    typed: list[TypedAttr] = field(default_factory=list)  # stage 2p: typed attributes as quotas
     tag_source: dict[str, str] = field(default_factory=dict)
     liked_seller_keys: set[str] = field(default_factory=set)
     # stage 2l: the shopper's refine chips (they outrank everything inferred), what each removed
@@ -330,13 +341,28 @@ def apply_filters(
     return pool, counts
 
 
-def format_size_hint(dims: DimensionsM) -> str | None:
-    """'79" W × 36" D', '48" W × 72" L' or '58" long' from sizes in metres; None when empty."""
+def format_size_hint(dims: DimensionsM, category: str | None = None) -> str | None:
+    """'79" W × 36" D', '48" W × 72" L' or '58" long' from sizes in metres; None when empty. A rug
+    with a width and a length reads in feet, the way rugs are sold: "8' × 10'"."""
 
     def inches(value: float) -> str:
         n = value / IN_M
         return f"{n:.1f}".removesuffix(".0") if n < 10 else f"{n:.0f}"
 
+    if (
+        category is not None
+        and canonical_category(category) == "rug"
+        and dims.width_m
+        and dims.length_m
+    ):
+
+        def feet(value: float) -> str:
+            n = value / FT_M
+            return f"{n:.1f}".removesuffix(".0")
+
+        return (
+            f"{feet(min(dims.width_m, dims.length_m))}' × {feet(max(dims.width_m, dims.length_m))}'"
+        )
     parts = [
         f'{inches(v)}" {label}'
         for v, label in (
@@ -353,8 +379,9 @@ def format_size_hint(dims: DimensionsM) -> str | None:
 
 
 def size_hint_for(title: str, query: ShopQuery) -> str | None:
-    size = resolve_size(query.category_key or query.category, None, [title], "")
-    return format_size_hint(size.dims) if size.dims is not None else None
+    category = query.category_key or query.category
+    size = resolve_size(category, None, [title], "")
+    return format_size_hint(size.dims, category) if size.dims is not None else None
 
 
 def _price(value: float | None) -> str:
@@ -409,6 +436,17 @@ def setting_lines(query: ShopQuery) -> list[str]:
     return lines
 
 
+def typed_lines(attrs: list[TypedAttr]) -> list[str]:
+    """What the ranker is told about typed attributes (stage 2p): they are quotas, so favor them."""
+    if not attrs:
+        return []
+    named = "; ".join(f"{a.dim.replace('_', ' ')}: {a.typed}" for a in attrs)
+    return [
+        "Typed product attributes (must favor: at least "
+        f"{TYPED_MATCH_MIN_SHARE:.0%} of the final list will have them): {named}"
+    ]
+
+
 def rank_user_text(
     query: ShopQuery, pool: list[SearchCandidate], n: int, again: AgainContext | None = None
 ) -> str:
@@ -431,6 +469,7 @@ def rank_user_text(
         line("Avoid", query.avoid),
     ]
     lines += setting_lines(query)
+    lines += typed_lines(again.typed if again is not None else typed_attributes(query))
     if again is not None:
         lines += again.refine_lines
         styles = [t for t in query.style_terms if t not in again.guesses]
@@ -593,10 +632,15 @@ def build_results(
     colors: tuple[list[str], list[str]] | None = None,
     focus: list[tuple[str, str]] | None = None,
     groups: dict[str, list[SearchCandidate]] | None = None,
+    cap_override: int | None = None,
+    typed: list[TypedAttr] | None = None,
 ) -> tuple[list[ShopResult], int, int]:
     """Walk the ranked order, up to `RESULT_COUNT`, keeping:
 
-      * at most `SELLER_CAP` results per seller, except a seller the shopper has an affinity for
+      * at most `seller_cap(batch size)` results per seller (clamp(floor(0.30 x size), 2, 4);
+        stage 2p: the cap follows the batch, so a short one cannot give a third to one seller;
+        the walk assumes the size the pool can fill and walks again with the smaller cap if the
+        batch comes out shorter), except a seller the shopper has an affinity for
         (up to `SELLER_MAX_SHARE` of a batch) and a pinned seller (`SELLER_PINNED_SHARE`);
       * for each guarded dimension, at most its share of a batch (`guard_caps`:
         `DIVERSITY_MAX_SHARE` for an open dimension or shape, `CONVERGED_MAX_SHARE` for a converged
@@ -628,6 +672,7 @@ def build_results(
     """
     affinity = affinity_sellers or set()
     pinned = pinned_sellers or set()
+    base_cap = cap_override or seller_cap(min(RESULT_COUNT, len(ordered)))
     caps = dict(guard_caps) if guard_caps else {d: DIVERSITY_MAX_SHARE for d in (guard_dims or [])}
     guard = list(caps)
     affinity_cap = int(SELLER_MAX_SHARE * RESULT_COUNT)
@@ -669,7 +714,7 @@ def build_results(
             seller_skipped.add(index)
             return False
         key = seller_key(candidate.seller)
-        cap = pinned_cap if key in pinned else affinity_cap if key in affinity else SELLER_CAP
+        cap = pinned_cap if key in pinned else affinity_cap if key in affinity else base_cap
         if per_seller.get(key, 0) >= cap:
             seller_skipped.add(index)
             return False
@@ -716,6 +761,28 @@ def build_results(
                 and try_take(index, candidate)
             ):
                 have += 1
+    if (
+        typed
+    ):  # stage 2p: typed colour, material and finish are quotas (after the shopper's focus chips)
+        want = typed_mod.target(RESULT_COUNT)
+        every = typed_mod.match_filter(typed)
+        have_all = sum(1 for i in accepted if every(tag_of(ordered[i][0])))
+        for index, (candidate, _) in enumerate(ordered):  # items that match every typed attribute
+            if have_all >= want or len(accepted) >= RESULT_COUNT:
+                break
+            if index not in taken and every(tag_of(candidate)) and try_take(index, candidate):
+                have_all += 1
+        for attr in typed:  # then, per attribute, whatever else matches it
+            have = sum(1 for i in accepted if typed_mod.matches(tag_of(ordered[i][0]), attr))
+            for index, (candidate, _) in enumerate(ordered):
+                if have >= want or len(accepted) >= RESULT_COUNT:
+                    break
+                if (
+                    index not in taken
+                    and typed_mod.matches(tag_of(candidate), attr)
+                    and try_take(index, candidate)
+                ):
+                    have += 1
     if tier_limit is not None:
         for index, (candidate, _) in enumerate(ordered):
             if tier_count >= min(tier_limit[2], tier_limit[1]) or len(accepted) >= RESULT_COUNT:
@@ -801,6 +868,13 @@ def build_results(
                 ),
             )
         )
+    shorter = seller_cap(len(results))
+    if len(results) < RESULT_COUNT and shorter < base_cap:  # the batch came out short: tighten
+        return build_results(
+            ordered, query, pool_index, affinity_sellers, pinned_sellers, guard_dims, guard_caps,
+            tags, strata, tier_limit, leanings, colors, focus, groups, cap_override=shorter,
+            typed=typed,
+        )  # fmt: skip
     return results, len(seller_skipped - taken), len(diversity_skipped - taken)
 
 
@@ -1014,6 +1088,7 @@ def run_query(
     clock: Clock | None = None,
     progress: Callable[[str], None] | None = None,
     near: NearContext | None = None,
+    photos: ThumbCache | None = None,
 ) -> SearchOutcome:
     """Search, filter, de-duplicate, rank, (tag), cap and return the results for a parsed `query`.
 
@@ -1346,6 +1421,38 @@ def run_query(
                     pipeline.submit(added)
                 row["found"], row["new_candidates"] = len(got), len(added)
             model_log.append(row)
+    thin_info: dict[str, Any] = {}
+    if again is None and config.shop_thin_variants and search.name == "serper" and pool is not None:
+        # stage 2p: a typed search that cannot fill a batch tries up to THIN_VARIANT_SEARCHES
+        # differently worded searches before giving up, inside a Shop Again's normal Serper cap
+        shown_possible = len(cap_per_seller(pool, SELLER_CAP)[0])
+        variant_cap = min(max_calls + THIN_VARIANT_SEARCHES, config.shop_again_max_serper_calls)
+        want = min(THIN_VARIANT_SEARCHES, variant_cap - calls)
+        if shown_possible < RESULT_COUNT and want > 0 and not expired("the variant searches"):
+            with timeline.span("model", "write variant queries"):
+                made = variant_queries(
+                    QueryInput(
+                        base=query, adjusted=query, used=list(used), existing=list(used),
+                        setting=setting_lines(query),
+                    ),
+                    budget, config,
+                )  # fmt: skip
+            thin_info = {
+                "before": shown_possible, "asked_model": config.shop_model_queries,
+                "from_fallback": made.fallback, "dropped": list(made.dropped), "variants": [],
+            }  # fmt: skip
+            for text in made.accepted[:want]:
+                calls += 1
+                got = fetch(text, 1)
+                row = {"query": text, "found": 0, "new_candidates": 0, "error": ""}
+                if isinstance(got, Exception):
+                    row["error"] = "search failed"
+                    warnings.append(f"A variant search was unavailable ({got}).")
+                else:
+                    added = absorb(text, 1, got)
+                    row["found"], row["new_candidates"] = len(got), len(added)
+                thin_info["variants"].append(row)
+            thin_info["after"] = len(cap_per_seller(pool, SELLER_CAP)[0])
     if steps is not None:
         steps.finish("searching")
     timeline.phase_end("searching")
@@ -1425,9 +1532,48 @@ def run_query(
         timeline.phase_end("tagging")
         tag_seconds = pipeline.seconds
 
+    typed_attrs: list[TypedAttr] = again.typed if again is not None else typed_attributes(query)
+    photo_book: TagBook | None = None
+    photo_info: dict[str, Any] = {}
+
+    def photo_step() -> None:
+        """Stage 2p: tag the top candidates from their thumbnail too (a photo tag overrides the
+        title tag), inside `PHOTO_TAG_BUDGET_S` and the hard stop."""
+        nonlocal photo_info
+        notes_on = book is not None and bool(book.notes)
+        if photos is None or not ordered or (config.shop_photo_tag_top_n <= 0 and not notes_on):
+            return
+        if expired("the photo tagging"):
+            return
+        target_book = book if book is not None else photo_book
+        if target_book is None:
+            return
+        say("Reading photos")
+        with timeline.span(
+            "model", f"photo tags for {min(len(ordered), config.shop_photo_tag_top_n)}"
+        ):
+            report = photo_tag_top(
+                [
+                    Taggable(
+                        result_id(c.product_id), c.title, c.price, c.seller, c.thumbnail_url or ""
+                    )
+                    for c, _ in ordered
+                ],
+                target_book, budget, clock, config, photos,
+                again.tag_source if again is not None else typed_sources,
+                timeline, max(0.0, hard_stop_at - clock.now()),
+                use_images=config.shop_photo_tag_top_n > 0,
+                limit=config.shop_photo_tag_top_n or config.shop_tag_top_n,
+            )  # fmt: skip
+        photo_info = report.as_dict()
+
+    typed_sources: dict[str, str] = {}
+    if again is None and photos is not None and config.shop_photo_tag_top_n > 0:
+        photo_book = TagBook()
     if again is not None and book is not None:
         composition_info["peers"] = peer_log
         tag_top(ordered)
+        photo_step()
         if not minority_values([c for c, _ in ordered], again):
             tag_top(ordered, supply=True)  # no supply search is needed: the reserve tags more
         composition_info["pool_before"] = pool_composition(
@@ -1483,9 +1629,19 @@ def run_query(
             [c for c, _ in ordered], again, config.shop_tag_top_n
         )
 
+    if again is None:
+        photo_step()
     # ---- select the batch (and, when it is short, one refill search) ----
     tag_of: Callable[[SearchCandidate], Mapping[str, str | None]] | None = None
     strata: tuple[str, dict[str, int]] | None = None
+    if again is None and photo_book is not None and photo_book.new:
+        typed_book = photo_book
+
+        def _typed_tag_of(candidate: SearchCandidate) -> Mapping[str, str | None]:
+            seen_tags = typed_book.get(result_id(candidate.product_id)) or {}
+            return {**title_tags(candidate.title), **{k: v for k, v in seen_tags.items() if v}}
+
+        tag_of = _typed_tag_of
     if again is not None:
 
         def _tag_of(candidate: SearchCandidate) -> Mapping[str, str | None]:
@@ -1536,15 +1692,23 @@ def run_query(
             (query.suggested_colors, query.avoid_colors),
             again.refine.focus_pairs() if again is not None and again.refine else None,
             groups_by_pid,
+            typed=typed_attrs,
         )
 
-    if again is not None and again.refine is not None and again.refine.exclude_values:
+    if (
+        again is not None
+        and again.refine is not None
+        and (again.refine.exclude_values or again.refine.exclude_notes)
+    ):
         kept_pairs = []
         for pair in ordered:  # the model's tags (better than the title) decide the exclusions
             chip = ""
             tags_now = tag_of(pair[0]) if tag_of is not None else title_tags(pair[0].title)
             for (dim, value), cid in again.refine.exclude_values.items():
                 if _holds(tags_now, dim, value):
+                    chip = cid
+            for cid in again.refine.exclude_notes:  # an exclude note removes what is flagged true
+                if tags_now.get(note_key(cid)) == "true":  # (unknown is never removed)
                     chip = cid
             if chip:
                 again.refine_dropped.setdefault(chip, set()).add(pair[0].product_id)
@@ -1584,6 +1748,25 @@ def run_query(
                 )  # fmt: skip
                 results, capped, diversity_skipped = select()
                 refill_log[-1]["after"] = len(results)
+    typed_info: dict[str, Any] = {}
+    if typed_attrs:
+        final_tags = tag_of if tag_of is not None else (lambda c: title_tags(c.title))
+        by_pid = {result_id(c.product_id): c for c, _ in ordered}
+        batch_tags = [final_tags(by_pid[r.id]) for r in results if r.id in by_pid]
+        pool_tags = [final_tags(c) for c, _ in ordered]
+        missed = typed_mod.shortfalls(typed_attrs, list(batch_tags), list(pool_tags))
+        typed_info = {
+            "attributes": [{"label": a.label, "dimension": a.dim, "accepts": sorted(a.values)}
+                           for a in typed_attrs],
+            "quota_share": TYPED_MATCH_MIN_SHARE, "batch": len(results),
+            "matched": {a.label: sum(1 for t in batch_tags if typed_mod.matches(t, a))
+                        for a in typed_attrs},
+            "shortfalls": missed, "photo": photo_info,
+        }  # fmt: skip
+        for short in missed:
+            warnings.append(typed_mod.banner(short))
+    elif photo_info:
+        typed_info = {"photo": photo_info}
     counts.seller_capped = capped
     if again is not None:
         counts.marketplace_excluded = len(again.marketplace_dropped)
@@ -1654,12 +1837,37 @@ def run_query(
         f"{counts.seen_excluded} seen or rated, {counts.duplicates} duplicates, "
         f"{filtered_out} filtered out"
     )
+    exhausted: dict[str, Any] = {}
     if again is not None and len(results) < RESULT_COUNT:
-        warnings.append(
-            f"Only {len(results)} new results found: {explanation}. Try changing the request."
-            if results
-            else f"No new results found: {explanation}. Try changing the request."
+        if results:
+            warnings.append(
+                f"Only {len(results)} new results found: {explanation}. Try changing the request."
+            )
+        else:  # stage 2p: nothing unseen is left; say so plainly and keep the reason
+            warnings.append(EXHAUSTED_MESSAGE)
+            exhausted = {
+                "reason": explanation,
+                "seen_or_rated": counts.seen_excluded, "duplicates": counts.duplicates,
+                "filtered_out": filtered_out, "serper_calls": calls,
+                "queries_used_before": len(again.skip_pages),
+                "writer_asked": bool(query_result and query_result.asked),
+                "writer_accepted": list(query_result.accepted) if query_result else [],
+                "writer_dropped": list(query_result.dropped) if query_result else [],
+            }  # fmt: skip
+    elif again is None and results and len(results) < RESULT_COUNT:
+        why = ", ".join(
+            f"{n} {what}"
+            for n, what in (
+                (filtered_out, "filtered out by price or category"),
+                (counts.duplicates, "duplicates"),
+                (capped, "held back by the per-seller cap"),
+            )
+            if n
         )
+        warnings.append(
+            f"Only {len(results)} results matched" + (f" ({why})" if why else "")
+            + "; try broadening the request."
+        )  # fmt: skip
     elif not results:
         warnings.append("No results matched the filters. Try loosening the price or the wording.")
     if again is not None and again.refine is not None and len(results) < MARKET_MIN_RESULTS:
@@ -1684,6 +1892,10 @@ def run_query(
             "explanation": explanation,
         }  # fmt: skip
         composition_info["refill"] = refill_log
+        if typed_info:
+            composition_info["typed"] = typed_info
+        if exhausted:
+            composition_info["exhausted"] = exhausted
         composition_info["dedupe"] = dd
         composition_info["marketplace_excluded"] = len(again.marketplace_dropped)
         composition_info["refine_removed"] = {k: len(v) for k, v in again.refine_dropped.items()}
@@ -1779,6 +1991,10 @@ def run_query(
         diversity=diversity,
         seller_share=seller_share,
         composition=composition_info,
+        trace={
+            **({"thin": thin_info} if thin_info else {}),
+            **({"typed": typed_info} if typed_info and again is None else {}),
+        },
         new_tags=dict(book.new) if book is not None else {},
         peer_log=list(peer_log),
         request_trace=request_trace,
@@ -1866,6 +2082,8 @@ def _focus_holds(
         return seller_key(c.seller) == value
     if dim == "tier":
         return tier_of(c.seller) == value
+    if dim == "note":  # a free note: the tagging flagged this item as matching it
+        return tag_of(c).get(note_key(value)) == "true"
     return _holds(tag_of(c), dim, value)
 
 
@@ -1999,6 +2217,7 @@ def run_search(
     progress: Callable[[str], None] | None = None,
     clock: Clock | None = None,
     near: NearContext | None = None,
+    photos: ThumbCache | None = None,
 ) -> SearchOutcome:
     """Parse `request`, search, filter, rank and cap. Raises `ProviderError` when page 1 fails
     (nothing to show) and `BudgetExceededError` past a cap; page 2 and ranking degrade."""
@@ -2011,4 +2230,6 @@ def run_search(
     query, _, parse_warning = parse_request(clean_request(request), budget)
     if parse_warning:
         warnings.append(parse_warning)
-    return run_query(query, search, config, budget, warnings, t0, None, clock, progress, near)
+    return run_query(
+        query, search, config, budget, warnings, t0, None, clock, progress, near, photos
+    )

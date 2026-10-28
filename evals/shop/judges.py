@@ -40,6 +40,7 @@ JUDGE_MAX_TOKENS = 700
 MAX_TITLE_CHARS = 160
 CATEGORY_VALUES = ("yes", "no", "accessory_or_part")
 ATTRIBUTE_VALUES = ("yes", "no", "cannot_tell")
+COLOR_MATCH_VALUES = ("yes", "no", "cannot_tell", "not_asked")
 PERSONA_VALUES = ("love", "like", "dislike")
 
 
@@ -51,6 +52,7 @@ class CategoryVerdict(_Strict):
     index: int
     category: Literal["yes", "no", "accessory_or_part"]
     attributes: Literal["yes", "no", "cannot_tell"]
+    color_match: Literal["yes", "no", "cannot_tell", "not_asked"]
 
 
 class CategoryJudgements(_Strict):
@@ -117,12 +119,16 @@ PERSONA_TOOL_DEF = tool_def(
 
 
 def category_user_text(case: Case, rows: list[str]) -> str:
+    from app.shop.vocab import COLOR_LABELS
+
     attrs = [*case.styles, *case.materials, *case.must_have]
+    color = COLOR_LABELS.get(case.product_color or "", case.product_color or "") or "none"
     return "\n".join(
         [
             f"<request>{clean_title(case.request)}</request>",
             f"Product type: {case.category_noun}",
             f"Stated attributes: {'; '.join(attrs) if attrs else 'none'}",
+            f"Requested product color: {color}",
             "Listings (index | title | price | seller | image):",
             *rows,
         ]

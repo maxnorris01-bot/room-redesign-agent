@@ -33,7 +33,7 @@ import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from PIL import Image
 
@@ -50,6 +50,9 @@ from app.shop.thresholds import (
     NEAR_TITLE_PRICE,
 )
 from app.thumbnails import HttpThumbnailer, Thumbnailer, fetch_traced
+
+if TYPE_CHECKING:
+    from app.shop.phototags import ThumbCache
 
 FP_MAX_BYTES = 500_000
 FP_PIXEL_LIMIT = 24_000_000
@@ -106,13 +109,22 @@ class Fingerprinter(Protocol):
 class HttpFingerprinter:
     """Real fingerprints: the guarded fetcher with a 500 KB cap, then `dhash_of_prepared`."""
 
-    def __init__(self, config: Config, thumbnailer: Thumbnailer | None = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        thumbnailer: Thumbnailer | None = None,
+        cache: ThumbCache | None = None,
+    ) -> None:
         self.config = config
         self._thumbnailer = thumbnailer or HttpThumbnailer(max_bytes=FP_MAX_BYTES)
+        self._cache = cache  # stage 2p: the one place thumbnails are fetched (photo tags reuse it)
 
     def fetch(self, url: str) -> int | None:
         if not url.startswith("https://"):
             return None
+        if self._cache is not None:  # fetched once, here or by the photo tagging step
+            image = self._cache.image(url)
+            return dhash_of_prepared(image) if image is not None else None
         try:
             got = fetch_traced(self._thumbnailer, url, self.config)
         except Exception:
@@ -142,10 +154,12 @@ class MockFingerprinter:
         return self.fetch(url)
 
 
-def build_fingerprinter(config: Config) -> Fingerprinter | None:
+def build_fingerprinter(config: Config, cache: ThumbCache | None = None) -> Fingerprinter | None:
     if not config.shop_near_duplicates or not config.thumbnails:
         return None
-    return MockFingerprinter() if config.llm_mode == "mock" else HttpFingerprinter(config)
+    if config.llm_mode == "mock":
+        return MockFingerprinter()
+    return HttpFingerprinter(config, cache=cache)
 
 
 # ---- the title signal ---------------------------------------------------------------------------------

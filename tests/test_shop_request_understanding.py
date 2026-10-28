@@ -202,8 +202,9 @@ def test_the_tagging_tool_has_a_colour_field_and_the_old_prompt_is_kept() -> Non
         load_prompt("shop_parse").version == "2" and load_prompt("shop_parse", "1").version == "1"
     )
     assert (
-        load_prompt("shop_queries").version == "2"
+        load_prompt("shop_queries").version == "3"
         and load_prompt("shop_queries", "1").version == "1"
+        and load_prompt("shop_queries", "2").version == "2"
     )
     # 8 more tokens an item: a batch of 40 gets 2 * (100 + 48 * 40)
     assert tag_max_tokens(40, "tool") == 4040

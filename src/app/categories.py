@@ -19,6 +19,20 @@ def norm(category: str) -> str:
 # are "area rug" and "rug".
 _SYNONYMS: list[tuple[str, tuple[str, ...]]] = [
     ("lamp", ("lamp", "torchiere", "torchère", "floor light", "standing light")),
+    (
+        "desk chair",
+        (
+            "desk chair",
+            "office chair",
+            "task chair",
+            "computer chair",
+            "gaming chair",
+            "ergonomic chair",
+            "swivel chair",
+        ),
+    ),  # before "desk": "desk chair" must not fold into desks (stage 2p)
+    ("dining chair", ("dining chair", "kitchen chair", "dining room chair")),
+    ("curtain", ("curtain", "drape", "drapery", "window panel")),
     ("rug", ("rug", "carpet")),
     ("sofa", ("sofa", "couch", "loveseat", "sectional")),
     ("armchair", ("armchair", "accent chair", "lounge chair", "recliner")),
@@ -37,7 +51,7 @@ _SYNONYMS: list[tuple[str, tuple[str, ...]]] = [
             "entertainment unit",
         ),
     ),  # fmt: skip
-    ("bookshelf", ("bookshelf", "bookcase", "shelving unit", "shelf unit")),
+    ("bookshelf", ("bookshelf", "bookshelves", "bookcase", "shelving unit", "shelf unit")),
     ("nightstand", ("nightstand", "bedside table", "night stand")),
     ("ottoman", ("ottoman", "pouf", "footstool", "hassock")),
     ("console table", ("console table", "entry table", "entryway table", "hall table")),
@@ -53,11 +67,35 @@ _SYNONYMS: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
+def singular(word: str) -> str:
+    """A noun without its plural ending: chairs -> chair, shelves -> shelf, couches -> couch. Words
+    that merely end in s (glass, bus, tennis) are left alone. Used to compare categories, never to
+    rewrite what a shopper typed."""
+    if len(word) <= 3 or not word.isalpha():
+        return word
+    if word.endswith("ves") and len(word) > 4:
+        return word[:-3] + "f"
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith(("sses", "ches", "shes", "xes", "zes")):
+        return word[:-2]
+    if word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+    return word
+
+
+def _singular_text(text: str) -> str:
+    return " ".join(singular(w) for w in text.split())
+
+
 def canonical_category(category: str) -> str:
-    """Normalized category with synonyms folded: "Area rug" -> "rug", "torchiere" -> "lamp"."""
-    c = norm(category)
+    """Normalized category with synonyms folded and the plural made singular: "Area rugs" -> "rug",
+    "torchiere" -> "lamp", "dining chairs" and "dining chair" -> "dining chair", "bookshelves" ->
+    "bookshelf", "desk chairs" -> "desk chair" (not "desk"). An unknown category is returned
+    singular ("chandeliers" -> "chandelier"), so a plural and a singular share one key."""
+    c = _singular_text(norm(category))
     for canonical, keywords in _SYNONYMS:
-        if any(k in c for k in keywords):
+        if any(_singular_text(k) in c for k in keywords):
             return canonical
     return c
 
@@ -73,6 +111,27 @@ def known_category(category: str) -> str | None:
     return None
 
 
+def _plural_pattern(keyword: str) -> str:
+    """A whole-word pattern for `keyword` or its plural (couch/couches, shelf/shelves)."""
+    word = re.escape(keyword)
+    if keyword.endswith("f"):
+        return rf"\b(?:{word}s?|{re.escape(keyword[:-1])}ves)\b"
+    return rf"\b{word}(?:es|s)?\b"
+
+
+def category_phrase(text: str) -> str | None:
+    """The longest known category phrase in `text`, as written (plural kept): "round black metal
+    side tables" -> "side tables". Used by the mock request parser; None when nothing matches."""
+    lowered = text.lower()
+    best: str | None = None
+    for name, keywords in _SYNONYMS:
+        for k in (name, *keywords):
+            m = re.search(_plural_pattern(k), lowered)
+            if m and (best is None or len(m.group(0)) > len(best)):
+                best = m.group(0)
+    return best
+
+
 def category_hits(text: str) -> set[str]:
     """Known categories whose keywords appear in `text` as whole words (a plural counts).
 
@@ -84,7 +143,7 @@ def category_hits(text: str) -> set[str]:
     pairs = [(name, (name, *keywords)) for name, keywords in _SYNONYMS]
     pairs += [(name, (name,)) for name in SIZE_RANGE_IN if name not in {n for n, _ in _SYNONYMS}]
     for name, keywords in pairs:
-        if any(re.search(rf"\b{re.escape(k)}s?\b", lowered) for k in keywords):
+        if any(re.search(_plural_pattern(k), lowered) for k in keywords):
             hits.add(name)
     return hits
 
@@ -95,13 +154,13 @@ def already_covered(category: str, taken: list[str]) -> bool:
     return any(c in t or t in c or canon == canonical_category(t) for t in taken)
 
 
-FLAT_WORDS = {"rug", "runner", "mat", "carpet"}
+FLAT_WORDS = {"rug", "runner", "mat", "carpet", "curtain", "drape"}
 
 
 def is_flat_item(category: str) -> bool:
-    """Flat goods (rug, runner, mat, carpet): a footprint rule makes no sense for them."""
-    return canonical_category(category) == "rug" or bool(
-        FLAT_WORDS & set(re.findall(r"[a-z]+", category.lower()))
+    """Flat goods (rug, runner, mat, carpet, curtain): a footprint rule makes no sense for them."""
+    return canonical_category(category) in ("rug", "curtain") or bool(
+        FLAT_WORDS & {singular(w) for w in re.findall(r"[a-z]+", category.lower())}
     )
 
 
@@ -131,8 +190,9 @@ SIZE_RANGE_IN: dict[str, tuple[float, float]] = {
     "filing cabinet": (12.0, 50.0),
     "cabinet": (12.0, 80.0),
     "bar cart": (16.0, 50.0),
-    "office chair": (18.0, 46.0),
-    "dining chairs": (14.0, 46.0),
+    "desk chair": (18.0, 46.0),
+    "dining chair": (14.0, 46.0),
+    "curtain": (30.0, 144.0),  # a panel's width or length, inches
     "pendant light": (6.0, 60.0),
 }
 DEFAULT_SIZE_RANGE_IN = (6.0, 200.0)
@@ -193,7 +253,7 @@ FAMILIES: dict[str, tuple[str, ...]] = {
     "storage": ("media unit", "console table", "sideboard", "cabinet", "filing cabinet"),
     "bedroom storage": ("dresser", "wardrobe"),
     "occasional tables": ("coffee table", "side table"),
-    "chairs": ("armchair", "office chair", "dining chairs"),
+    "chairs": ("armchair", "desk chair", "dining chair"),
     "extra seating": ("ottoman", "bench"),
     "lighting": ("lamp", "pendant light"),
 }

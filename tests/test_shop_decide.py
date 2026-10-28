@@ -932,15 +932,16 @@ def test_the_largest_share_per_dimension_is_logged(
     assert again["search"]["seller_share"]["share"] <= 0.5
 
 
-def test_the_seller_caps_are_four_half_and_four_fifths() -> None:
+def test_the_seller_caps_follow_the_batch_half_and_four_fifths() -> None:
     pool = [candidate(i, f"Table {i}", "Fav") for i in range(30)] + [
         candidate(100 + i, f"Other {i}", "Shop") for i in range(10)
     ]
     index = {c.product_id: n for n, c in enumerate(pool, 1)}
     plain, _, _ = build_results(ordered(pool), query(request="t"), index)
-    assert [r.seller for r in plain].count("Fav") == 4 and [r.seller for r in plain].count(
+    # stage 2p: two sellers can fill only 4 results, and the cap of a batch that size is 2 each
+    assert [r.seller for r in plain].count("Fav") == 2 and [r.seller for r in plain].count(
         "Shop"
-    ) == 4
+    ) == 2 == thresholds.seller_cap(len(plain))
     half, _, _ = build_results(ordered(pool), query(request="t"), index, affinity_sellers={"fav"})
     assert [r.seller for r in half].count("Fav") == 12 == int(thresholds.SELLER_MAX_SHARE * 24)
     pinned, _, _ = build_results(

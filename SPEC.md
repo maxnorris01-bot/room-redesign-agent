@@ -153,3 +153,8 @@ ADR 0012, stage 2o.
 Stage 3: a Shop Mode eval under `evals/shop/` (12 requests, hidden personas, code scorers, two Haiku judges,
 thresholds in `thresholds.json` with their hash recorded in every result). `make eval-shop-plan` and
 `make eval-shop-mock` are free; `make eval-shop-live` needs `EVAL_SHOP_CONFIRM=yes`. See ADR 0012, stage 3.
+
+Stage 2p (fixes from the first live Shop eval): singular and plural are one category key and desk chairs are not desks; the
+per-seller cap follows the batch size; every Shop Again asks the query writer for two new queries and says plainly when it ran
+out of results; a typed colour, material or finish is a 70% quota backed by photo tags of the top candidates; a written refine
+note ("fluted legs", "no leather") has a strength and is matched by description. See ADR 0012, stage 2p.

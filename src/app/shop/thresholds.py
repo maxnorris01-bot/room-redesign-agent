@@ -7,6 +7,8 @@ numbers. They are starting points, not measurements: the stage 3 eval should tun
 
 from __future__ import annotations
 
+import math
+
 # item weights: how much a rated item counts as evidence
 LOVE_WEIGHT = 3
 LIKE_WEIGHT = 1
@@ -55,6 +57,17 @@ MARKET_MIN_RESULTS = 12  # fewer results than this without marketplaces gets a b
 MARKET_REDISMISS_RATED = 8  # a deleted exclusion chip returns only after this many more ratings
 SELLER_SEARCHES = 3  # seller searches per Shop Again (liked sellers first, then peers)
 MODEL_QUERIES = 2  # model-written search queries per Shop Again
+QUERY_NOVELTY_JACCARD = (
+    0.8  # a written query sharing this much of its words with a used one is a repeat
+)
+TYPED_MATCH_MIN_SHARE = 0.70  # a typed colour, material or finish: at least this share of a batch
+PHOTO_TAG_BATCH = 12  # candidates per photo tagging call
+PHOTO_TAG_WORKERS = 3  # photo tagging calls at once
+PHOTO_TAG_BUDGET_S = 6.0  # seconds for the whole photo tagging step; the rest keep title tags
+PHOTO_CACHE_MAX = 200  # prepared thumbnails kept per service so none is fetched twice
+THIN_VARIANT_SEARCHES = (
+    2  # extra variant searches a typed search may run when fewer than 24 results
+)
 QUERY_MAX_WORDS = 8  # words in a model-written query
 QUERY_LIKED_TITLES = 6  # liked titles shown to the query writer
 QUERY_DISLIKED_TITLES = 4  # disliked titles shown to the query writer
@@ -78,6 +91,8 @@ REFINE_FOCUS_MIN_SHARE = 0.50  # a "focus on" chip takes at least this share of 
 REFINE_MAX_PER_SUBMIT = 5  # interpretations kept from one instruction
 REFINE_MAX_CHIPS = 12  # active refine chips in a topic
 REFINE_MAX_CHARS = 200  # characters in one instruction
+FREE_NOTES_MAX = 3  # active free-note refinements (each is a per-item flag in the tagging calls)
+NOTE_MAX_CHARS = 120  # characters in a free note's phrase
 
 # quality cues (non-exclusive phrases such as "solid wood"): share of the positive items showing it
 QUALITY_CUE_MIN_SHARE = 0.50
@@ -96,7 +111,17 @@ DIVERSITY_MAX_SHARE = 0.60  # no single known value of an open dimension (or sha
 CONVERGED_MAX_SHARE = 0.80  # no single known value of a converged dimension above this share
 SELLER_MAX_SHARE = 0.50  # an affinity seller's share of a batch
 SELLER_PINNED_SHARE = 0.80  # a pinned seller's share
-SELLER_DEFAULT_CAP = 4  # results from any other seller (as in a typed search)
+SELLER_CAP_SHARE = 0.30  # one ordinary seller's share of a batch (stage 2p; was a fixed 4)
+SELLER_CAP_MIN = 2  # ... but never fewer than this many results per seller
+SELLER_CAP_MAX = 4  # ... and never more than this (the old fixed cap)
+
+
+def seller_cap(batch_size: int) -> int:
+    """Most results one ordinary seller (not an affinity or pinned one) may have in a batch of
+    `batch_size`: clamp(floor(0.30 x batch size), 2, 4). Batches of 24 or more get 4 (as before), 12
+    gets 3, 8 or fewer get 2, so a short batch does not allow a third of itself from one seller."""
+    return max(SELLER_CAP_MIN, min(SELLER_CAP_MAX, math.floor(SELLER_CAP_SHARE * batch_size)))
+
 
 # stage 2e: supply and selection for open dimensions
 MINORITY_POOL_SHARE = 0.40  # an open value under this share of the pool triggers targeted searches
@@ -137,6 +162,13 @@ def all_thresholds() -> dict[str, float | int]:
         "MARKET_REDISMISS_RATED": MARKET_REDISMISS_RATED,
         "SELLER_SEARCHES": SELLER_SEARCHES,
         "MODEL_QUERIES": MODEL_QUERIES,
+        "QUERY_NOVELTY_JACCARD": QUERY_NOVELTY_JACCARD,
+        "THIN_VARIANT_SEARCHES": THIN_VARIANT_SEARCHES,
+        "TYPED_MATCH_MIN_SHARE": TYPED_MATCH_MIN_SHARE,
+        "PHOTO_TAG_BATCH": PHOTO_TAG_BATCH,
+        "PHOTO_TAG_WORKERS": PHOTO_TAG_WORKERS,
+        "PHOTO_TAG_BUDGET_S": PHOTO_TAG_BUDGET_S,
+        "PHOTO_CACHE_MAX": PHOTO_CACHE_MAX,
         "QUERY_MAX_WORDS": QUERY_MAX_WORDS,
         "QUERY_LIKED_TITLES": QUERY_LIKED_TITLES,
         "QUERY_DISLIKED_TITLES": QUERY_DISLIKED_TITLES,
@@ -155,6 +187,8 @@ def all_thresholds() -> dict[str, float | int]:
         "REFINE_MAX_PER_SUBMIT": REFINE_MAX_PER_SUBMIT,
         "REFINE_MAX_CHIPS": REFINE_MAX_CHIPS,
         "REFINE_MAX_CHARS": REFINE_MAX_CHARS,
+        "FREE_NOTES_MAX": FREE_NOTES_MAX,
+        "NOTE_MAX_CHARS": NOTE_MAX_CHARS,
         "QUALITY_CUE_MIN_SHARE": QUALITY_CUE_MIN_SHARE,
         "QUALITY_CUE_MIN_ITEMS": QUALITY_CUE_MIN_ITEMS,
         "PRICE_BAND_MIN_MASS": PRICE_BAND_MIN_MASS,
@@ -167,7 +201,9 @@ def all_thresholds() -> dict[str, float | int]:
         "CONVERGED_MAX_SHARE": CONVERGED_MAX_SHARE,
         "SELLER_MAX_SHARE": SELLER_MAX_SHARE,
         "SELLER_PINNED_SHARE": SELLER_PINNED_SHARE,
-        "SELLER_DEFAULT_CAP": SELLER_DEFAULT_CAP,
+        "SELLER_CAP_SHARE": SELLER_CAP_SHARE,
+        "SELLER_CAP_MIN": SELLER_CAP_MIN,
+        "SELLER_CAP_MAX": SELLER_CAP_MAX,
         "MINORITY_POOL_SHARE": MINORITY_POOL_SHARE,
         "OPEN_STRATUM_FLOOR": OPEN_STRATUM_FLOOR,
         "CANDIDATE_TAG_BATCH": CANDIDATE_TAG_BATCH,

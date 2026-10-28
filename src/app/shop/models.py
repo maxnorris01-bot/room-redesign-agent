@@ -136,6 +136,11 @@ class RefineItem(_Strict):
     )
     strength: Literal["hard", "focus"] = Field(description="hard filters; focus favours")
     label: str = Field(description="A short plain label for the chip, e.g. 'no Walmart'")
+    note_mode: Literal["focus", "prefer", "exclude", "none"] = Field(
+        default="none",
+        description="For a free_note only: focus (reserve a share), prefer (a soft hint) or "
+        "exclude (remove what matches); none for every other kind",
+    )
 
 
 class RefineChip(_Strict):
@@ -150,6 +155,7 @@ class RefineChip(_Strict):
     label: str
     approximate: bool = False
     text: str = ""  # the instruction it came from (bounded, URLs stripped)
+    note_mode: Literal["focus", "prefer", "exclude", ""] = ""  # a free note's strength (stage 2p)
 
 
 class AlsoAt(_Strict):

@@ -165,6 +165,19 @@ def product_color_share(listings: Sequence[Listing], color: str) -> dict[str, An
     return {"count": hits, "share": share(hits, len(listings))}
 
 
+def color_match_share(answers: Sequence[str | None]) -> dict[str, Any]:
+    """The product-colour share from the judge's `color_match` answers: yes over the items it
+    answered yes, no or cannot tell for. `cannot_tell` is not a match; a failed judgement (None) and
+    `not_asked` are left out. Share is None when nothing could be judged."""
+    scored = [a for a in answers if a in ("yes", "no", "cannot_tell")]
+    yes = sum(1 for a in scored if a == "yes")
+    return {
+        "count": yes, "scored": len(scored), "cannot_tell": sum(1 for a in scored if a == "cannot_tell"),
+        "failed": sum(1 for a in answers if a is None),
+        "share": yes / len(scored) if scored else None,
+    }  # fmt: skip
+
+
 # ---- refine ---------------------------------------------------------------------------------
 
 
