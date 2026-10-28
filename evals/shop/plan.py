@@ -23,6 +23,14 @@ PIPELINE_ANTHROPIC_PER_ROUND = 0.01  # the upper end scripts/shop.py states per 
 REFINE_USD = 0.001
 
 
+def judge_call_usd(config: Config) -> float:
+    """Estimated dollars of one judge call of `BATCH` listings with thumbnails (assumptions above)."""
+    rates = rates_for(config.model_retrieval, 0)
+    n_in = JUDGE_BASE_TOKENS + BATCH * (JUDGE_TOKENS_PER_ITEM + JUDGE_TOKENS_PER_IMAGE)
+    n_out = JUDGE_OUT_BASE + BATCH * JUDGE_OUT_PER_ITEM
+    return (n_in * rates.input + n_out * rates.output) / 1_000_000
+
+
 def estimate(config: Config, cases: list[Case], t: Thresholds) -> dict[str, Any]:
     """Estimated Anthropic dollars and Serper credits for the whole run, expected and worst case,
     with the hard stops beside them."""

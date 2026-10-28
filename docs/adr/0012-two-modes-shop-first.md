@@ -1030,3 +1030,12 @@ text, not a person; neither judge is calibrated against human labels (todo: the 
 reports agreement). Twelve requests are a small sample, live results vary run to run (`known_instability.md`), and a
 mock run shows that the harness works, not that Shop Mode is good. The fifth replay fixture
 (`owner_session_replay_5.json`, the live curtains session) was added with this stage.
+
+Baseline (first live run, 2026-10-26, `shop-live-20261027-041854-b00d9f`): verdict fail, 6 of 22 checks failed (attribute match
+worst case 43.5%, product colour share 20.8%, top seller share 33.3%, refine focus share 41.7%, lift mean +6.2, lift worst
+-19.6); the other 16 passed, including category (mean 99.6%), price (100% in all 36 batches), near-duplicates (0), repeats (0),
+latency (median 6.5 s and 12.9 s) and cost ($0.144 Anthropic, 204 credits, a third of the estimate). The diagnosis in
+`docs/evals/shop-eval-baseline-2026-10-26.md` reads two of the failures as measurement or threshold shape (attribute "cannot
+tell", a count cap against a share threshold), one as partly both (colour from title keywords) and three as real (free-note
+refinements reserve nothing, Shop Again can run out of queries, the lift is modest); per-case lifts are inside sampling noise.
+Thresholds and pipeline were not changed in that stage, so the baseline stays comparable.

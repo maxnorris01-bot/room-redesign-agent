@@ -346,3 +346,43 @@ def test_no_test_or_script_starts_a_live_eval() -> None:
             continue
         assert 'main(["live"' not in text and "evals.shop live" not in text, path.name
     assert runner.RATED_PER_ROUND == 12 and runner.ROUNDS == 3
+
+
+def test_the_saved_trace_keeps_what_the_pipeline_learned_and_nothing_third_party() -> None:
+    """The first live run saved too little of the trace to see which chips existed in each round;
+    the runner now keeps a compact `learned`, `request` and `pool` block (no titles, no links)."""
+    result = run_case(CASES["case-02"], build_env("mock"))
+    first, second = result["rounds"][0]["trace"], result["rounds"][1]["trace"]
+    assert set(first) >= {"duplicates", "refine_chips", "warnings", "request", "learned", "pool"}
+    learned = second["learned"]
+    assert set(learned) >= {
+        "alignment",
+        "alignment_counted",
+        "chips",
+        "stated",
+        "dimensions",
+        "marketplace",
+    }
+    assert learned["alignment"]["signals"] >= 0 and "converged" in learned["alignment_counted"]
+    assert (
+        {"kind", "text", "status", "dimension", "values"} == set(learned["chips"][0])
+        if learned["chips"]
+        else True
+    )
+    assert "shape" in learned["dimensions"] and "decision" in learned["dimensions"]["shape"]
+    assert [(c["label"].lower(), c["kind"]) for c in second["refine_chips"]] == [
+        ("no walmart", "exclude_seller")
+    ]
+    dump = json.dumps([r["trace"] for r in result["rounds"]])
+    assert "http" not in dump and "FIXTURE" not in dump  # no titles, no links
+
+
+def test_the_footer_line_says_none_yet_when_nothing_was_decided_like_the_page() -> None:
+    from evals.shop.runner import footer_line
+
+    base = {"kind": "shop_again", "seconds": {"total": 1.0}, "serper_calls": 1, "serper_credits": 2,
+            "provider_usd": 0.002, "anthropic_usd": 0.001, "total_usd": 0.003}  # fmt: skip
+    none = footer_line({"search": {**base, "alignment": {"matches": 0, "total": 24, "signals": 0}}})
+    some = footer_line({"search": {**base, "alignment": {"matches": 0, "total": 24, "signals": 2}}})
+    assert none.endswith("matches your preferences: none yet")
+    assert some.endswith("matches your preferences: 0 of 24")

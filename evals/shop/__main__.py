@@ -17,7 +17,7 @@ from app.config import Config, load_env
 from evals.shop.plan import plan_lines
 from evals.shop.report import render_file
 from evals.shop.runner import RESULTS_DIR, build_env, run_all, write_results
-from evals.shop.spec import load_cases, load_thresholds
+from evals.shop.spec import Case, load_cases, load_thresholds
 
 CONFIRM_VAR = "EVAL_SHOP_CONFIRM"
 
@@ -43,6 +43,14 @@ def main(argv: list[str] | None = None) -> int:
         run.add_argument(
             "--case", action="append", default=[], help="run only this case id (repeatable)"
         )
+    rj = sub.add_parser(
+        "rejudge",
+        help="re-run only the persona judge on a results file's batches (judge noise); live files "
+        "need EVAL_SHOP_CONFIRM=yes",
+    )
+    rj.add_argument("--results", type=Path, required=True, help="the saved results file")
+    rj.add_argument("--rounds", default="1,2,3", help="comma-separated rounds (default 1,2,3)")
+    rj.add_argument("--cases", default="", help="comma-separated case ids (default: all)")
     rep = sub.add_parser("report", help="render a Markdown report from a results file")
     rep.add_argument("results", nargs="?", type=Path, help="default: the newest results file")
     rep.add_argument("--out", type=Path, default=None, help="write here instead of stdout")
@@ -62,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
 
         print("\n".join(plan_lines(eval_config("mock"), cases, thresholds)))
         return 0
+    if args.command == "rejudge":
+        return rejudge_command(args, cases)
     if args.command == "report":
         path = args.results or _newest()
         if path is None:
@@ -94,6 +104,55 @@ def main(argv: list[str] | None = None) -> int:
             else 1
         )
     return 0 if payload["verdict"]["status"] == "pass" else 1
+
+
+def rejudge_command(args: argparse.Namespace, cases: list[Case]) -> int:
+    from app.thumbnails import build_thumbnailer
+    from evals.shop.judges import ModelJudge
+    from evals.shop.rejudge import (
+        estimate_rejudge,
+        render,
+        run_rejudge,
+        select_batches,
+        write_rejudge,
+    )
+    from evals.shop.runner import eval_config
+
+    path: Path = args.results
+    if not path.is_file():
+        print(f"no such results file: {path}", file=sys.stderr)
+        return 2
+    data = json.loads(path.read_text())
+    try:
+        rounds = [int(x) for x in args.rounds.split(",") if x.strip()]
+    except ValueError:
+        print("--rounds must be numbers like 1,2,3", file=sys.stderr)
+        return 2
+    only = [x.strip() for x in args.cases.split(",") if x.strip()]
+    known = {c["id"] for c in data["cases"]}
+    if any(r not in (1, 2, 3) for r in rounds) or set(only) - known:
+        print("unknown round or case id for this file", file=sys.stderr)
+        return 2
+    mode = "mock" if data["mode"] == "mock" else "live"
+    config = eval_config(mode)
+    batches = select_batches(data, rounds, only)
+    est = estimate_rejudge(config, batches)
+    print(
+        f"Rejudge estimate: {est['batches']} batches, {est['items']} items, {est['judge_calls']} "
+        f"persona-judge calls, about ${est['usd']:.3f} (judge calls only; no search, no pipeline)"
+    )
+    if mode == "live":
+        why = refuse_live(dict(os.environ))
+        if why:
+            print(f"\nREFUSED: {why}", file=sys.stderr)
+            return 2
+        load_env()
+    judge = ModelJudge(config, build_thumbnailer(config))
+    payload = run_rejudge(data, {c.id: c for c in cases}, judge, rounds, only, source=path.name)
+    out = write_rejudge(payload, RESULTS_DIR)
+    print(render(payload))
+    print(f"results: {out}")
+    return 0
 
 
 def build_env_config(mode: str) -> Config:

@@ -10,6 +10,14 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- The most important items, in the order you'd actually tackle them. -->
 
+- [ ] **Max: run the rejudge** (`make eval-shop-rejudge EVAL_SHOP_CONFIRM=yes RESULTS=evals/shop/results/shop-live-20261027-041854-b00d9f.json`, about $0.03, 35 batches, 67 judge calls) before acting on any lift number: it measures how often the persona judge agrees with itself (evidence: per-case lifts have the spread sampling noise alone predicts; baseline doc, question 5).
+- [ ] **Shop Again can return nothing** (case 06 round 3: 0 Serper calls, no pool; four first batches had fewer than 24 items): when the planned phrasings are used up, derive new ones (synonyms, a model query that must differ, page 4 when the pool is empty). `search.run_query` (`eligible`, `LAST_RESORT_PAGE`), about a day. Evidence: baseline doc, question 3.
+- [ ] **Typed product colour is not enforced** (case 12: 20.8% navy by title, 18 of 24 titles name no colour): photo colour tags for the top candidates plus a reserved share, like a focus chip (`candidates.py`, `search.py`; about 1.5 days). First add a photo-based colour answer to the category judge so the share can be measured (eval only, about 2 hours). Evidence: baseline doc, question 1.
+- [ ] **Free-note refinements reserve nothing** (case 10: 54% then 42% mesh, no vocabulary entry for it): add `mesh` to the material vocabulary (about an hour), then per-item note-match flags in candidate tagging (about a day). Evidence: baseline doc, question 2.
+- [ ] **Category folding**: "desk chairs" folds into "desk" (shared topic key), "dining chair" and "dining chairs" differ, "bookshelves" does not fold (`categories.py`, about an hour).
+- [ ] **Seller cap is a count, the threshold a share** (case 04: 4 of 12 = 33%): decide whether to cap small batches by share (`SELLER_DEFAULT_CAP`, about an hour) or leave the threshold alone. Evidence: baseline doc, question 4.
+- [ ] **Attribute match counts "cannot tell" as a miss** (case 06: 12 of 13 misses): report `no` apart from `cannot_tell` in the eval; a threshold decision for the owner (thresholds were not touched).
+
 - [ ] **Max: commit `evals/shop/thresholds.json` and `THRESHOLDS.md` on their own, then the first live eval** (`make eval-shop-plan`, then `make eval-shop-live EVAL_SHOP_CONFIRM=yes`; the plan prints the estimate and the hard stops first). Render the report with `make eval-shop-report OUT=docs/evals/shop-<run>.md`.
 - [ ] **Judge calibration**: label a sample of items yourself (category, attribute, persona love/like/dislike) and have the harness report judge agreement; until then treat judge scores as a relative signal.
 - [ ] **Repeat runs**: run the live eval two or three times and record the spread in `evals/shop/known_instability.md` before trusting any single threshold failure.

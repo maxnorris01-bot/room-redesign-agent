@@ -128,20 +128,56 @@ def footer_line(view: dict[str, Any]) -> str:
     ]
     if s.get("alignment"):
         a = s["alignment"]
-        parts.append(f"matches your preferences: {a['matches']} of {a['total']}")
+        if a.get("signals", 1) == 0:  # as the page says it: nothing decided yet, not "0 matched"
+            parts.append("matches your preferences: none yet")
+        else:
+            parts.append(f"matches your preferences: {a['matches']} of {a['total']}")
     return " · ".join(parts)
 
 
 def trace_summary(view: dict[str, Any]) -> dict[str, Any]:
-    trace = view["search"].get("trace") or {}
+    """The part of a batch's trace worth keeping in the results file: what the pipeline read from the
+    request, what it had learned (chips, converged values, leanings, alignment), how the pool and
+    the cap behaved. Compact, and no titles or links. (The first live run kept less of this, which
+    left its diagnosis partly blind; see docs/evals/shop-eval-baseline-2026-10-26.md.)"""
+    s = view["search"]
+    trace = s.get("trace") or {}
     dups = trace.get("duplicates") or {}
     refine = (trace.get("refine") or {}).get("chips", [])
+    batch = trace.get("batch") or {}
+    profile = view.get("profile") or {}
+    request = trace.get("request") or {}
     return {
         "duplicates": {k: dups.get(k) for k in ("before", "after", "hidden")},
         "refine_chips": [{"label": c.get("label"), "kind": c.get("kind")} for c in refine],
         "mode": trace.get("mode"),
-        "warnings": list(view["search"].get("warnings", []))[:3],
-    }
+        "warnings": list(s.get("warnings", []))[:5],
+        "request": {
+            k: request.get(k)
+            for k in ("search_text", "product_colors", "suggested", "avoid", "from_suggested", "from_avoid", "results")
+            if k in request
+        },
+        "learned": {
+            "alignment": s.get("alignment"),
+            "alignment_counted": trace.get("alignment_counted"),
+            "chips": [
+                {"kind": e.get("attr_kind"), "text": e.get("text"), "status": e.get("status"),
+                 "dimension": e.get("dimension"), "values": e.get("values")}
+                for e in profile.get("inferred", [])
+            ],  # fmt: skip
+            "stated": {"likes": len(profile.get("likes", [])), "dislikes": len(profile.get("dislikes", []))},
+            "dimensions": {
+                dim: {k: d.get(k) for k in ("decision", "top", "top_share", "known_coverage", "support")}
+                for dim, d in (trace.get("dimensions") or {}).items()
+            },
+            "marketplace": (trace.get("marketplace") or {}).get("decision"),
+        },
+        "pool": {
+            k: batch.get(k)
+            for k in ("pool_before", "pool_after", "shortfall", "serper_calls", "marketplace_excluded", "refine_removed")
+            if k in batch
+        },
+    }  # fmt: skip
 
 
 def search_texts(view: dict[str, Any]) -> list[str]:
