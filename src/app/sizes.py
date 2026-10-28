@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from app.categories import axis_rule, category_words, size_range_in
+from app.categories import axis_rule, canonical_category, category_words, size_range_in
 from app.schemas import DimensionsM
 
 IN_M = 0.0254
@@ -43,7 +43,15 @@ _GROUP = re.compile(
     rf"(?:\s*[x×]\s*(?P<c>{_NUM}))?\s*(?P<unit>{_UNIT})",
     re.IGNORECASE,
 )
-_SINGLE = re.compile(rf"(?P<num>{_NUM})\s*(?P<unit>{_UNIT})(?![A-Za-z])", re.IGNORECASE)
+_SINGLE = re.compile(rf"(?P<num>{_NUM})[\s-]*(?P<unit>{_UNIT})(?![A-Za-z])", re.IGNORECASE)
+FT_M = 0.3048
+# 8x10, 8' x 10', 8 ft x 10 ft, 5x7 ft: a rug size in FEET (a unit is optional: nobody writes a
+# 8-inch by 10-inch rug). Only read for rugs, and only when no inch or cm size was found.
+_RUG_FEET = re.compile(
+    r"(?<![\d.\w])(?P<a>\d{1,2}(?:\.\d)?)\s*(?:'|′|ft\.?|feet|foot)?\s*[x×]\s*"
+    r"(?P<b>\d{1,2}(?:\.\d)?)\s*(?:'|′|ft\.?|feet|foot)?(?![\d.]|\s*(?:\"|”|″|in\b|inch|cm|mm))",
+    re.IGNORECASE,
+)
 _AXIS = {"W": "width_m", "D": "depth_m", "H": "height_m", "L": "length_m"}
 SLUG_SIZE_WORDS = {"wide", "w", "in", "inch", "inches", "long", "l", "size", "width", "length"}
 PLAUSIBLE_PAD = 1.0
@@ -169,6 +177,14 @@ def parse_title_detail(
             found["length_m"] = max(found.get("length_m", 0.0), max(values))
             why = "implausible as W x D x H" if len(values) == 3 else "no axis rule for category"
             notes.append(f"{raw}: longest side only ({why})")
+    if not found and category is not None and canonical_category(category) == "rug":
+        rug = _RUG_FEET.search(text)
+        if rug and not overlaps(rug.span()):
+            a, b = float(rug.group("a")), float(rug.group("b"))
+            if 1 <= a <= 20 and 1 <= b <= 20:
+                found["width_m"] = round(min(a, b) * FT_M, 4)
+                found["length_m"] = round(max(a, b) * FT_M, 4)
+                notes.append(f"{rug.group(0).strip()} read as feet, width x length (rug)")
     if not found:
         for m in _SINGLE.finditer(text):
             if not overlaps(m.span()):

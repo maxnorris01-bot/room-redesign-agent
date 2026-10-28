@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import zlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -230,7 +231,76 @@ class ShopFixtureLookup:
         return parse_product_details(_load_fixture("serpapi_product_article.json"))
 
 
+SCENARIO_TRAITS = ("Fluted", "Plain", "Carved", "Slim", "Wide", "Low")
+SCENARIO_WORDS = (
+    "Aria", "Bexley", "Calder", "Dalby", "Esme", "Faro", "Gable", "Harlow", "Ilsa", "Juno",
+    "Kestrel", "Lowell",
+)  # fmt: skip
+
+
+class ScenarioSearch:
+    """Mock Serper for the browser check only (`APP_SHOP_MOCK_SCENARIO`): `thin` (14 results for the
+    typed words, 3 for each variant), `dry` (12 results, then nothing for any phrasing) and `navy`
+    (forty velvet chairs whose titles name no colour, half of them "Fluted"; variants find 30 more).
+    Titles are invented, every thumbnail is a mock URL."""
+
+    name = "serper"
+    thread_safe = True
+
+    def __init__(self, scenario: str) -> None:
+        self.scenario = scenario
+        self.base: str | None = None
+        self.calls: list[tuple[str, int]] = []
+
+    def _items(self, tag: str, n: int, chairs: bool) -> list[SearchCandidate]:
+        out = []
+        for i in range(n):
+            word = SCENARIO_WORDS[i % len(SCENARIO_WORDS)]
+            trait = (
+                SCENARIO_TRAITS[(i // 2) % len(SCENARIO_TRAITS)]
+                if not chairs
+                else ("Fluted" if i % 2 == 0 else "Plain")
+            )
+            kind = "Velvet Accent Chair" if chairs else "Dining Chair"
+            image = zlib.crc32(f"{tag}{i}".encode()) % 9000
+            out.append(
+                SearchCandidate(
+                    product_id=f"{self.scenario}-{tag}-{i}",
+                    title=f"{FIXTURE_TITLE_PREFIX}{trait} {word} {kind} {tag}{i}",
+                    seller=f"Mock Seller {i % 13}",
+                    price=120.0 + 7 * i,
+                    currency="USD",
+                    rating=4.0,
+                    rating_count=50 + i,
+                    google_panel_url="https://www.google.com/search?q=mock",
+                    thumbnail_url=f"https://mock.example/thumb/{image}.jpg",
+                )
+            )
+        return out
+
+    def search(
+        self, query: str, gl: str = "us", hl: str = "en", page: int = 1
+    ) -> list[SearchCandidate]:
+        mock_step_delay()
+        self.calls.append((query, page))
+        key = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
+        if self.base is None:
+            self.base = key
+        is_base = key == self.base
+        tag = re.sub(r"[^a-z0-9]", "", key)[:6] or "q"
+        if self.scenario == "thin":
+            return self._items(tag, 14 if is_base and page == 1 else 3 if page == 1 else 0, False)
+        if self.scenario == "dry":
+            return self._items(tag, 12 if is_base and page == 1 else 0, False)
+        if self.scenario == "navy":
+            n = 40 if is_base and page == 1 else 30 if page == 1 and not is_base else 0
+            return self._items(tag, n, True)
+        return []
+
+
 def build_shop_providers(config: Config) -> tuple[SearchProvider, ProductLookup]:
+    if config.llm_mode == "mock" and os.environ.get("APP_SHOP_MOCK_SCENARIO"):
+        return ScenarioSearch(os.environ["APP_SHOP_MOCK_SCENARIO"]), ShopFixtureLookup()
     if config.llm_mode == "mock":
         pool_file = os.environ.get("APP_SHOP_MOCK_POOL")  # mock only: a replay file's pool
         search: ShopFixtureSearch = (

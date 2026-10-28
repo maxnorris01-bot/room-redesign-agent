@@ -31,7 +31,7 @@ STRUCTURAL = ("shape",)  # converges at the structural share; the rest at the so
 
 VOCAB: dict[str, tuple[str, ...]] = {
     "shape": ("round", "oval", "rectangular", "square", OTHER),
-    "material": ("wood", "metal", "glass", "stone", "upholstered", OTHER),
+    "material": ("wood", "metal", "glass", "stone", "upholstered", "mesh", OTHER),
     "color_finish": (
         "light wood",
         "warm wood",
@@ -118,6 +118,10 @@ SYNONYMS: dict[str, list[tuple[str, tuple[str, ...]]]] = {
         ("square", ("square",)),
     ],
     "material": [
+        # stage 2p: "mesh" (a mesh back or seat) is a material value, not a new dimension: the
+        # existing tag rows stay the same width, and a typed or refined "mesh" is enforced like
+        # any other material. It comes first so "mesh back with a metal frame" reads as mesh.
+        ("mesh", ("mesh", "netting", "breathable fabric back")),
         (
             "wood",
             (
@@ -321,6 +325,27 @@ def tag_values(dim: str, raw: str | None) -> list[str]:
     if not raw:
         return []
     return style_families(raw) if dim == "style" else [raw]
+
+
+# What a typed word accepts as a match, by dimension (stage 2p): the typed value itself, and nothing
+# looser by default. "navy" and "dark blue" are `navy_dark_blue`; a light "blue" product matches a
+# typed "blue" only (navy is its own colour here). A metallic finish (brass, gold, chrome...) is the
+# `metallic` value of both the finish and the colour dimension.
+TYPED_ACCEPTS: dict[str, dict[str, tuple[str, ...]]] = {
+    "color": {"metallic": ("metallic",), "navy_dark_blue": ("navy_dark_blue",), "blue": ("blue",)},
+    "color_finish": {"metallic": ("metallic",)},
+    "material": {"upholstered": ("upholstered",)},
+}
+
+
+def typed_values(dim: str, text: str | None) -> frozenset[str]:
+    """The tag values that satisfy a typed `text` for `dim` ("navy" -> {navy_dark_blue}, "dark
+    blue" -> {navy_dark_blue}, "blue" -> {blue}, "velvet" -> {upholstered}); empty when the word is
+    not in the vocabulary (nothing can be enforced for it)."""
+    value = normalize(dim, text)
+    if value is None or value == OTHER:
+        return frozenset()
+    return frozenset(TYPED_ACCEPTS.get(dim, {}).get(value, (value,)))
 
 
 def vocab_text() -> str:

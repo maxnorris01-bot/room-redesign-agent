@@ -278,6 +278,13 @@ eval to tune):
 | MARKET_MIN_RESULTS | 12 | fewer results than this without marketplaces shows the "Only n results without marketplace retailers" banner (stage 2i) |
 | MARKET_REDISMISS_RATED | 8 | a deleted exclusion chip returns only after this many more ratings, and only if the evidence still holds (stage 2i) |
 | SELLER_SEARCHES | 3 | seller searches per Shop Again: liked sellers by like rate, then peers of the same tier (stage 2i) |
+| QUERY_NOVELTY_JACCARD | 0.8 | a written query sharing at least this share of its words with a query already used in the topic is a repeat and is dropped (stage 2p; judgment) |
+| TYPED_MATCH_MIN_SHARE | 0.70 | a typed product colour, material or finish must match at least this share of a batch where the pool has tagged supply (stage 2p; judgment: the pipeline can only enforce what it can tag, so not 100%) |
+| PHOTO_TAG_BATCH | 12 | candidates per photo tagging call (stage 2p) |
+| PHOTO_TAG_WORKERS | 3 | photo tagging calls at once (stage 2p) |
+| PHOTO_TAG_BUDGET_S | 6.0 | seconds allowed for the photo tagging step; candidates not done keep their title tags and the trace says so (stage 2p; judgment) |
+| PHOTO_CACHE_MAX | 200 | prepared thumbnails kept in memory per service, shared by the fingerprint and photo tagging steps (stage 2p) |
+| THIN_VARIANT_SEARCHES | 2 | variant searches a typed search may add when fewer than 24 results survive, inside a Shop Again's normal Serper cap (stage 2p) |
 | MODEL_QUERIES | 2 | model-written search queries per Shop Again (stage 2i) |
 | QUERY_MAX_WORDS | 8 | words in a model-written query (stage 2i) |
 | QUERY_LIKED_TITLES | 6 | liked titles shown to the query writer (stage 2i) |
@@ -296,6 +303,8 @@ eval to tune):
 | NEAR_FP_BUDGET_S | 2.0 | seconds allowed for the whole fingerprint step; the rest fall back to titles (stage 2n) |
 | REFINE_MAX_PER_SUBMIT | 5 | interpretations kept from one refine instruction (stage 2l) |
 | REFINE_MAX_CHIPS | 12 | active refine chips in a topic (stage 2l) |
+| FREE_NOTES_MAX | 3 | active free-note refinements; each one is a match flag per item in the tagging calls (stage 2p) |
+| NOTE_MAX_CHARS | 120 | characters in a free note's phrase (stage 2p) |
 | REFINE_MAX_CHARS | 200 | characters in one refine instruction (stage 2l) |
 | TIER_BATCH_SHARE | 0.50 | most of a batch the affinity tier may take, 0.80 when pinned (stage 2f) |
 | MAX_PEER_SEARCHES | 3 | peer retailer searches per Shop Again (stage 2f) |
@@ -309,7 +318,9 @@ eval to tune):
 | DIVERSITY_MAX_SHARE | 0.60 | most of a batch one value of shape or of an open dimension may take (a converged value: 0.80; a dimension the typed request names: no cap) |
 | SELLER_MAX_SHARE | 0.50 | most of a batch an affinity seller may take |
 | SELLER_PINNED_SHARE | 0.80 | most of a batch a pinned seller may take |
-| SELLER_DEFAULT_CAP | 4 | results from any other seller |
+| SELLER_CAP_SHARE | 0.30 | one ordinary seller's share of a batch; the cap is clamp(floor(0.30 x batch size), 2, 4) (stage 2p; judgment) |
+| SELLER_CAP_MIN | 2 | fewest results per seller the cap formula allows (stage 2p) |
+| SELLER_CAP_MAX | 4 | most results per seller the cap formula allows; the old fixed cap (stage 2p) |
 | MINORITY_POOL_SHARE | 0.40 | an open dimension's value under this share of the pool triggers targeted searches for it (stage 2e) |
 | OPEN_STRATUM_FLOOR | 0.25 | share of the batch slots a value with a loved item gets when shape is open (stage 2e) |
 | CANDIDATE_TAG_BATCH | 40 | titles per candidate tagging call (stage 2e: 100; stage 2g: 40, run concurrently) |
@@ -1039,3 +1050,46 @@ latency (median 6.5 s and 12.9 s) and cost ($0.144 Anthropic, 204 credits, a thi
 tell", a count cap against a share threshold), one as partly both (colour from title keywords) and three as real (free-note
 refinements reserve nothing, Shop Again can run out of queries, the lift is modest); per-case lifts are inside sampling noise.
 Thresholds and pipeline were not changed in that stage, so the baseline stays comparable.
+
+## Amendment, stage 2p (2026-10-27): fixes from the first live Shop eval
+
+The diagnosis is `docs/evals/shop-eval-baseline-2026-10-26.md`; thresholds and the baseline were left as they were.
+
+Categories and the seller cap. `categories.canonical_category` folds a plural into its singular ("dining chairs" and "dining
+chair", "bookshelves" and "bookshelf" are one key), "desk chair" is its own category (the group comes before "desk"), curtains,
+dining chairs and desk chairs have synonym groups, size ranges and plausibility keywords, rug sizes in feet ("8x10", "8' x 10'")
+and curtain lengths ("84-inch") parse into size hints (Shop Mode has no size filter, only hints). Topic keys use the canonical
+keys; a session file with an old key is migrated on load (derived keys only). The per-seller cap is `clamp(floor(0.30 x batch
+size), 2, 4)`; the walk assumes the size the pool can fill and walks again with the smaller cap when the batch is shorter, so a
+thin pool from few sellers gives a shorter batch rather than a third of it from one seller. Affinity, pinned and tier caps are
+unchanged.
+
+Never run dry. The model query writer (`shop_queries` v3) runs on every Shop Again, with or without ratings, is told the
+queries already used in the topic and how much was seen, and must give two new variants; a variant sharing 80% of its words with
+a used query is rejected (`QUERY_NOVELTY_JACCARD`), and deterministic modifier variants fill in what the model does not give.
+A typed first search that cannot fill 24 results runs up to two variant searches inside a Shop Again's normal Serper cap and
+says "Only N results matched; try broadening the request." A Shop Again with nothing unseen left says "I ran out of new results
+for this search. Try changing the request or the refine chips." and records why; the eval marks the round "exhausted". The
+Serper cap of 9 calls (18 credits) per Shop Again is unchanged.
+
+Typed colour, material and finish are quotas. After the pool is ranked and de-duplicated, the top 36 candidates are tagged from
+title and thumbnail (12 a call, 3 calls at once, 6 s in all); a photo tag overrides the title tag, the rest keep title tags and
+the trace says so; one bounded cache serves the fingerprint and photo steps so no thumbnail is fetched twice. A typed attribute
+must match at least 70% of a batch by best tag where tagged supply exists (untagged and `other` never match); "navy" and "dark
+blue" are `navy_dark_blue`, "blue" is `blue` only; a shortfall is in the trace and a banner names the attribute. The selection
+puts the quota after the shopper's focus chips and before everything inferred. A typed product colour overrides the setting's
+suggested colours; the typed colour and material chips are deletable and the quota goes with the chip. The eval measures the
+colour from the thumbnail (category judge v2, `color_match`) instead of from title keywords: the measurement changed after the
+baseline because title keywords miss every title that names no colour; the threshold (70%) is unchanged and the report prints the
+title figure beside it.
+
+Refine terms outside the vocabulary. A free note carries a strength (focus, prefer, exclude) and a phrase of at most 120
+characters (`shop_refine` v2, at most 3 active). The candidate and photo tagging calls return a true / false / unknown flag per
+item for each active note. A focus note reserves 50% of the batch from items flagged true where supply exists, a prefer note goes
+to the ranker only, an exclude note removes items flagged true (never unknown) before the caps and the selection (after the rank
+call, because the flags need candidates to tag). The chip reads "matched by description" once flags exist. "mesh" is a material
+value (a back type would add a column to every tagging row); "no leather" and any single fabric must be a note, because
+`upholstered` covers every fabric and leather.
+
+Not done and open: the attribute judge still counts "cannot tell" as a miss (a threshold decision for the owner); no live run has
+checked the new calls (photo tagging time, the writer on every Shop Again, the flags).

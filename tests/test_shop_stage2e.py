@@ -80,7 +80,15 @@ def replay2(tmp_path: Path, **kw: Any) -> tuple[ShopService, str]:
 
 def test_the_vocabularies_are_defined_once_and_passed_into_both_prompts() -> None:
     assert VOCAB["shape"] == ("round", "oval", "rectangular", "square", "other")
-    assert VOCAB["material"] == ("wood", "metal", "glass", "stone", "upholstered", "other")
+    assert VOCAB["material"] == (
+        "wood",
+        "metal",
+        "glass",
+        "stone",
+        "upholstered",
+        "mesh",
+        "other",
+    )  # 2p: mesh
     assert VOCAB["color_finish"] == (
         "light wood", "warm wood", "dark wood", "painted", "metallic", "glass", "other",
     )  # fmt: skip
@@ -642,7 +650,7 @@ def test_stratified_selection_reserves_slots_for_each_value_in_ranker_order() ->
 
 def test_stratified_selection_still_holds_every_cap() -> None:
     pool = ordered_pool([("r", "Rectangular", 30), ("o", "Round", 30)])
-    for n, (c, r) in enumerate(pool):  # three sellers only: the default cap of 4 per seller bites
+    for n, (c, r) in enumerate(pool):  # three sellers only: the per-seller cap bites
         pool[n] = (
             SearchCandidate(
                 c.product_id, c.title, f"S{n % 3}", c.price, "USD", None, None, c.google_panel_url
@@ -654,7 +662,7 @@ def test_stratified_selection_still_holds_every_cap() -> None:
         pool, query(request="t"), index, guard_caps={"shape": 0.6},
         strata=("shape", {"rectangular": 14, "round": 10}),
     )  # fmt: skip
-    assert len(results) == 12 and capped > 0  # 3 sellers x 4
+    assert len(results) == 6 and capped > 0  # 3 sellers x 2: stage 2p, the cap follows the batch
     shape_counts = {
         s: sum(1 for r in results if r.title.startswith(s)) for s in ("Round", "Rectangular")
     }

@@ -227,7 +227,8 @@ def test_the_make_target_needs_the_flag_and_forces_nothing_else() -> None:
     assert "eval-shop-rejudge" in " ".join(make.splitlines()[:5])  # in .PHONY
     assert re.search(
         r"^eval-shop-rejudge:\n\tEVAL_SHOP_CONFIRM=\$\(EVAL_SHOP_CONFIRM\) APP_LLM_MODE=live "
-        r"uv run python -m evals.shop rejudge --results \$\(RESULTS\) \$\(ARGS\)$",
+        r"uv run python -m evals.shop rejudge --results \$\(RESULTS\) "
+        r"\$\(if \$\(CASES\),--cases \$\(CASES\),\) \$\(ARGS\)$",
         make, flags=re.MULTILINE,
     )  # fmt: skip
     readme = (ROOT / "evals" / "shop" / "README.md").read_text()

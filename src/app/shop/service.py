@@ -6,6 +6,7 @@ a URL or a key (provider errors name the provider and the status only).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -28,6 +29,7 @@ from app.shop.models import (
 )
 from app.shop.nearby import build_fingerprinter
 from app.shop.parse import COLOR_CONTEXT_KINDS
+from app.shop.phototags import ThumbCache
 from app.shop.prefs import (
     pin_seller,
     profile_summary,
@@ -45,7 +47,7 @@ from app.shop.resolve import (
     product_lookup,
     resolve,
 )
-from app.shop.search import SearchOutcome, near_context, run_search
+from app.shop.search import EXHAUSTED_MESSAGE, SearchOutcome, near_context, run_search
 from app.shop.store import (
     MAX_SEARCHES_PER_SESSION,
     RatingRecord,
@@ -96,6 +98,8 @@ def headline(record: SearchRecord) -> str:
     if record.kind != "shop_again":
         return ""
     n = len(record.result_ids)
+    if n == 0:  # stage 2p: nothing unseen is left: say so, never an empty page with no words
+        return EXHAUSTED_MESSAGE
     batch = record.trace.get("batch", {}) if isinstance(record.trace, dict) else {}
     why = str(batch.get("shortfall", {}).get("explanation", ""))
     text = (
@@ -109,6 +113,11 @@ def headline(record: SearchRecord) -> str:
     stopped = str(batch.get("timings", {}).get("stopped_before", ""))
     if stopped:
         text += f" Stopped early before {stopped}."
+    for (
+        w
+    ) in record.warnings:  # stage 2p: a typed colour, material or finish the pool could not supply
+        if re.match(r"Only \d+ of \d+ results match your ", w):
+            text += " " + w
     return text
 
 
@@ -132,7 +141,8 @@ class ShopService:
         self.store = store
         self.search_provider = search
         self.lookup_provider = lookup
-        self.fingerprinter = build_fingerprinter(config)
+        self.thumb_cache = ThumbCache(self.thumbnailer, config)  # one fetch per thumbnail URL
+        self.fingerprinter = build_fingerprinter(config, cache=self.thumb_cache)
         self.ahead = LookAhead(config, store, lookup)
         self.prep = PrepManager(config, store, self.thumbnailer, self.clock, self.fingerprinter)
 
@@ -396,7 +406,7 @@ class ShopService:
         try:
             outcome = run_search(
                 cleaned, self.search_provider, self.config, progress=progress, clock=self.clock,
-                near=near,
+                near=near, photos=self.thumb_cache,
             )  # fmt: skip
         except ProviderError as exc:
             raise ApiError(502, str(exc)) from None
@@ -729,7 +739,7 @@ class ShopService:
         try:
             outcome, profile, query = run_shop_again(
                 session, self.search_provider, self.config, self.thumbnailer, self.clock, progress,
-                self.fingerprinter,
+                self.fingerprinter, self.thumb_cache,
             )  # fmt: skip
         except ProviderError as exc:
             raise ApiError(502, str(exc)) from None
@@ -883,12 +893,13 @@ class ShopService:
             return {"refine": [c.model_dump(mode="json") for c in kept]}
 
     def remove_context(self, session_id: Any, kind: Any, value: Any) -> dict[str, Any]:
-        """Delete one chip of the request's setting (stage 2k): a context item (its colour effect
-        goes with it when no colour-bearing item is left), a suggested colour (it leaves the search
-        and the ranking) or a colour to avoid (it is no longer demoted). It applies to the current
+        """Delete one chip of the request (stage 2k): a context item (its colour effect goes with it
+        when no colour-bearing item is left), a suggested colour (it leaves the search and the
+        ranking), a colour to avoid (it is no longer demoted), and (stage 2p) a typed product colour
+        or material (its quota goes with it). It applies to the current
         topic's typed request, so it holds for every later Shop Again."""
-        if kind not in ("context", "suggested", "avoid"):
-            raise ApiError(400, "kind must be context, suggested or avoid")
+        if kind not in ("context", "suggested", "avoid", "color_term", "material"):
+            raise ApiError(400, "kind must be context, suggested, avoid, color_term or material")
         if not isinstance(value, str) or not value.strip() or len(value) > 40:
             raise ApiError(400, "value must be short text")
         self._load(session_id)
@@ -910,6 +921,16 @@ class ShopService:
                 update: dict[str, Any] = {"context": kept}
                 if not any(i.kind in COLOR_CONTEXT_KINDS for i in kept):
                     update |= {"suggested_colors": [], "avoid_colors": [], "color_reason": ""}
+            elif kind == "color_term":  # a typed product colour: its quota goes with the chip
+                color = normalize("color", text)
+                if color is None or color not in base.color_terms:
+                    raise ApiError(404, "no such chip")
+                update = {"color_terms": [c for c in base.color_terms if c != color]}
+            elif kind == "material":  # a typed material: its quota goes with the chip
+                kept_terms = [m for m in base.material_terms if " ".join(m.lower().split()) != text]
+                if len(kept_terms) == len(base.material_terms):
+                    raise ApiError(404, "no such chip")
+                update = {"material_terms": kept_terms}
             else:
                 color = normalize("color", text)
                 field = "suggested_colors" if kind == "suggested" else "avoid_colors"

@@ -70,3 +70,17 @@ and never changes the source file. A mock results file is rejudged with the mock
 The first live run and its diagnosis are in `docs/evals/shop-eval-baseline-2026-10-26.md`. The results file keeps a compact trace
 per batch (the parsed request's colour terms, the profile's chips, the alignment signals, the per-dimension decisions, the pool
 counters; no titles or links) so a diagnosis does not have to guess what each Shop Again ran with.
+
+## After the baseline (stage 2p)
+
+- `CASES=case-04,case-06` narrows `make eval-shop-plan`, `eval-shop-mock`, `eval-shop-live` and `eval-shop-rejudge` (the CLI takes
+  `--case a,b`; rejudge takes `--cases a,b`). The plan prints the cost of one Shop Again and of a 5-case re-run, from the measured
+  baseline plus an estimate of the new calls.
+- **The measurement changed.** The product-colour share is now what the category judge (prompt v2, `color_match`) says of each
+  thumbnail; the baseline measured title keywords, which miss every title that names no colour. The threshold (70%) is unchanged;
+  each report prints both figures (`## Product colour`), and the baseline document stays the record of the old measure. Judge
+  versions are recorded in every results file. Cases and thresholds were not touched.
+- A round with nothing unseen left is recorded as `exhausted` (the report says so), not `n/a`.
+- The saved trace per batch keeps the typed-attribute quota and the photo tagging step (`trace.typed`), the thin-search variants
+  (`trace.thin`) and why a Shop Again ran dry (`trace.exhausted`).
+

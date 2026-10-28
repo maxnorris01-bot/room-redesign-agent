@@ -34,7 +34,10 @@ def refuse_live(environ: dict[str, str]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="evals.shop")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("plan", help="list cases, personas, thresholds hash, estimated cost")
+    plan = sub.add_parser("plan", help="list cases, personas, thresholds hash, estimated cost")
+    plan.add_argument(
+        "--case", action="append", default=[], help="only these case ids (comma list)"
+    )
     for name, text in (
         ("mock", "the whole harness on fixtures and deterministic judges"),
         ("live", "live providers; needs EVAL_SHOP_CONFIRM=yes"),
@@ -58,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cases = load_cases()
     thresholds = load_thresholds()
-    wanted = getattr(args, "case", [])
+    wanted = [x.strip() for c in getattr(args, "case", []) for x in c.split(",") if x.strip()]
     if wanted:
         unknown = sorted(set(wanted) - {c.id for c in cases})
         if unknown:

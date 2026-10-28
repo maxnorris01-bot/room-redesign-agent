@@ -352,7 +352,10 @@ def test_sellers_are_deprioritized_only_with_two_dislikes_and_no_like(
     def run(dislikes: int, likes_from_bad: int) -> tuple[list[str], set[str]]:
         sub = tmp_path / f"d{dislikes}{likes_from_bad}"
         shown = [cand(f"s{i}", 40.0, title=f"Shown {i}", seller="BadShop") for i in range(3)]
-        shown += [cand(f"g{i}", 40.0, title=f"Good {i}", seller="GoodShop") for i in range(3)]
+        shown += [cand("g0", 40.0, title="Good 0", seller="GoodShop")]
+        # ten different sellers in all: the per-seller cap follows the batch size (stage 2p), so
+        # BadShop can show its three items only in a batch of ten or more
+        shown += [cand(f"f{i}", 40.0, title=f"Filler {i}", seller=f"Filler {i}") for i in range(6)]
         svc, search, _, first = start(sub, monkeypatch, [shown, []])
         sid = first["session_id"]
         by_title = {r["title"]: r["id"] for r in first["search"]["results"]}
@@ -413,7 +416,10 @@ def test_an_empty_page_stops_the_paging_and_zero_results_say_so(
     assert len(search.sequence) == 1  # page 4 is never fetched
     nothing = svc.shop_again(sid)  # the base query is used up: no page past 3
     assert nothing["search"]["results"] == [] and nothing["search"]["serper_calls"] == 0
-    assert any("No new results found" in w for w in nothing["search"]["warnings"])
+    # stage 2p: the zero case says plainly that the results ran out, and keeps the reason
+    assert any("I ran out of new results" in w for w in nothing["search"]["warnings"])
+    assert nothing["search"]["headline"].startswith("I ran out of new results for this search.")
+    assert "exhausted" in nothing["search"]["trace"]["batch"]
 
 
 def test_a_later_page_failing_keeps_what_was_found(

@@ -66,7 +66,10 @@ def test_the_first_search_starts_topic_one_without_a_notice(tmp_path: Path) -> N
 def test_the_topic_is_the_canonical_category_not_the_raw_text() -> None:
     assert topic_key(query(category="couch")) == topic_key(query(category="Sofa")) == "sofa"
     assert topic_key(query(category="coffee tables")) == "coffee table"
-    assert topic_key(query(category="curtains")) == "curtains"  # unknown to the table: its own text
+    assert (
+        topic_key(query(category="curtains")) == topic_key(query(category="curtain")) == "curtain"
+    )
+    assert topic_key(query(category="chandeliers")) == "chandelier"  # unknown: its singular text
     assert topic_key(query(category="  ")) == ""
     assert plural("couch") == "couches" and plural("coffee table") == "coffee tables"
     assert plural("curtains") == "curtains" and plural("") == "this"

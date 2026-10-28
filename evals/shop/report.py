@@ -78,7 +78,10 @@ def render(data: dict[str, Any]) -> str:
             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
     for c in data["cases"]:
         r1, r2, r3 = _round(c, 0), _round(c, 1), _round(c, 2)
-        rates = " / ".join(pct(r.get("persona", {}).get("rate")) for r in (r1, r2, r3))
+        rates = " / ".join(
+            "exhausted" if r.get("exhausted") else pct(r.get("persona", {}).get("rate"))
+            for r in (r1, r2, r3)
+        )
         out.append(
             "| {id} | {req} | {st} | {cat} | {att} | {rates} | {lift} | {sel} | {nd} | {pr} | {s1} | {s2} | {cost} |".format(
                 id=c["id"],
@@ -159,6 +162,28 @@ def render(data: dict[str, Any]) -> str:
             out.append(
                 f'- {c["id"]}: "{step["text"]}" -> '
                 + (chips if step.get("accepted") else f"not accepted ({step.get('message', '')})")
+            )
+
+    colors = [
+        (c["id"], c["rounds"][0]["product_color"])
+        for c in data["cases"]
+        if c.get("rounds") and c["rounds"][0].get("product_color")
+    ]
+    if colors:
+        out += ["", "## Product colour", ""]
+        for cid, row in colors:
+            if row.get("measure") == "judge":
+                out.append(
+                    f"- {cid}: {pct(row['share'])} judged from the thumbnails (category judge v"
+                    f"{data['judge_versions']['category']}); {pct(row.get('title_share'))} by title "
+                    f"keywords (the figure the baseline report used)"
+                )
+            else:
+                out.append(f"- {cid}: {pct(row['share'])} by title keywords only")
+        if any(r.get("measure") == "judge" for _, r in colors):
+            out.append(
+                "- The measurement changed after the baseline: the first live run scored colour from "
+                "title keywords, which miss every title that names no colour. The threshold is unchanged."
             )
 
     t = data["totals"]

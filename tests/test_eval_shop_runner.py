@@ -241,9 +241,9 @@ def test_the_results_file_carries_the_hash_versions_and_a_run_id(tmp_path: Path)
     assert data["thresholds_sha256"] == thresholds_sha256() == out["thresholds_sha256"]
     assert re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}", data["run_id"])
     assert path.name == f"shop-mock-{data['run_id']}.json"
-    assert data["prompt_versions"]["eval_shop_category_judge"] == "1"
+    assert data["prompt_versions"]["eval_shop_category_judge"] == "2"
     assert data["prompt_versions"]["shop_prefs"] and data["judge_versions"] == {
-        "category": "1",
+        "category": "2",
         "persona": "1",
     }
     assert data["thresholds"] == load_thresholds().model_dump()
@@ -306,22 +306,75 @@ def test_the_plan_lists_everything_and_spends_nothing(
     assert "Anthropic $" in out and "Serper" in out and "credits" in out and "hard stops" in out
 
 
-def test_the_estimate_is_computed_from_configuration_and_compared_with_the_stops() -> None:
+def test_the_estimate_uses_the_measured_baseline_and_adds_the_new_calls() -> None:
+    from evals.shop import plan as pl
+
     cfg = eval_config("mock")
     t = load_thresholds()
     est = estimate(cfg, list(CASES.values()), t)
     assert est["cases"] == 12 and est["judge_calls"] == 12 * 12
+    # the measured figures of the first live run are the base (not the earlier guesses)
+    assert pl.MEASURED_PIPELINE_USD_PER_CASE == 0.0074 and pl.MEASURED_CREDITS_PER_CASE == 17
+    assert pl.MEASURED_JUDGE_CALL_USD == 0.0004
+    assert est["judge_usd"] == pytest.approx(144 * 0.0004, abs=1e-4)
+    base_pipeline = 12 * 0.0074
+    assert est["pipeline_anthropic_usd"] > base_pipeline  # the writer and the photo calls add cost
+    assert est["pipeline_anthropic_usd"] < 12 * 0.0074 * 3  # but stay the same order of magnitude
+    assert est["serper_credits_expected"] > 12 * 17  # the writer's variant searches add credits
     assert (
-        est["serper_credits_expected"]
-        == 12 * (2 + 2 * cfg.shop_again_max_serper_calls) * cfg.serper_credits_per_call
+        est["serper_credits_worst"]
+        == 12 * (cfg.shop_again_max_serper_calls + 2 * 9) * cfg.serper_credits_per_call
     )
-    assert est["serper_credits_worst"] >= est["serper_credits_expected"]
     assert est["anthropic_usd"] == pytest.approx(
         est["pipeline_anthropic_usd"] + est["judge_usd"], abs=1e-4
     )
     assert est["within_credit_stop"] is (est["serper_credits_worst"] <= t.hard_stop_serper_credits)
-    assert est["assumptions"]
-    assert any("hard stops" in line for line in plan_lines(cfg, list(CASES.values()), t))
+    assert est["within_anthropic_stop"] is True
+    assert est["per_case_pipeline_usd"] < t.cost_per_request_usd_max  # the realistic estimate fits
+    assert est["assumptions"] and any(
+        "measured on the first live run" in a for a in est["assumptions"]
+    )
+    assert any("photo tagging" in a for a in est["assumptions"]) and any(
+        "query writer" in a for a in est["assumptions"]
+    )
+
+
+def test_the_estimate_gives_one_shop_again_and_a_five_case_rerun() -> None:
+    cfg = eval_config("mock")
+    t = load_thresholds()
+    cases = list(CASES.values())
+    est = estimate(cfg, cases, t)
+    assert 0 < est["per_shop_again_anthropic_usd"] < 0.01 and est["per_shop_again_credits"] > 17 / 3
+    assert est["per_shop_again_usd"] > est["per_shop_again_anthropic_usd"]
+    five = estimate(cfg, cases[:5], t)
+    assert (
+        est["rerun_5_cases_usd"] == five["rerun_5_cases_usd"]
+    )  # a re-run price, whatever the list
+    assert est["rerun_5_cases_credits"] == round(5 * (17 + 8 + 4 / 3))
+    assert (
+        five["cases"] == 5
+        and five["judge_calls"] == 5 * 12
+        and five["serper_credits_expected"] < est["serper_credits_expected"]
+    )
+    lines = "\n".join(plan_lines(cfg, cases, t))
+    assert (
+        "one Shop Again about $" in lines
+        and "a 5-case re-run about $" in lines
+        and "CASES=" in lines
+    )
+    assert "hard stops" in lines
+
+
+def test_the_plan_and_the_runs_take_a_list_of_cases(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["plan", "--case", "case-04,case-06"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "case-04" in out
+        and "case-06" in out
+        and "case-05" not in out
+        and "Shop eval plan: 2 cases" in out
+    )
+    assert main(["plan", "--case", "case-99"]) == 2
 
 
 def test_the_makefile_targets_force_mock_and_pass_the_confirm_flag_explicitly() -> None:
@@ -329,8 +382,10 @@ def test_the_makefile_targets_force_mock_and_pass_the_confirm_flag_explicitly() 
     for target in ("eval-shop-plan", "eval-shop-mock", "eval-shop-live", "eval-shop-report"):
         assert re.search(rf"^{target}:", make, flags=re.MULTILINE), target
         assert target in " ".join(make.splitlines()[:4])  # in .PHONY
-    assert "APP_LLM_MODE=mock uv run python -m evals.shop plan" in make
-    assert "APP_LLM_MODE=mock uv run python -m evals.shop mock $(ARGS)" in make
+    assert (
+        "APP_LLM_MODE=mock uv run python -m evals.shop plan $(if $(CASES),--case $(CASES),)" in make
+    )
+    assert "evals.shop mock $(if $(CASES),--case $(CASES),) $(ARGS)" in make
     assert (
         "EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop live"
         in make

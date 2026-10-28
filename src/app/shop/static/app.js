@@ -181,10 +181,10 @@
     var price = priceText(q);
     if (price) add('Price', price);
     q.style_terms.forEach(function (t) { add('Style', t); });
-    q.material_terms.forEach(function (t) { add('Material', t); });
+    q.material_terms.forEach(function (t) { ctxChip('Material', t, 'material', t, ''); });
     q.must_have.forEach(function (t) { add('Must have', t); });
     q.avoid.forEach(function (t) { add('Avoid', t, 'avoid'); });
-    (q.color_terms || []).forEach(function (c) { add('Color', colorName(c)); });
+    (q.color_terms || []).forEach(function (c) { ctxChip('Color', colorName(c), 'color_term', colorName(c), ''); });
     // the setting of the request and the colours it suggests: each chip can be deleted (stage 2k)
     (q.context || []).forEach(function (c) {
       ctxChip(CONTEXT_LABELS[c.kind] || 'Setting', c.value, 'context', c.value, '', c.approximate);
@@ -1434,6 +1434,12 @@
 
   /* ---- refine: plain instructions that change the next Shop Agains (stage 2l) ---- */
 
+  function refineMatched(id) {
+    var rf = state.search && state.search.trace && state.search.trace.refine;
+    var row = rf && (rf.chips || []).filter(function (r) { return r.id === id; })[0];
+    return !!(row && row.applied && row.applied.matched_by_description);
+  }
+
   function renderRefine(note, isError) {
     var box = $('refine-box');
     var chips = $('refine-chips');
@@ -1442,7 +1448,9 @@
       var x = h('button', { type: 'button', class: 'x', 'aria-label': 'Remove ' + c.label }, ['×']);
       x.addEventListener('click', function () { removeRefine(c.id); });
       var kids = [h('span', { class: 'txt' }, [c.label]), h('span', { class: 'tag' }, ['you asked'])];
-      if (c.approximate) kids.push(h('span', { class: 'approx' }, ['approximate']));
+      if (c.approximate) {  // a written note is matched by description once the tagging flagged items
+        kids.push(h('span', { class: 'approx' }, [refineMatched(c.id) ? 'matched by description' : 'approximate']));
+      }
       kids.push(x);
       chips.appendChild(h('span', { class: 'chip pref askchip', 'data-kind': c.kind }, kids));
     });

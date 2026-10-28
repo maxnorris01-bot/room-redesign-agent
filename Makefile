@@ -99,19 +99,19 @@ shop-diagnose:
 # template's placeholder pipeline; this one is its own harness with its own cases and thresholds.
 # Lists cases, personas, the thresholds hash and the estimated cost and credits. Spends nothing.
 eval-shop-plan:
-	APP_LLM_MODE=mock uv run python -m evals.shop plan
+	APP_LLM_MODE=mock uv run python -m evals.shop plan $(if $(CASES),--case $(CASES),)
 
 # The whole harness on fixtures and deterministic judges. Free, no key; safe for CI. Mock numbers
 # show that the harness works, not how good Shop Mode is.
 eval-shop-mock:
-	APP_LLM_MODE=mock uv run python -m evals.shop mock $(ARGS)
+	APP_LLM_MODE=mock uv run python -m evals.shop mock $(if $(CASES),--case $(CASES),) $(ARGS)
 
 # Costs real money (Anthropic and Serper). Refuses to start unless the command line says
 # EVAL_SHOP_CONFIRM=yes, and never runs under CI or tests:
 #   make eval-shop-live EVAL_SHOP_CONFIRM=yes
-# One case again: ARGS='--case case-04'.
+# A few cases: CASES=case-04,case-06 (plan, mock, live and rejudge all take it).
 eval-shop-live:
-	EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop live $(ARGS)
+	EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop live $(if $(CASES),--case $(CASES),) $(ARGS)
 
 # Markdown report from a results file (default: the newest). Pass RESULTS=path and OUT=path.
 eval-shop-report:
@@ -123,4 +123,4 @@ eval-shop-report:
 #   make eval-shop-rejudge EVAL_SHOP_CONFIRM=yes RESULTS=evals/shop/results/shop-live-<run>.json
 # Narrow it with ARGS='--rounds 1,2 --cases case-06,case-09'.
 eval-shop-rejudge:
-	EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop rejudge --results $(RESULTS) $(ARGS)
+	EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop rejudge --results $(RESULTS) $(if $(CASES),--cases $(CASES),) $(ARGS)

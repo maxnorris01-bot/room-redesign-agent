@@ -339,9 +339,9 @@ def test_parse_coffee_tables_mix_of_materials_with_storage() -> None:
     assert q.price_min is None and q.price_max is None
 
 
-def test_parse_boho_curtains_has_no_known_category() -> None:
+def test_parse_boho_curtains_has_a_known_category() -> None:
     q = parse_with_mock("boho curtains")
-    assert q.category == "curtains" and q.category_key is None
+    assert q.category == "curtains" and q.category_key == "curtain"  # stage 2p: curtains are known
     assert q.style_terms == ["boho"]
 
 
@@ -412,7 +412,8 @@ def test_known_category_uses_categories_py() -> None:
     assert known_category("couch") == "sofa"
     assert known_category("coffee tables") == "coffee table"
     assert known_category("dining table") == "dining table"
-    assert known_category("curtains") is None
+    assert known_category("curtains") == known_category("curtain") == "curtain"  # stage 2p
+    assert known_category("chandeliers") is None  # still unknown to the table
     assert category_hits("Walnut Sofa Table") == {"sofa"}
     assert category_hits("Coffee Table and Side Table Set") >= {"coffee table", "side table"}
 
@@ -534,9 +535,11 @@ def test_seller_cap_counts_sellers_not_positions(monkeypatch: pytest.MonkeyPatch
     search = FakeSearch([items, []])
     out = run_search("sofa", search, config())
     assert out.serper_calls == 2
-    assert len(out.results) == SELLER_CAP + 3
-    assert sum(1 for r in out.results if r.seller == "OneShop") == SELLER_CAP
-    assert out.counts.seller_capped == 20 - SELLER_CAP
+    # stage 2p: the cap follows the batch (clamp(floor(0.30 x size), 2, 4)): a full-cap walk gives 7
+    # results, 4 from one seller, which is over 30% of 7, so the walk repeats with the cap of 2
+    assert len(out.results) == 2 + 3
+    assert sum(1 for r in out.results if r.seller == "OneShop") == 2
+    assert out.counts.seller_capped == 20 - 2
 
 
 def test_cap_keeps_the_rankers_favourites(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -546,7 +549,7 @@ def test_cap_keeps_the_rankers_favourites(monkeypatch: pytest.MonkeyPatch) -> No
     use_client(monkeypatch, RouterClient(rank=lambda text: ranked))
     out = run_search("sofa", FakeSearch([items, []]), config())
     one_shop = [r.product_id for r in out.results if r.seller == "OneShop"]
-    assert one_shop == ["s7", "s6", "s5", "s4"]
+    assert one_shop == ["s7", "s6"]  # stage 2p: a batch of this size allows 2 per seller
 
 
 def test_rank_ordering_is_applied_and_unranked_follow_in_pool_order(

@@ -32,7 +32,7 @@ def test_a_full_mock_run_exercises_all_twelve_cases(full_run: dict[str, Any]) ->
     assert len(keys) == len(full_run["checks"]) == 22  # every threshold is evaluated
     assert full_run["totals"]["anthropic_usd"] < full_run["thresholds"]["hard_stop_anthropic_usd"]
     assert full_run["totals"]["serper_credits"] < full_run["thresholds"]["hard_stop_serper_credits"]
-    assert len(full_run["category_findings"]) == 4
+    assert full_run["category_findings"] == []  # stage 2p: categories.py represents all twelve
     assert [c["id"] for c in cases if c.get("refine_step")] == ["case-02", "case-10"]
     assert all(c["repeats"]["count"] == 0 for c in cases)  # seen memory holds in every case
 
@@ -90,7 +90,7 @@ def test_the_report_has_a_row_per_case_and_a_line_per_threshold(full_run: dict[s
                     "## Cost and time", "## Limits of this eval"):  # fmt: skip
         assert section in text
     assert "same model family" in text and "re-run it once" in text
-    assert "desk chairs" in text and "folds into another category" in text
+    assert "## Category coverage findings" in text and "\nNone.\n" in text
     assert re.search(r"Round 3 minus round 1 \(no gate\)", text)
 
 

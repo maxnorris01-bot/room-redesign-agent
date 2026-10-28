@@ -27,7 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.categories import canonical_category
+from app.categories import canonical_category, known_category
 from app.shop.models import (
     FilterCounts,
     LinkKind,
@@ -246,9 +246,25 @@ def topic_key(query: ShopQuery) -> str:
     return canonical_category(query.category) if query.category.strip() else ""
 
 
+def migrate_category_keys(session: Session) -> Session:
+    """Recompute the category keys a session file holds (stage 2p: the canonical key is now singular
+    and "desk chair" is not "desk"): each topic's key from its label, and each stored query's
+    `category_key`. Derived values only; ratings, results and learned state are untouched, and
+    running it twice changes nothing."""
+    for topic in session.topics:
+        if topic.label.strip():
+            topic.key = canonical_category(topic.label)
+    for record in session.searches:
+        for query in (record.query, record.used_query):
+            if query is not None and query.category.strip():
+                query.category_key = known_category(query.category)
+    return session
+
+
 def ensure_topics(session: Session) -> Session:
     """Migrate a session file from before topics: every search and rating belongs to one topic,
     that of the last typed search. Nothing is dropped; the file is rewritten on its next save."""
+    migrate_category_keys(session)
     if session.topics or not session.searches:
         return session
     typed = [s for s in session.searches if s.kind == "search"]

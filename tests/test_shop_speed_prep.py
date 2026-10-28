@@ -126,7 +126,8 @@ def test_a_batch_cannot_exceed_the_seller_cap_by_mixing_name_variants(
     items += [cand(f"o{i}", 40.0 + i, seller=f"Other {i}") for i in range(4)]
     out = run_search("sofa", FakeSearch([items, []]), config())
     west = [r for r in out.results if seller_key(r.seller) == seller_key("West Elm")]
-    assert len(west) == SELLER_CAP
+    assert len(west) <= SELLER_CAP
+    assert len(west) <= max(2, int(0.30 * len(out.results)))  # stage 2p: the cap follows the batch
 
 
 # ---- progress, timeline ----------------------------------------------------------------

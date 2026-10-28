@@ -44,3 +44,10 @@ match rate give by sampling alone (14.4); one item is 4.2 points. The per-case l
 noise of one batch, and only the mean (+6.2, standard error 4.1) is informative. The judge's own repeatability has not been
 measured yet: `make eval-shop-rejudge` does it (about $0.03 for that file). Cases that started at 65% or more (03, 06, 10, 11)
 regressed by 0.7 points on average against +9.6 for the other eight, so a high first batch is a ceiling, not a defect.
+
+Rejudge of the same run (35 batches, 781 items, $0.0256): the persona judge agreed with itself on 90% of three-way answers
+and 93% of match / no-match answers; the mean absolute difference in a batch's match rate was 3.6 points, the mean difference
+-0.3, the spread (sd) 6.1 points. Noisiest cases: case-12, case-04, case-08, case-09 and case-11 (85 to 88% three-way
+agreement). Judge noise on one case's lift is therefore about 6 points, about 1.8 points on the 12-case mean, so the mean lift
+shortfall against +15 is not judge noise. (The batch-to-batch sampling spread, 14.3 points, is the larger part of the
+per-case noise.)

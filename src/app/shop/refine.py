@@ -33,6 +33,8 @@ from app.shop.models import (
 )
 from app.shop.retailers import TIER_LABELS, TIERS, canonical_name, retailer_of, seller_key
 from app.shop.thresholds import (
+    FREE_NOTES_MAX,
+    NOTE_MAX_CHARS,
     REFINE_MAX_CHARS,
     REFINE_MAX_CHIPS,
     REFINE_MAX_PER_SUBMIT,
@@ -57,8 +59,9 @@ def _item_schema() -> dict[str, Any]:
             "target": {"type": "string"},
             "strength": {"type": "string", "enum": ["hard", "focus"]},
             "label": {"type": "string"},
+            "note_mode": {"type": "string", "enum": ["focus", "prefer", "exclude", "none"]},
         },
-        "required": ["kind", "target", "strength", "label"],
+        "required": ["kind", "target", "strength", "label", "note_mode"],
         "additionalProperties": False,
     }
 
@@ -126,6 +129,24 @@ def _dimension_value(raw: str) -> str | None:
     return f"{dim}:{got}"
 
 
+NOTE_MODES = ("focus", "prefer", "exclude")
+
+
+def _note_phrase(raw: str) -> str:
+    """A free note's phrase: letters, digits, apostrophes and spaces, no links, at most
+    `NOTE_MAX_CHARS` characters. It is only ever shown to a model between delimiters, as data."""
+    return " ".join(re.findall(r"[a-z0-9' ]+", _URL.sub(" ", raw.lower())))[:NOTE_MAX_CHARS].strip()
+
+
+def _mode_of(kind: str) -> str:
+    """The strength a note gets when the model gave none: what the kind it tried to be implies."""
+    if kind.startswith("exclude"):
+        return "exclude"
+    if kind.startswith("focus"):
+        return "focus"
+    return "prefer"
+
+
 def validate_item(item: RefineItem, text: str = "") -> RefineChip | None:
     """One interpretation checked against the fixed kinds and vocabularies. Anything that does not
     check out becomes an approximate free note (a soft hint only); an empty label is dropped."""
@@ -145,16 +166,20 @@ def validate_item(item: RefineItem, text: str = "") -> RefineChip | None:
         words = " ".join(re.findall(r"[a-z0-9]+", item.target.lower()))[:MAX_TERM_CHARS]
         target = words or None
     else:
-        target = " ".join(re.findall(r"[a-z0-9' ]+", item.target.lower()))[:60].strip() or None
-    approximate = kind == "free_note"  # a note is never mapped onto a fixed kind: a soft hint
+        target = _note_phrase(item.target) or None
+    approximate = kind == "free_note"  # a note is never mapped onto a fixed kind
+    mode = ""
     if target is None:
         if not label:
             return None
-        kind, target, approximate = "free_note", label.lower(), True
+        kind, target, approximate = "free_note", _note_phrase(label) or label.lower(), True
+    if kind == "free_note":
+        mode = item.note_mode if item.note_mode in NOTE_MODES else _mode_of(item.kind)
     strength: Literal["hard", "focus"] = "hard" if kind in HARD_KINDS else "focus"
     return RefineChip(
         id=chip_id(kind, target), kind=kind, target=target, strength=strength,
         label=label or target, approximate=approximate, text=text,
+        note_mode=mode,  # type: ignore[arg-type]
     )  # fmt: skip
 
 
@@ -237,6 +262,12 @@ def add_chips(
         if len(out) >= REFINE_MAX_CHIPS:
             notices.append(f"At most {REFINE_MAX_CHIPS} refinements at once; remove one first.")
             break
+        if (
+            chip.kind == "free_note"
+            and sum(1 for c in out if c.kind == "free_note") >= FREE_NOTES_MAX
+        ):
+            notices.append(f"At most {FREE_NOTES_MAX} written notes at once; remove one first.")
+            continue
         out.append(chip)
     return out, notices
 
@@ -258,14 +289,30 @@ class RefineSet:
     price_min: float | None = None
     must_have: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # stage 2p: free notes by strength, chip id -> phrase (a focus note reserves a share of the batch
+    # from items the tagging flagged as matching; an exclude note removes them; prefer is text only)
+    focus_notes: dict[str, str] = field(default_factory=dict)
+    exclude_notes: dict[str, str] = field(default_factory=dict)
+    prefer_notes: dict[str, str] = field(default_factory=dict)
 
     @property
     def active(self) -> bool:
         return bool(self.chips)
 
     def focus_pairs(self) -> list[tuple[str, str]]:
-        """(dimension, value) for the selection; sellers use the pseudo-dimension "seller"."""
-        return [*self.focus_values, *(("seller", seller_key(n)) for n in self.focus_sellers)]
+        """(dimension, value) for the selection; sellers use the pseudo-dimension "seller" and a
+        focus note the pseudo-dimension "note" (its value is the chip id)."""
+        return [
+            *self.focus_values,
+            *(("seller", seller_key(n)) for n in self.focus_sellers),
+            *(("note", cid) for cid in self.focus_notes),
+        ]
+
+    def note_specs(self) -> list[tuple[str, str]]:
+        """(chip id, phrase) of every active free note, at most `FREE_NOTES_MAX`: what the tagging
+        calls return a match flag for."""
+        both = {**self.focus_notes, **self.exclude_notes, **self.prefer_notes}
+        return list(both.items())[:FREE_NOTES_MAX]
 
 
 def build_set(chips: list[RefineChip]) -> RefineSet:
@@ -290,6 +337,11 @@ def build_set(chips: list[RefineChip]) -> RefineSet:
             rs.must_have.append(c.target)
         else:
             rs.notes.append(c.label + (" (approximate)" if c.approximate else ""))
+            mode = c.note_mode or "prefer"
+            bucket = {"focus": rs.focus_notes, "exclude": rs.exclude_notes}.get(
+                mode, rs.prefer_notes
+            )
+            bucket[c.id] = c.target
     return rs
 
 
@@ -371,7 +423,14 @@ def ranker_lines(rs: RefineSet) -> list[str]:
     if not rs.active:
         return []
     favour = [c.label for c in rs.chips if c.strength == "focus" and c.kind != "free_note"]
+    favour += [c.label for c in rs.chips if c.kind == "free_note" and c.note_mode == "focus"]
     excluded = [c.label for c in rs.chips if c.kind.startswith("exclude")]
+    excluded += [c.label for c in rs.chips if c.kind == "free_note" and c.note_mode == "exclude"]
+    soft = [
+        c.label + (" (approximate)" if c.approximate and not c.note_mode else "")
+        for c in rs.chips
+        if c.kind == "free_note" and c.note_mode in ("", "prefer")
+    ]
     lines = []
     if favour:
         lines.append(
@@ -383,8 +442,8 @@ def ranker_lines(rs: RefineSet) -> list[str]:
             "The shopper explicitly excluded (already removed from the list): "
             + "; ".join(excluded)
         )
-    if rs.notes:
-        lines.append("Notes from the shopper (soft hints, approximate): " + "; ".join(rs.notes))
+    if soft:
+        lines.append("Notes from the shopper (soft hints, approximate): " + "; ".join(soft))
     return lines
 
 
