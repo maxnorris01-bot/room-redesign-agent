@@ -197,6 +197,8 @@ def test_a_live_file_is_refused_without_the_flag_and_under_pytest_or_ci(
     monkeypatch.delenv(CONFIRM_VAR, raising=False)
     running = os.environ["PYTEST_CURRENT_TEST"]
     monkeypatch.delenv("PYTEST_CURRENT_TEST")  # to reach the flag check, as a plain shell would
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     assert main(["rejudge", "--results", str(src)]) == 2
     captured = capsys.readouterr()
     assert "Rejudge estimate: 1 batches, 24 items, 2 persona-judge calls" in captured.out
