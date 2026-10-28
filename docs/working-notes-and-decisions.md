@@ -189,6 +189,14 @@ this choice over the alternatives. Note what's still open or deferred within it,
   targets rather than riding on `eval-fast` (that runs the template's placeholder pipeline); the live target needs
   `EVAL_SHOP_CONFIRM=yes` and refuses under CI and pytest; the judges are Haiku (the pipeline's family), uncalibrated.
   The estimate is close to the hard stops, see the plan output. See `docs/sessions/2026-10-26-shop-eval.md`.
+- **2026-10-27, stage 3 baseline (ADR 0012 stage 3 note): the first live eval failed 6 of 22 checks, and the diagnosis says why.**
+  Decisions: thresholds and pipeline were left untouched so the baseline stays comparable; the failed checks are read as one
+  threshold-shape issue (case 04 seller share, per-case lift worst), one measurement issue (case 06 attributes: "cannot tell"),
+  one partly measurement and partly real (case 12 colour), and real gaps (case 10 free notes; the lift mean, modest at +6.2
+  with ceiling effects). Single-case lifts are inside sampling noise (sd 14.3 vs 14.4 predicted), so only means are read.
+  The harness now keeps a richer trace and has a `rejudge` command (persona judge only, about $0.03 for the saved file) to
+  measure judge repeatability before any fix is judged by lift. See `docs/evals/shop-eval-baseline-2026-10-26.md` and
+  `docs/sessions/2026-10-26-shop-eval-baseline.md`.
 
 ## See also
 

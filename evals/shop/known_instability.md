@@ -38,4 +38,9 @@ relative signal (did Shop Again move toward the persona?) more than an absolute 
 
 ## Recorded instability
 
-None yet: no live run has been made.
+First live run (`shop-live-20261027-041854-b00d9f`, baseline in `docs/evals/shop-eval-baseline-2026-10-26.md`): the spread of
+the 12 per-case round-2 lifts has a standard deviation of 14.3 points, which is what two independent 24-item batches at a 55%
+match rate give by sampling alone (14.4); one item is 4.2 points. The per-case lift threshold (-10) is therefore inside the
+noise of one batch, and only the mean (+6.2, standard error 4.1) is informative. The judge's own repeatability has not been
+measured yet: `make eval-shop-rejudge` does it (about $0.03 for that file). Cases that started at 65% or more (03, 06, 10, 11)
+regressed by 0.7 points on average against +9.6 for the other eight, so a high first batch is a ceiling, not a defect.

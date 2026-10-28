@@ -50,3 +50,23 @@ It is not wired into `make eval-fast`, which runs the template's placeholder pip
 Judges are Haiku, the pipeline's own model family, so blind spots may be shared; personas are texts,
 not people; neither is calibrated against human labels (see `docs/todo.md`). A mock run shows that the
 harness works, not that Shop Mode is good. Twelve requests are a small sample.
+
+## Judge noise: rejudge
+
+```
+make eval-shop-rejudge EVAL_SHOP_CONFIRM=yes RESULTS=evals/shop/results/shop-live-<run>.json [ARGS='--rounds 1,2 --cases case-06']
+python -m evals.shop rejudge --results <file> [--rounds 1,2,3] [--cases case-01,case-02]
+```
+
+Re-runs the persona judge only (no search, no pipeline call) on the batches saved in a results file and
+reports, per case and overall, how often the two judgements agree (the raw love/like/dislike answer, and the
+match answer love-or-like against dislike that the lift uses) and how far the match rate moves. It prints its
+estimated cost first (judge calls only: `ceil(items / 12)` per batch), refuses a live file without
+`EVAL_SHOP_CONFIRM=yes` and under CI or pytest, writes its own gitignored `rejudge-*.json` beside the results
+and never changes the source file. A mock results file is rejudged with the mock judge and needs no flag.
+
+## Baseline
+
+The first live run and its diagnosis are in `docs/evals/shop-eval-baseline-2026-10-26.md`. The results file keeps a compact trace
+per batch (the parsed request's colour terms, the profile's chips, the alignment signals, the per-dimension decisions, the pool
+counters; no titles or links) so a diagnosis does not have to guess what each Shop Again ran with.

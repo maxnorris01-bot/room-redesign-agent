@@ -1,6 +1,6 @@
 .PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-standard-live \
 	eval-nightly eval-nightly-live spike spike-live report reports render render-live shop shop-live shop-check shop-diagnose \
-	eval-shop-plan eval-shop-mock eval-shop-live eval-shop-report
+	eval-shop-plan eval-shop-mock eval-shop-live eval-shop-report eval-shop-rejudge
  
 install:
 	uv sync
@@ -116,3 +116,11 @@ eval-shop-live:
 # Markdown report from a results file (default: the newest). Pass RESULTS=path and OUT=path.
 eval-shop-report:
 	APP_LLM_MODE=mock uv run python -m evals.shop report $(RESULTS) $(if $(OUT),--out $(OUT),)
+
+# Judge noise: re-run ONLY the persona judge on the batches saved in a live results file and report how
+# often its answers agree with the first run. Judge calls only (no search, no pipeline); prints the
+# estimate first and refuses like the live target (needs EVAL_SHOP_CONFIRM=yes, never under CI or tests):
+#   make eval-shop-rejudge EVAL_SHOP_CONFIRM=yes RESULTS=evals/shop/results/shop-live-<run>.json
+# Narrow it with ARGS='--rounds 1,2 --cases case-06,case-09'.
+eval-shop-rejudge:
+	EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop rejudge --results $(RESULTS) $(ARGS)
