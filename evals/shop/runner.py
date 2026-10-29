@@ -195,6 +195,8 @@ def trace_summary(view: dict[str, Any]) -> dict[str, Any]:
             for k in ("pool_before", "pool_after", "shortfall", "serper_calls", "marketplace_excluded", "refine_removed")
             if k in batch
         },
+        "seller_cap": trace.get("seller_cap") or batch.get("seller_cap"),
+        "price_outliers": trace.get("price_outliers") or batch.get("price_outliers"),
     }  # fmt: skip
 
 
@@ -289,7 +291,7 @@ def play_round(
         "items": [
             {
                 "id": it.id, "title": it.title, "price": it.price, "seller": it.seller,
-                "thumbnail_url": it.thumbnail_url,
+                "thumbnail_url": it.thumbnail_url, "source": it.source,
                 "category": cat[n].category if cat.get(n) else None,  # type: ignore[union-attr]
                 "attributes": cat[n].attributes if cat.get(n) else None,  # type: ignore[union-attr]
                 "persona": per[n].answer if per.get(n) else None,  # type: ignore[union-attr]

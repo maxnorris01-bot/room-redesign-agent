@@ -4,10 +4,12 @@ After the evidence step, one small forced tool call (`record_queries`, prompt `s
 strict schema, thinking disabled, about 300 output tokens) writes one or two search queries from
 the typed constraints and what the shopper's ratings lean toward and away from. The model
 describes; code validates every query and drops the ones that break a rule, noting why in the
-trace: the category word must be present, every must-have and typed material too, no URL, no
-price, no retailer that is not one the shopper liked, at most `QUERY_MAX_WORDS` words. Accepted
-queries run as page-1 searches. A failed or empty call is recorded and the Shop Again goes on
-without it.
+trace: every hard word of the request must be present (the category and each typed style, type,
+size, colour and material; see `hardwords`) unless a listed synonym replaces it, no style, material
+or colour word the request did not contain, no URL, no price, no retailer that is not one the
+shopper liked, at most `QUERY_MAX_WORDS` words. Accepted queries run as page-1 searches. A failed
+or empty call is recorded and the Shop Again goes on without it; when no variant passes, fewer
+searches run and the result says so (`QueryResult.note`).
 """
 
 from __future__ import annotations
@@ -19,6 +21,13 @@ from typing import Any
 from app.config import Config
 from app.llm import Budget, LLMOutputError, complete
 from app.prompts import load_prompt
+from app.shop.hardwords import (
+    added_attribute_word,
+    allowed_words,
+    hard_words,
+    missing_hard_word,
+    tokens,
+)
 from app.shop.models import MAX_SEARCH_TEXT_CHARS, ShopQuery
 from app.shop.retailers import RETAILERS, seller_key
 from app.shop.textutil import normalize_phrase
@@ -32,8 +41,10 @@ from app.shop.thresholds import (
 
 QUERY_TOOL = "record_queries"
 QUERY_USED_SHOWN = 12  # used queries listed to the writer (the most recent)
+# stage 2q: neutral fillers only. "modern", "classic" and "contemporary" are style words, so a
+# variant that gained one changed what was asked for.
 VARIANT_MODIFIERS = (
-    "modern", "classic", "premium", "affordable", "designer", "contemporary", "quality", "stylish",
+    "premium", "affordable", "designer", "quality", "stylish", "popular", "best",
 )  # fmt: skip
 QUERY_MAX_TOKENS = 300
 QUERY_TOOL_DEF: dict[str, Any] = {
@@ -78,6 +89,7 @@ class QueryResult:
     usd: float = 0.0
     asked: bool = False
     fallback: int = 0  # accepted queries that came from `fallback_variants`, not the model
+    note: str = ""  # stage 2q: why fewer variants than wanted ran (empty when all did)
 
 
 def _singular(word: str) -> str:
@@ -160,13 +172,18 @@ def validate_query(text: str, inp: QueryInput) -> tuple[str, str]:
         return "", "too long"
     present = {_singular(w) for w in words}
     q = inp.adjusted
-    if q.category:
-        head = _words(q.category)[-1]
-        if _singular(head) not in present:
-            return "", f"the category word '{head}' is missing"
-    for term in [*q.must_have, *q.material_terms]:
-        if not _has(present, term):
-            return "", f"the typed constraint '{term}' is missing"
+    needed = hard_words(inp.base, q)
+    lacking = missing_hard_word(cleaned, needed)
+    if lacking is not None:
+        word = lacking.missing_word(set(tokens(cleaned)))
+        if lacking.kind == "category":
+            return "", f"the category word '{word}' is missing"
+        if lacking.kind in ("must_have", "material"):
+            return "", f"the typed constraint '{lacking.label}' is missing"
+        return "", f"the typed {lacking.kind} '{lacking.label}' is missing"
+    added = added_attribute_word(cleaned, allowed_words(inp.base, q, needed))
+    if added:
+        return "", f"it adds '{added}', a word your request did not use"
     for term in q.avoid:
         if _has(present, term):
             return "", f"it uses the avoided word '{term}'"
@@ -227,12 +244,12 @@ def write_queries(inp: QueryInput, budget: Budget, config: Config | None = None)
     return result
 
 
-def fallback_variants(inp: QueryInput, limit: int = MODEL_QUERIES) -> list[str]:
-    """Variants without a model: the request's search words with one modifier word in front (modern,
-    premium, affordable, ...), every typed word kept, checked by the same rules and the same novelty
-    test as a model query. Used when the writer is off, fails or gives nothing new."""
+def _fallback(inp: QueryInput, limit: int) -> tuple[list[str], int]:
+    """(variants, how many candidates the rules rejected) for `fallback_variants`."""
     out: list[str] = []
+    rejected = 0
     base = inp.adjusted.search_text or inp.base.search_text
+    needed = hard_words(inp.base, inp.adjusted)
     singles = [(m,) for m in VARIANT_MODIFIERS]
     pairs = [(a, b) for a in VARIANT_MODIFIERS for b in VARIANT_MODIFIERS if a < b]
     for modifiers in [
@@ -244,17 +261,27 @@ def fallback_variants(inp: QueryInput, limit: int = MODEL_QUERIES) -> list[str]:
         if any(m in _words(base) for m in modifiers):
             continue
         words = [*modifiers, *base.split()]
-        present = {_singular(w) for w in _words(" ".join(words))}
-        for term in [*inp.adjusted.must_have, *inp.adjusted.material_terms]:
-            if not _has(present, term):  # a typed constraint the search words lack is added back
-                words += term.split()
-                present |= {_singular(w) for w in _words(term)}
+        for hard in needed:  # a hard word the search words lack is added back, as typed
+            if missing_hard_word(" ".join(words), [hard]) is not None:
+                words += hard.label.split()
         text = " ".join(words[:QUERY_MAX_WORDS])
         cleaned, why = validate_query(text, inp)
-        if why or too_close_to_used(cleaned, [*inp.used, *inp.existing, *out]):
+        if why:
+            rejected += 1
+            continue
+        if too_close_to_used(cleaned, [*inp.used, *inp.existing, *out]):
             continue
         out.append(cleaned)
-    return out
+    return out, rejected
+
+
+def fallback_variants(inp: QueryInput, limit: int = MODEL_QUERIES) -> list[str]:
+    """Variants without a model: the request's search words with one neutral filler word in front
+    (premium, affordable, designer, ...), every hard word kept, checked by the same rules and the
+    same novelty test as a model query. Used when the writer is off, fails or gives nothing new. A
+    filler never adds a style, material or colour word (stage 2q); when no variant passes, fewer
+    (or none) come back rather than one that drifts."""
+    return _fallback(inp, limit)[0]
 
 
 def variant_queries(inp: QueryInput, budget: Budget, config: Config | None = None) -> QueryResult:
@@ -265,10 +292,22 @@ def variant_queries(inp: QueryInput, budget: Budget, config: Config | None = Non
     config = config or budget.config
     result = write_queries(inp, budget, config) if config.shop_model_queries else QueryResult()
     if len(result.accepted) < MODEL_QUERIES:
-        extra = fallback_variants(
+        extra, rejected = _fallback(
             QueryInput(**{**inp.__dict__, "existing": [*inp.existing, *result.accepted]}),
             MODEL_QUERIES - len(result.accepted),
         )
         result.accepted.extend(extra)
         result.fallback = len(extra)
+        if rejected:
+            result.dropped.append(
+                {"query": f"{rejected} filler variants", "reason": "dropped: changed your request"}
+            )
+    if len(result.accepted) < MODEL_QUERIES:
+        kept = len(result.accepted)
+        result.note = (
+            "No variant kept every word of your request, so no variant search was run."
+            if not kept
+            else f"Only {kept} of {MODEL_QUERIES} variants kept every word of your request, so "
+            f"{kept} variant search ran."
+        )
     return result

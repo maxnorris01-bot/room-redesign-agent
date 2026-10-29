@@ -51,3 +51,12 @@ and 93% of match / no-match answers; the mean absolute difference in a batch's m
 agreement). Judge noise on one case's lift is therefore about 6 points, about 1.8 points on the 12-case mean, so the mean lift
 shortfall against +15 is not judge noise. (The batch-to-batch sampling spread, 14.3 points, is the larger part of the
 per-case noise.)
+
+
+## Attribute match among decidable items (secondary)
+
+The report prints, per case and overall, `good / (good + no)` for the attribute judge in round 1, with the count of `cannot_tell`
+beside it (stage 2q). It is **secondary**: the verdict number, its threshold and its checks still count `cannot_tell` as a miss.
+`cannot_tell` is common when listings state no size (case-06 on the 2026-10-28 re-run: 10 yes, 2 no, 12 cannot_tell of 24, which
+is 42% in the verdict and 83% among the items the judge could decide), so the second figure shows how much of a low number is the
+judge declining to decide rather than a mismatch. Whether `cannot_tell` should count is a threshold decision for the owner.

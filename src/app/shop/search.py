@@ -38,6 +38,7 @@ from app.shop.models import (
     AlsoAt,
     FilterCounts,
     LinkKind,
+    ResultSource,
     ShopQuery,
     ShopResult,
     clean_request,
@@ -54,6 +55,7 @@ from app.shop.nearby import (
 )
 from app.shop.parse import color_word, parse_request
 from app.shop.phototags import ThumbCache, photo_tag_top
+from app.shop.pricecheck import split_price_outliers
 from app.shop.progress import Progress, Timeline
 from app.shop.queries import QueryInput, QueryResult, variant_queries
 from app.shop.refine import RefineSet
@@ -81,6 +83,7 @@ from app.shop.thresholds import (
     OPEN_STRATUM_FLOOR,
     REFINE_FOCUS_MIN_SHARE,
     SELLER_CAP_MAX,
+    SELLER_CAP_SHARE,
     SELLER_MAX_SHARE,
     SELLER_PINNED_SHARE,
     SELLER_SEARCHES,
@@ -88,6 +91,7 @@ from app.shop.thresholds import (
     TIER_BATCH_SHARE,
     TYPED_MATCH_MIN_SHARE,
     seller_cap,
+    seller_cap_ceiling,
 )
 from app.shop.typed import TypedAttr, typed_attributes
 from app.shop.vocab import OTHER, PHRASE_DIMS, phrase_word, style_leaves, tag_values, title_tags
@@ -332,6 +336,9 @@ def apply_filters(
             counts.wrong_category += 1
             continue
         kept.append(c)
+    kept, outliers = split_price_outliers(kept, query.category_key)
+    counts.price_outliers = len(outliers)
+    counts.price_outlier_rows = outliers[:10]
     pool, stats = Dedupe(listing_of).run(kept, seen)
     counts.duplicates = stats.duplicates
     counts.seen_excluded = stats.shown_before + stats.rated_before
@@ -617,6 +624,35 @@ def strata_quotas(
     return quota
 
 
+def seller_cap_info(log: list[dict[str, Any]], pool_size: int) -> dict[str, Any]:
+    """The trace of a seller-cap relaxation (empty when the first walk filled the batch): the cap
+    it began with, every step tried, and the cap it settled on with the sentence the page shows."""
+    if not log:
+        return {}
+    kept = [x for x in log if x["kept"]]
+    info: dict[str, Any] = {
+        "base": seller_cap(min(RESULT_COUNT, pool_size)), "steps": list(log),
+        "final": kept[-1]["cap"] if kept else None,
+    }  # fmt: skip
+    if kept:
+        info["message"] = (
+            "A few sellers dominate this category; allowed up to "
+            f"{kept[-1]['cap']} per seller to fill the batch."
+        )
+    return info
+
+
+def top_seller_share(results: list[ShopResult]) -> float:
+    """The largest share of `results` held by one seller (0 for none)."""
+    if not results:
+        return 0.0
+    held: dict[str, int] = {}
+    for r in results:
+        key = seller_key(r.seller)
+        held[key] = held.get(key, 0) + 1
+    return max(held.values()) / len(results)
+
+
 def build_results(
     ordered: list[tuple[SearchCandidate, str]],
     query: ShopQuery,
@@ -634,6 +670,9 @@ def build_results(
     groups: dict[str, list[SearchCandidate]] | None = None,
     cap_override: int | None = None,
     typed: list[TypedAttr] | None = None,
+    sources: dict[str, ResultSource] | None = None,
+    relax_log: list[dict[str, Any]] | None = None,
+    relaxing: bool = False,
 ) -> tuple[list[ShopResult], int, int]:
     """Walk the ranked order, up to `RESULT_COUNT`, keeping:
 
@@ -655,6 +694,13 @@ def build_results(
     `tier_limit=(tier, cap, quota)` (stage 2f) the best ranked results from that retailer tier go
     first, up to `quota`, and the tier never takes more than `cap` of the batch. Returns
     (results, skipped by the seller cap, skipped by the diversity guard).
+
+    Stage 2q: when the first walk (the cap above) fills fewer than `RESULT_COUNT` from a pool that
+    holds at least that many, the per-seller cap is raised one step at a time (5, 6, 7: up to
+    `seller_cap_ceiling(RESULT_COUNT)`) until the batch is full; a relaxed batch is kept only
+    when it is longer and no seller holds more than `SELLER_CAP_SHARE` of the batch actually
+    shown. Each step is appended to `relax_log`. If none qualifies the shorter batch is
+    tightened as before.
 
     Stage 2i: `leanings=(toward, away)` lists (dimension, value) pairs. Each value leaned toward
     gets at least `LEAN_TOWARD_MIN_SHARE` of the batch where the pool has it (a pass after the
@@ -866,15 +912,45 @@ def build_results(
                 also_at=_also_at(
                     groups.get(candidate.product_id, []) if groups else [], candidate.seller
                 ),
+                source=sources.get(candidate.product_id) if sources else None,
             )
         )
-    shorter = seller_cap(len(results))
-    if len(results) < RESULT_COUNT and shorter < base_cap:  # the batch came out short: tighten
+
+    def rerun(cap: int, relax: bool = False) -> tuple[list[ShopResult], int, int]:
         return build_results(
             ordered, query, pool_index, affinity_sellers, pinned_sellers, guard_dims, guard_caps,
-            tags, strata, tier_limit, leanings, colors, focus, groups, cap_override=shorter,
-            typed=typed,
+            tags, strata, tier_limit, leanings, colors, focus, groups, cap_override=cap,
+            typed=typed, sources=sources, relaxing=relax,
         )  # fmt: skip
+
+    if relaxing:  # a relaxed walk is judged by the caller; it is never tightened again
+        return results, len(seller_skipped - taken), len(diversity_skipped - taken)
+
+    if cap_override is None and len(results) < RESULT_COUNT and len(ordered) >= RESULT_COUNT:
+        best: tuple[list[ShopResult], int, int] | None = None
+        for relaxed_cap in range(base_cap + 1, seller_cap_ceiling(RESULT_COUNT) + 1):
+            got = rerun(relaxed_cap, relax=True)
+            share = top_seller_share(got[0])
+            better = len(got[0]) > len(best[0] if best else results)
+            kept = better and share <= SELLER_CAP_SHARE
+            if relax_log is not None:
+                relax_log.append(
+                    {
+                        "cap": relaxed_cap,
+                        "size": len(got[0]),
+                        "top_share": round(share, 4),
+                        "kept": kept,
+                    }  # fmt: skip
+                )
+            if kept:
+                best = got
+            if len(got[0]) >= RESULT_COUNT:
+                break
+        if best is not None:
+            return best
+    shorter = seller_cap(len(results))
+    if len(results) < RESULT_COUNT and shorter < base_cap:  # the batch came out short: tighten
+        return rerun(shorter)
     return results, len(seller_skipped - taken), len(diversity_skipped - taken)
 
 
@@ -1182,6 +1258,7 @@ def run_query(
     used: list[str] = []
     pages: dict[str, int] = {}
     supplied: set[str] = set()
+    item_sources: dict[str, ResultSource] = {}  # product id -> the search that first found it
 
     consumed: set[tuple[str, int]] = set()
     book = again.tag_book if again is not None else None
@@ -1219,9 +1296,14 @@ def run_query(
         own, _extra = _exclusions(own, again)
         pipeline.submit(drop_refined(drop_marketplace(own, again), again))
 
-    def absorb(text: str, page: int, more: list[SearchCandidate]) -> list[SearchCandidate]:
-        """Merge a page into the pool; returns the candidates it newly added."""
+    def absorb(
+        text: str, page: int, more: list[SearchCandidate], kind: str = "base"
+    ) -> list[SearchCandidate]:
+        """Merge a page into the pool; returns the candidates it newly added. The first search that
+        found a product is where it came from (`item_sources`, stage 2q)."""
         nonlocal raw, pool, counts
+        for c in more:
+            item_sources.setdefault(c.product_id, ResultSource(kind=kind, query=text))
         if text not in used:
             used.append(text)
         pages[query_key(text)] = max(pages.get(query_key(text), 0), page)
@@ -1326,7 +1408,10 @@ def run_query(
                     entry["error"] = "search failed"
                     peer_log.append(entry)
                 continue
-            added = absorb(text, page, got)
+            added = absorb(
+                text, page, got,
+                str(entry["kind"]) if peer is not None and entry is not None else "base",
+            )  # fmt: skip
             if not got and peer is None and idx is not None:
                 finished.add(idx)
             if peer is not None:
@@ -1348,7 +1433,7 @@ def run_query(
                     warnings.append(f"Search for a written query unavailable ({got}).")
                     row["error"] = "search failed"
                 else:
-                    added = absorb(text, page, got)
+                    added = absorb(text, page, got, "writer")
                     supplied.update(c.product_id for c in added)
                     row["found"], row["new_candidates"] = len(got), len(added)
                 model_log.append(row)
@@ -1399,7 +1484,7 @@ def run_query(
                 entry["error"] = "search failed"
                 peer_log.append(entry)
                 continue
-            added = absorb(peer_text, peer_page, got)
+            added = absorb(peer_text, peer_page, got, str(entry["kind"]))
             supplied.update(c.product_id for c in added)
             if pipeline is not None:
                 pipeline.submit(added)
@@ -1415,7 +1500,7 @@ def run_query(
                 warnings.append(f"Search for a written query unavailable ({got}).")
                 row["error"] = "search failed"
             else:
-                added = absorb(text, page, got)
+                added = absorb(text, page, got, "writer")
                 supplied.update(c.product_id for c in added)
                 if pipeline is not None:
                     pipeline.submit(added)
@@ -1440,6 +1525,7 @@ def run_query(
             thin_info = {
                 "before": shown_possible, "asked_model": config.shop_model_queries,
                 "from_fallback": made.fallback, "dropped": list(made.dropped), "variants": [],
+                "note": made.note,
             }  # fmt: skip
             for text in made.accepted[:want]:
                 calls += 1
@@ -1449,7 +1535,7 @@ def run_query(
                     row["error"] = "search failed"
                     warnings.append(f"A variant search was unavailable ({got}).")
                 else:
-                    added = absorb(text, 1, got)
+                    added = absorb(text, 1, got, "thin_variant")
                     row["found"], row["new_candidates"] = len(got), len(added)
                 thin_info["variants"].append(row)
             thin_info["after"] = len(cap_per_seller(pool, SELLER_CAP)[0])
@@ -1599,7 +1685,7 @@ def run_query(
                 )
                 extra_done.add(f"{dim}:{value}")
                 continue
-            added = absorb(text, page, got)
+            added = absorb(text, page, got, "supply")
             supplied.update(c.product_id for c in added)
             if not got or not added:
                 extra_done.add(f"{dim}:{value}")  # nothing new from this phrasing: stop asking it
@@ -1676,7 +1762,10 @@ def run_query(
             "pinned": again.tier_pinned,
         }  # fmt: skip
 
+    seller_cap_log: list[dict[str, Any]] = []
+
     def select() -> tuple[list[ShopResult], int, int]:
+        seller_cap_log.clear()
         return build_results(
             ordered,
             query,
@@ -1693,6 +1782,8 @@ def run_query(
             again.refine.focus_pairs() if again is not None and again.refine else None,
             groups_by_pid,
             typed=typed_attrs,
+            sources=item_sources,
+            relax_log=seller_cap_log,
         )
 
     if (
@@ -1732,7 +1823,7 @@ def run_query(
             if isinstance(got, Exception):
                 warnings.append(f"Refill search unavailable ({got}).")
             else:
-                added = absorb(text, page, got)
+                added = absorb(text, page, got, "refill")
                 supplied.update(c.product_id for c in added)
                 new_pairs = [(c, "") for c in added]
                 for c, _r in new_pairs:
@@ -1748,6 +1839,16 @@ def run_query(
                 )  # fmt: skip
                 results, capped, diversity_skipped = select()
                 refill_log[-1]["after"] = len(results)
+    cap_info = seller_cap_info(seller_cap_log, len(ordered))
+    outlier_info: dict[str, Any] = (
+        {"count": counts.price_outliers, "dropped": list(counts.price_outlier_rows),
+         "message": (f"Left out {counts.price_outliers} listing(s) priced implausibly low for "
+                     "this kind of furniture.")}
+        if counts.price_outliers else {}
+    )  # fmt: skip
+    for note in (cap_info.get("message"), outlier_info.get("message")):
+        if note:  # stage 2q: said on the page, not only in the trace
+            warnings.append(str(note))
     typed_info: dict[str, Any] = {}
     if typed_attrs:
         final_tags = tag_of if tag_of is not None else (lambda c: title_tags(c.title))
@@ -1832,7 +1933,9 @@ def run_query(
             )
     t_end = clock.now()
     dd = counts.dedupe or {}
-    filtered_out = counts.no_price + counts.out_of_range + counts.wrong_category
+    filtered_out = (
+        counts.no_price + counts.out_of_range + counts.wrong_category + counts.price_outliers
+    )
     explanation = (
         f"{counts.seen_excluded} seen or rated, {counts.duplicates} duplicates, "
         f"{filtered_out} filtered out"
@@ -1894,6 +1997,10 @@ def run_query(
         composition_info["refill"] = refill_log
         if typed_info:
             composition_info["typed"] = typed_info
+        if cap_info:
+            composition_info["seller_cap"] = cap_info
+        if outlier_info:
+            composition_info["price_outliers"] = outlier_info
         if exhausted:
             composition_info["exhausted"] = exhausted
         composition_info["dedupe"] = dd
@@ -1904,6 +2011,7 @@ def run_query(
             "accepted": list(query_result.accepted) if query_result else [],
             "dropped": list(query_result.dropped) if query_result else [],
             "error": query_result.error if query_result else "",
+            "note": query_result.note if query_result else "",
             "usd": query_result.usd if query_result else 0.0,
             "searches": model_log,
         }
@@ -1994,6 +2102,8 @@ def run_query(
         trace={
             **({"thin": thin_info} if thin_info else {}),
             **({"typed": typed_info} if typed_info and again is None else {}),
+            **({"seller_cap": cap_info} if cap_info and again is None else {}),
+            **({"price_outliers": outlier_info} if outlier_info and again is None else {}),
         },
         new_tags=dict(book.new) if book is not None else {},
         peer_log=list(peer_log),

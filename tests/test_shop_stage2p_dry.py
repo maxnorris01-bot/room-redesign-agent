@@ -71,14 +71,15 @@ def test_the_writer_drops_a_query_that_repeats_a_used_one_and_keeps_new_ones(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(q, "complete", fake_complete(
-        ["dining chair walnut", "premium oak dining chair", "stylish walnut dining chair seat"]
+        ["dining chair walnut", "premium solid walnut dining chair", "stylish walnut dining chair seat"]
     ))  # fmt: skip
     cfg = Config(llm_mode="mock", tracing_disabled=True)
     from app.llm import Budget
 
     out = q.write_queries(qin(["walnut dining chair"], existing=[]), Budget(cfg), cfg)
     assert (
-        out.accepted == ["premium oak dining chair"] or "premium oak dining chair" in out.accepted
+        out.accepted == ["premium solid walnut dining chair"]
+        or "premium solid walnut dining chair" in out.accepted
     )
     assert any("already used" in d["reason"] for d in out.dropped)
     assert "dining chair walnut" not in out.accepted
@@ -96,7 +97,7 @@ def test_the_writer_is_told_what_was_used_and_what_was_seen() -> None:
 def test_the_writer_prompt_is_version_three_and_the_old_ones_are_kept() -> None:
     from app.prompts import load_prompt
 
-    current = load_prompt("shop_queries")
+    current = load_prompt("shop_queries", "3")  # stage 2q made v4 the current one
     assert (
         current.version == "3"
         and "TWO NEW" in current.text
@@ -129,12 +130,12 @@ def test_variant_queries_use_the_model_first_and_the_fallback_for_the_rest(
     from app.llm import Budget
 
     cfg = Config(llm_mode="mock", tracing_disabled=True, shop_model_queries=True)
-    monkeypatch.setattr(q, "complete", fake_complete(["premium oak dining chair"]))
+    monkeypatch.setattr(q, "complete", fake_complete(["premium solid walnut dining chair"]))
     got = q.variant_queries(qin(["walnut dining chair"]), Budget(cfg), cfg)
     assert (
         len(got.accepted) == 2
         and got.fallback == 1
-        and got.accepted[0] == "premium oak dining chair"
+        and got.accepted[0] == "premium solid walnut dining chair"
     )
     monkeypatch.setattr(
         q, "complete", fake_complete(["walnut dining chair", "dining chair walnut"])

@@ -158,3 +158,9 @@ Stage 2p (fixes from the first live Shop eval): singular and plural are one cate
 per-seller cap follows the batch size; every Shop Again asks the query writer for two new queries and says plainly when it ran
 out of results; a typed colour, material or finish is a 70% quota backed by photo tags of the top candidates; a written refine
 note ("fluted legs", "no leather") has a strength and is matched by description. See ADR 0012, stage 2p.
+
+Stage 2q (fixes from the post-2p live re-run): the photo tagging budget starts at the first call and the first wave always
+starts; a search variant keeps every hard word of the request (category, typed style, type, size, colour, material) and adds no
+style, material or colour word, checked in code; every shown item records which search found it; a short batch raises the
+per-seller cap to 5, 6, 7 before shrinking, never past 30% of the batch shown; a furniture listing priced far below the pool is
+left out. See ADR 0012, stage 2q.

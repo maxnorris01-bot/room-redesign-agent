@@ -204,6 +204,12 @@ this choice over the alternatives. Note what's still open or deferred within it,
   thin batch rather than allow a third to one seller; "no leather" is a note because `upholstered` covers all fabric. New switches
   default off in a bare Config and on from the environment (`APP_SHOP_PHOTO_TAG_TOP_N` 36, `APP_SHOP_THIN_VARIANTS`). The rejudge
   put judge noise on one case's lift at about 6 points (1.8 on the mean). See `docs/sessions/2026-10-27-shop-fixes.md`.
+- **2026-10-28, stage 2q (ADR 0012 amended): fixes from the post-2p re-run.** Decisions: variants are held to the request's hard words in
+  code (a prompt alone let "upholstered" in and dropped case-04's match from 83% to 21%); the cost is that variants no longer carry
+  leaning words; a synonym only counts from a group of 3 or fewer keywords; the cap relaxation never lets one seller pass 30% of
+  the batch shown; the price guard needs three conditions (furniture, under 10% of the median, under $15). Found, not fixed:
+  case-06's 14 results came from the shape diversity guard (todo). The attribute figure among decidable items is a secondary
+  line; whether `cannot_tell` should count is Max's threshold decision. See `docs/sessions/2026-10-28-shop-fixes-2q.md`.
 
 ## See also
 

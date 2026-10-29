@@ -64,6 +64,11 @@ TYPED_MATCH_MIN_SHARE = 0.70  # a typed colour, material or finish: at least thi
 PHOTO_TAG_BATCH = 12  # candidates per photo tagging call
 PHOTO_TAG_WORKERS = 3  # photo tagging calls at once
 PHOTO_TAG_BUDGET_S = 6.0  # seconds for the whole photo tagging step; the rest keep title tags
+PHOTO_IMAGE_WAIT_S = (
+    2.0  # seconds to wait for thumbnails not yet cached, before the calls' clock (2q)
+)
+PHOTO_FIRST_WAVE_GRACE_S = 4.0  # a first-wave call may finish this long after the budget (2q)
+PHOTO_RETRY_MIN_LEFT_S = 2.0  # a failed photo call is retried once only with this much budget left
 PHOTO_CACHE_MAX = 200  # prepared thumbnails kept per service so none is fetched twice
 THIN_VARIANT_SEARCHES = (
     2  # extra variant searches a typed search may run when fewer than 24 results
@@ -123,6 +128,26 @@ def seller_cap(batch_size: int) -> int:
     return max(SELLER_CAP_MIN, min(SELLER_CAP_MAX, math.floor(SELLER_CAP_SHARE * batch_size)))
 
 
+# stage 2q: an implausibly low price for a piece of furniture (a $2.23 mesh office chair in a pool
+# whose median was in the hundreds) is a listing for a part or a swatch, not the product asked for.
+# The rule is deliberately conservative: all three tests must hold, and only for furniture.
+PRICE_OUTLIER_MEDIAN_SHARE = 0.10  # under this share of the pool's median price ...
+PRICE_OUTLIER_FLOOR_USD = 15.0  # ... and under this many dollars, so a cheap pool keeps its items
+PRICE_OUTLIER_MIN_POOL = 8  # priced candidates a pool needs before its median means anything
+PRICE_GUARD_CATEGORIES = (
+    "sofa", "armchair", "dining chair", "desk chair", "chair", "stool", "bench", "ottoman",
+    "coffee table", "side table", "console table", "dining table", "table", "desk", "media unit",
+    "bookshelf", "nightstand", "dresser", "wardrobe", "bed frame", "sideboard", "cabinet",
+    "filing cabinet", "bar cart",
+)  # fmt: skip  # furniture-type categories; rugs, curtains and lamps are sold cheap, so excluded
+
+
+def seller_cap_ceiling(target_size: int) -> int:
+    """The highest per-seller cap a short batch may relax to (stage 2q): floor(0.30 x target size),
+    7 for a target of 24, so that one seller's share of a full batch stays at or under 0.30."""
+    return math.floor(SELLER_CAP_SHARE * target_size)
+
+
 # stage 2e: supply and selection for open dimensions
 MINORITY_POOL_SHARE = 0.40  # an open value under this share of the pool triggers targeted searches
 OPEN_STRATUM_FLOOR = 0.25  # a value with a loved item gets at least this share of the batch slots
@@ -168,6 +193,9 @@ def all_thresholds() -> dict[str, float | int]:
         "PHOTO_TAG_BATCH": PHOTO_TAG_BATCH,
         "PHOTO_TAG_WORKERS": PHOTO_TAG_WORKERS,
         "PHOTO_TAG_BUDGET_S": PHOTO_TAG_BUDGET_S,
+        "PHOTO_IMAGE_WAIT_S": PHOTO_IMAGE_WAIT_S,
+        "PHOTO_FIRST_WAVE_GRACE_S": PHOTO_FIRST_WAVE_GRACE_S,
+        "PHOTO_RETRY_MIN_LEFT_S": PHOTO_RETRY_MIN_LEFT_S,
         "PHOTO_CACHE_MAX": PHOTO_CACHE_MAX,
         "QUERY_MAX_WORDS": QUERY_MAX_WORDS,
         "QUERY_LIKED_TITLES": QUERY_LIKED_TITLES,
@@ -204,6 +232,9 @@ def all_thresholds() -> dict[str, float | int]:
         "SELLER_CAP_SHARE": SELLER_CAP_SHARE,
         "SELLER_CAP_MIN": SELLER_CAP_MIN,
         "SELLER_CAP_MAX": SELLER_CAP_MAX,
+        "PRICE_OUTLIER_MEDIAN_SHARE": PRICE_OUTLIER_MEDIAN_SHARE,
+        "PRICE_OUTLIER_FLOOR_USD": PRICE_OUTLIER_FLOOR_USD,
+        "PRICE_OUTLIER_MIN_POOL": PRICE_OUTLIER_MIN_POOL,
         "MINORITY_POOL_SHARE": MINORITY_POOL_SHARE,
         "OPEN_STRATUM_FLOOR": OPEN_STRATUM_FLOOR,
         "CANDIDATE_TAG_BATCH": CANDIDATE_TAG_BATCH,

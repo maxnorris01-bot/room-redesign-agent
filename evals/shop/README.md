@@ -84,3 +84,18 @@ counters; no titles or links) so a diagnosis does not have to guess what each Sh
 - The saved trace per batch keeps the typed-attribute quota and the photo tagging step (`trace.typed`), the thin-search variants
   (`trace.thin`) and why a Shop Again ran dry (`trace.exhausted`).
 
+
+
+## Attribute match among decidable items (secondary)
+
+The report prints, per case and overall, `good / (good + no)` for the attribute judge in round 1, with the count of `cannot_tell`
+beside it (stage 2q). It is **secondary**: the verdict number, its threshold and its checks still count `cannot_tell` as a miss.
+`cannot_tell` is common when listings state no size (case-06 on the 2026-10-28 re-run: 10 yes, 2 no, 12 cannot_tell of 24, which
+is 42% in the verdict and 83% among the items the judge could decide), so the second figure shows how much of a low number is the
+judge declining to decide rather than a mismatch. Whether `cannot_tell` should count is a threshold decision for the owner.
+
+## Where shown items came from (secondary)
+
+Each item in a results file carries `source` (`kind` and the search `query` that first found it: base, writer, seller, peer,
+thin_variant, supply, refill; stage 2q). The report prints, per case and round, the shown items by source with their attribute and
+persona match rates. It has no threshold. Results files from before stage 2q have no `source` and print "No source data".

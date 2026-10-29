@@ -111,6 +111,18 @@ def known_category(category: str) -> str | None:
     return None
 
 
+def category_synonyms(category: str, max_group: int = 3) -> tuple[str, ...]:
+    """The other names for `category` from its synonym group ("dining chair" -> "kitchen chair",
+    "dining room chair"), only when the group is small enough (`max_group` keywords) to be real
+    synonyms rather than a bucket of related products (the sofa group holds loveseat and sectional,
+    which are not "a sofa"). Empty when the category has no such group."""
+    canon = canonical_category(category)
+    for name, keywords in _SYNONYMS:
+        if name == canon:
+            return tuple(k for k in (name, *keywords) if k) if len(keywords) <= max_group else ()
+    return ()
+
+
 def _plural_pattern(keyword: str) -> str:
     """A whole-word pattern for `keyword` or its plural (couch/couches, shelf/shelves)."""
     word = re.escape(keyword)

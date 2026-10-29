@@ -39,6 +39,90 @@ def _round(case: dict[str, Any], n: int) -> dict[str, Any]:
     return rounds[n] if len(rounds) > n else {}
 
 
+SOURCE_KINDS = ("base", "writer", "seller", "peer", "thin_variant", "supply", "refill")
+
+
+def source_rows(case: dict[str, Any]) -> list[tuple[int, str, int, dict[str, Any], dict[str, Any]]]:
+    """(round, source kind, shown, attribute rate, persona rate) for each kind in each round of a
+    case. Items from results files before stage 2q carry no `source` and are skipped."""
+    rows: list[tuple[int, str, int, dict[str, Any], dict[str, Any]]] = []
+    for r in case.get("rounds", []):
+        by_kind: dict[str, list[dict[str, Any]]] = {}
+        for item in r.get("items", []):
+            src = item.get("source")
+            if src and src.get("kind"):
+                by_kind.setdefault(str(src["kind"]), []).append(item)
+        ordered = [k for k in SOURCE_KINDS if k in by_kind] + sorted(
+            set(by_kind) - set(SOURCE_KINDS)
+        )
+        for kind in ordered:
+            items = by_kind[kind]
+            rows.append((r.get("round", 0), kind, len(items), _rate(items, "attributes", {"yes"}),
+                         _rate(items, "persona", {"love", "like"})))  # fmt: skip
+    return rows
+
+
+def _rate(items: list[dict[str, Any]], key: str, good: set[str]) -> dict[str, Any]:
+    scored = [i[key] for i in items if i.get(key) is not None]
+    hits = sum(1 for v in scored if v in good)
+    return {"scored": len(scored), "good": hits, "rate": hits / len(scored) if scored else None}
+
+
+def source_section(data: dict[str, Any]) -> list[str]:
+    """A secondary table: per case and round, the shown items by the kind of search that found
+    them, with their attribute and persona match rates. Informational; no threshold reads it."""
+    rows = [(c["id"], *row) for c in data["cases"] for row in source_rows(c)]
+    out = ["", "## Where shown items came from (secondary, no threshold)", ""]
+    if not rows:
+        return out + ["No source data (a results file from before stage 2q, or no items)."]
+    out += ["| Case | Round | Source | Shown | Attributes | Persona |", "|---|---|---|---|---|---|"]
+    for cid, rnd, kind, shown, att, per in rows:
+        out.append(
+            f"| {cid} | {rnd} | {kind} | {shown} | {att['good']}/{att['scored']} ({pct(att['rate'])}) "
+            f"| {per['good']}/{per['scored']} ({pct(per['rate'])}) |"
+        )
+    return out + [""]
+
+
+def decidable(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Attribute match among the items the judge could decide on: good / (good + no), with the
+    count of `cannot_tell` beside it. Secondary: the verdict keeps counting cannot_tell as a miss."""
+    good = sum(1 for i in items if i.get("attributes") == "yes")
+    no = sum(1 for i in items if i.get("attributes") == "no")
+    unsure = sum(1 for i in items if i.get("attributes") == "cannot_tell")
+    return {"good": good, "no": no, "cannot_tell": unsure,
+            "rate": good / (good + no) if good + no else None}  # fmt: skip
+
+
+def decidable_section(data: dict[str, Any]) -> list[str]:
+    """Round 1 per case and overall (the round the attribute threshold reads)."""
+    out = ["", "## Attribute match among decidable items (secondary, no threshold)", ""]
+    rows: list[tuple[str, dict[str, Any], float | None]] = []
+    for c in data["cases"]:
+        r1 = _round(c, 0)
+        if r1.get("items"):
+            rows.append((c["id"], decidable(r1["items"]), r1.get("attributes", {}).get("rate")))
+    if not rows:
+        return out + ["No item data."]
+    for cid, d, verdict_rate in rows:
+        out.append(
+            f"- {cid}: {d['good']} of {d['good'] + d['no']} ({pct(d['rate'])}) among items the "
+            f"judge could decide; {d['cannot_tell']} cannot_tell; the verdict counts it as "
+            f"{pct(verdict_rate)}"
+        )
+    total = decidable([i for c in data["cases"] for i in _round(c, 0).get("items", [])])
+    out.append(
+        f"- Overall (round 1): {total['good']} of {total['good'] + total['no']} "
+        f"({pct(total['rate'])}); {total['cannot_tell']} cannot_tell"
+    )
+    out.append(
+        "- The verdict number, its threshold and its checks are unchanged: cannot_tell still "
+        "counts as a miss there. This line only shows how much of a low figure is the judge "
+        "declining to decide (listings often state no size)."
+    )
+    return out + [""]
+
+
 def render(data: dict[str, Any]) -> str:
     v = data["verdict"]
     out: list[str] = [
@@ -186,6 +270,8 @@ def render(data: dict[str, Any]) -> str:
                 "title keywords, which miss every title that names no colour. The threshold is unchanged."
             )
 
+    out += decidable_section(data)
+    out += source_section(data)
     t = data["totals"]
     searches = [c["rounds"][0]["seconds"] for c in data["cases"] if c.get("rounds")]
     agains = [r["seconds"] for c in data["cases"] for r in c.get("rounds", [])[1:]]
