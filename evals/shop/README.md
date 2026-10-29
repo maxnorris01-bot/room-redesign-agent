@@ -99,3 +99,21 @@ judge declining to decide rather than a mismatch. Whether `cannot_tell` should c
 Each item in a results file carries `source` (`kind` and the search `query` that first found it: base, writer, seller, peer,
 thin_variant, supply, refill; stage 2q). The report prints, per case and round, the shown items by source with their attribute and
 persona match rates. It has no threshold. Results files from before stage 2q have no `source` and print "No source data".
+
+
+## Serper cache, replay and lint (stage 2r)
+
+`EVAL_SHOP_SERPER_CACHE` = `record` (default for `make eval-shop-live`: every live response is saved), `use` (a saved response younger than 14 days is
+used and costs no credits; a miss goes live and is saved), `replay` (only saved responses; a miss is an error) or `off`. Files live under
+`evals/shop/cache/serper/` (gitignored: they are real Google Shopping data), keyed by a hash of the request, holding the request, a timestamp and the
+response body, never a header or a key. The app never reads them. A run with cache hits says "cached pool, not a fresh-world run" in the results file and
+the report; the verdict logic is unchanged. `make eval-shop-replay` runs all 12 cases (or `CASES=...`) on the saved responses with the mock model, persona and
+judges: zero spend, no network, structural checks only (batch sizes, sellers, price, repeats, calls and credits a live run would spend, fill-loop stop reasons,
+guards off, what removed candidates): "structural only; not a quality result". It fails clearly when nothing is saved (run a live eval once). `make eval-shop-lint
+RESULTS=<file>` lists anomalies in a saved live results file, most severe first. `python -m evals.shop lift --results <file>` is the offline lift diagnosis.
+
+## Measurement changes after the baseline (stage 2r)
+
+The refine focus check counts supply as unseen candidates that matched the focus and passed every filter (the pipeline's `trace.batch.focus_supply`) and scores a
+round only when that count covers the quota the focus reserves; the baseline counted any title already shown. The threshold (0.5) is unchanged; the baseline
+document is the record of the old measure, and the report footer says which measure a file used. (The product-colour measure changed in stage 2p.)

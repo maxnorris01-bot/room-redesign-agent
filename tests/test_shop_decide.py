@@ -879,7 +879,7 @@ def test_a_converged_dimension_is_not_capped() -> None:
     assert len(guarded) == 14 and skipped2 == 16  # a pool of one value cannot satisfy the guard
 
 
-def test_the_guard_that_cannot_be_met_says_so_and_returns_what_exists(
+def test_a_guard_with_no_alternative_value_is_off_and_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     use_client(monkeypatch, RouterClient())
@@ -896,11 +896,12 @@ def test_the_guard_that_cannot_be_met_says_so_and_returns_what_exists(
     ]
     again = svc.shop_again(sid)
     found = again["search"]
-    assert len(found["results"]) == 14  # what exists under the guard
+    # stage 2r: the pool has no other shape, so the guard is off and the batch is full
+    assert len(found["results"]) == 24
     assert found["diversity"]["shape"] == {"value": "round", "share": 1.0}
     assert any(
-        "Could not keep shape mixed: the pool is mostly round (100% of these results, limit 60%)."
-        in w
+        "Not mixing shape: only 0 of the 40 new candidates are not round, "
+        "so the shape limit is off for this batch." in w
         for w in found["warnings"]
     )
 

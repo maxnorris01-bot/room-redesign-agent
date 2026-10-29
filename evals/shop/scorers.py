@@ -6,6 +6,7 @@ threshold check is arithmetic on them. A batch's items are `Listing`s built from
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from collections.abc import Sequence
@@ -191,15 +192,33 @@ def exclusion_respected(listings: Sequence[Listing], sellers: Sequence[str]) -> 
 
 
 def focus_share(
-    listings: Sequence[Listing], term: str, supply_titles: Sequence[str] = ()
+    listings: Sequence[Listing],
+    term: str,
+    supply_titles: Sequence[str] = (),
+    unseen_supply: int | None = None,
 ) -> dict[str, Any]:
-    """Share of results whose title carries the focus word, and whether supply existed: a title
-    in `supply_titles` (what else the run saw) or in the batch itself carries it. With no supply
-    the share is reported but not scored."""
+    """Share of results whose title carries the focus word, and whether supply existed.
+
+    Since stage 2r supply means what the pipeline could still show: `unseen_supply` is the number of
+    unseen candidates that passed the filters and were flagged as matching the focus, and supply
+    exists when it covers the quota the focus reserves, ceil(0.5 x the batch). Before that (and
+    when the pipeline did not report the number: results files from earlier runs) supply was "a
+    title in `supply_titles` (everything the run had already shown) or in the batch carries the
+    word", which counts items that cannot be shown again; that reading is kept as a fallback and
+    marked `measure: seen titles`. With no supply the share is reported but not scored."""
     low = term.lower()
     hits = sum(1 for i in listings if low in i.title.lower())
-    supply = hits > 0 or any(low in t.lower() for t in supply_titles)
-    return {"hits": hits, "share": share(hits, len(listings)), "supply": supply}
+    reserved = math.ceil(0.5 * len(listings))
+    if unseen_supply is not None:
+        supply = bool(listings) and unseen_supply >= reserved
+        measure = "unseen"
+    else:
+        supply = hits > 0 or any(low in t.lower() for t in supply_titles)
+        measure = "seen titles"
+    return {
+        "hits": hits, "share": share(hits, len(listings)), "supply": supply,
+        "supply_unseen": unseen_supply, "reserved": reserved, "measure": measure,
+    }  # fmt: skip
 
 
 # ---- judge-derived rates --------------------------------------------------------------------

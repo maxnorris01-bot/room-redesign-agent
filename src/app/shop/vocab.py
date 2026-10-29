@@ -259,6 +259,25 @@ def normalize(dim: str, text: str | None) -> str | None:
     return _find(_SYN, dim, text) or OTHER
 
 
+# stage 2r: the shape words a request can type ("round black metal side tables"); only these, not
+# the tagging synonyms (a "drum" lamp is not a typed shape), and each accepts its own value only
+TYPED_SHAPE_WORDS = {
+    "round": "round", "circular": "round", "oval": "oval", "rectangular": "rectangular",
+    "rectangle": "rectangular", "square": "square",
+}  # fmt: skip
+
+
+def typed_shape_words(text: str) -> list[str]:
+    """The shape values a request types, in the order written, each once ("round or oval tables"
+    gives round and oval)."""
+    out: list[str] = []
+    for word in re.findall(r"[a-z]+", text.lower()):
+        value = TYPED_SHAPE_WORDS.get(word)
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
 def title_value(dim: str, title: str) -> str | None:
     """What a title's keywords say about `dim`, else None (unknown)."""
     return _find(_TITLE, dim, title)

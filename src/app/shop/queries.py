@@ -77,6 +77,7 @@ class QueryInput:
     existing: list[str] = field(default_factory=list)  # queries already planned (normalized)
     setting: list[str] = field(default_factory=list)  # stage 2k: setting and colour guidance lines
     used: list[str] = field(default_factory=list)  # stage 2p: queries already used in this topic
+    focus_words: list[str] = field(default_factory=list)  # stage 2r: active focus chips and notes
     seen: int = 0  # results already shown in this topic
     rated: int = 0  # results already rated in this topic
 
@@ -172,7 +173,7 @@ def validate_query(text: str, inp: QueryInput) -> tuple[str, str]:
         return "", "too long"
     present = {_singular(w) for w in words}
     q = inp.adjusted
-    needed = hard_words(inp.base, q)
+    needed = hard_words(inp.base, q, inp.focus_words)
     lacking = missing_hard_word(cleaned, needed)
     if lacking is not None:
         word = lacking.missing_word(set(tokens(cleaned)))
@@ -181,7 +182,7 @@ def validate_query(text: str, inp: QueryInput) -> tuple[str, str]:
         if lacking.kind in ("must_have", "material"):
             return "", f"the typed constraint '{lacking.label}' is missing"
         return "", f"the typed {lacking.kind} '{lacking.label}' is missing"
-    added = added_attribute_word(cleaned, allowed_words(inp.base, q, needed))
+    added = added_attribute_word(cleaned, allowed_words(inp.base, q, needed, inp.focus_words))
     if added:
         return "", f"it adds '{added}', a word your request did not use"
     for term in q.avoid:
@@ -249,7 +250,7 @@ def _fallback(inp: QueryInput, limit: int) -> tuple[list[str], int]:
     out: list[str] = []
     rejected = 0
     base = inp.adjusted.search_text or inp.base.search_text
-    needed = hard_words(inp.base, inp.adjusted)
+    needed = hard_words(inp.base, inp.adjusted, inp.focus_words)
     singles = [(m,) for m in VARIANT_MODIFIERS]
     pairs = [(a, b) for a in VARIANT_MODIFIERS for b in VARIANT_MODIFIERS if a < b]
     for modifiers in [
@@ -282,6 +283,11 @@ def fallback_variants(inp: QueryInput, limit: int = MODEL_QUERIES) -> list[str]:
     filler never adds a style, material or colour word (stage 2q); when no variant passes, fewer
     (or none) come back rather than one that drifts."""
     return _fallback(inp, limit)[0]
+
+
+def extra_fillers(inp: QueryInput, limit: int) -> list[str]:
+    """More neutral-filler variants for the fill loop (the same rules and novelty test)."""
+    return _fallback(inp, limit)[0] if limit > 0 else []
 
 
 def variant_queries(inp: QueryInput, budget: Budget, config: Config | None = None) -> QueryResult:

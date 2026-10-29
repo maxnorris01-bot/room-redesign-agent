@@ -111,7 +111,18 @@ eval-shop-mock:
 #   make eval-shop-live EVAL_SHOP_CONFIRM=yes
 # A few cases: CASES=case-04,case-06 (plan, mock, live and rejudge all take it).
 eval-shop-live:
-	EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop live $(if $(CASES),--case $(CASES),) $(ARGS)
+	EVAL_SHOP_SERPER_CACHE=$(or $(EVAL_SHOP_SERPER_CACHE),record) EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop live $(if $(CASES),--case $(CASES),) $(ARGS)
+
+# ZERO SPEND, no network: all 12 cases (or CASES=...) on the saved Serper responses (a miss is an error),
+# the mock model, persona and judges. Structural checks only: not a quality result. If nothing is saved
+# yet, run a live eval once (it records by default).
+eval-shop-replay:
+	APP_LLM_MODE=mock uv run python -m evals.shop replay $(if $(CASES),--case $(CASES),)
+
+# ZERO SPEND: list anomalies in a saved live results file, most severe first:
+#   make eval-shop-lint RESULTS=evals/shop/results/shop-live-<run>.json
+eval-shop-lint:
+	APP_LLM_MODE=mock uv run python -m evals.shop lint --results $(RESULTS)
 
 # Markdown report from a results file (default: the newest). Pass RESULTS=path and OUT=path.
 eval-shop-report:

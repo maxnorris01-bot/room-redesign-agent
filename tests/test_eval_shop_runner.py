@@ -306,19 +306,20 @@ def test_the_plan_lists_everything_and_spends_nothing(
     assert "Anthropic $" in out and "Serper" in out and "credits" in out and "hard stops" in out
 
 
-def test_the_estimate_uses_the_measured_post_2p_rerun() -> None:
+def test_the_estimate_uses_the_measured_full_run() -> None:
     from evals.shop import plan as pl
 
     cfg = eval_config("mock")
     t = load_thresholds()
     est = estimate(cfg, list(CASES.values()), t)
     assert est["cases"] == 12 and est["judge_calls"] == 12 * 12
-    # the four-case post-2p re-run is the base (writer and photo calls included)
-    assert pl.MEASURED_PIPELINE_USD_PER_CASE == 0.0328 and pl.MEASURED_CREDITS_PER_CASE == 24
-    assert pl.MEASURED_WORST_CASE_PIPELINE_USD == 0.0489 and pl.MEASURED_JUDGE_CALL_USD == 0.0004
-    assert est["judge_usd"] == pytest.approx(144 * 0.0004, abs=1e-4)
-    assert est["per_case_pipeline_usd"] == pytest.approx(0.0328, abs=1e-4)  # the threshold's figure
-    assert est["serper_credits_expected"] == 12 * 24
+    # the first full 12-case run after 2p and 2q is the base (writer and photo calls included)
+    assert pl.MEASURED_PIPELINE_USD_PER_CASE == 0.0325 and pl.MEASURED_CREDITS_PER_CASE == 19
+    assert pl.MEASURED_WORST_CASE_PIPELINE_USD == 0.053 and pl.MEASURED_JUDGE_CALL_USD == 0.00045
+    assert est["judge_usd"] == pytest.approx(144 * 0.00045, abs=1e-4)
+    assert est["per_case_pipeline_usd"] == pytest.approx(0.0325, abs=1e-4)  # the threshold's figure
+    assert est["serper_credits_expected"] == 12 * 19
+    assert est["total_usd_cached"] == est["anthropic_usd"]  # every Serper call a cache hit
     assert (
         est["serper_credits_worst"]
         == 12 * (cfg.shop_again_max_serper_calls + 2 * 9) * cfg.serper_credits_per_call
@@ -329,8 +330,8 @@ def test_the_estimate_uses_the_measured_post_2p_rerun() -> None:
     assert est["within_credit_stop"] is (est["serper_credits_worst"] <= t.hard_stop_serper_credits)
     assert est["within_anthropic_stop"] is True
     assert est["per_case_pipeline_usd"] < t.cost_per_request_usd_max
-    assert est["worst_measured_case_usd"] < t.cost_per_request_usd_max  # case-04: 2.2% under
-    assert est["assumptions"] and any("post-2p live re-run" in a for a in est["assumptions"])
+    assert est["worst_measured_case_usd"] > t.cost_per_request_usd_max  # case-02 cost 0.053
+    assert est["assumptions"] and any("full 12-case run" in a for a in est["assumptions"])
 
 
 def test_the_estimate_gives_one_shop_again_and_a_five_case_rerun() -> None:
@@ -338,13 +339,13 @@ def test_the_estimate_gives_one_shop_again_and_a_five_case_rerun() -> None:
     t = load_thresholds()
     cases = list(CASES.values())
     est = estimate(cfg, cases, t)
-    assert 0 < est["per_shop_again_anthropic_usd"] < 0.01 and est["per_shop_again_credits"] == 8.0
+    assert 0 < est["per_shop_again_anthropic_usd"] < 0.01 and est["per_shop_again_credits"] == 6.3
     assert est["per_shop_again_usd"] > est["per_shop_again_anthropic_usd"]
     five = estimate(cfg, cases[:5], t)
     assert (
         est["rerun_5_cases_usd"] == five["rerun_5_cases_usd"]
     )  # a re-run price, whatever the list
-    assert est["rerun_5_cases_credits"] == 5 * 24
+    assert est["rerun_5_cases_credits"] == 5 * 19
     assert (
         five["cases"] == 5
         and five["judge_calls"] == 5 * 12

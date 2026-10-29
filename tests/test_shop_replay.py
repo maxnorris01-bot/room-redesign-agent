@@ -549,19 +549,20 @@ def test_warnings_state_the_real_shares_and_the_limit() -> None:
     out = run_query(
         query(request="t", search_text="t"), OneRound(), cfg, Budget(cfg), warnings, 0.0, ctx
     )
-    assert len(out.results) == 14
+    # stage 2r: no round alternative in the pool, so the guard is off and the batch is full
+    assert len(out.results) == 24
     assert (
-        "Could not keep shape mixed: the pool is mostly round (100% of these results, limit 60%)."
-        in out.warnings
+        "Not mixing shape: only 0 of the 30 new candidates are not round, "
+        "so the shape limit is off for this batch." in out.warnings
     )
     ctx2 = AgainContext(guard_caps={"shape": 0.8}, max_calls=1)
     out2 = run_query(
         query(request="t", search_text="t"), OneRound(), cfg, Budget(cfg), [], 0.0, ctx2
     )
-    assert len(out2.results) == 19
+    assert len(out2.results) == 24
     assert (
-        "Could not keep shape under 80%: the pool is mostly round (100% of these results, limit 80%)."
-        in out2.warnings
+        "Not mixing shape: only 0 of the 30 new candidates are not round, "
+        "so the shape limit is off for this batch." in out2.warnings
     )
     assert MockAnthropicClient is not None
 

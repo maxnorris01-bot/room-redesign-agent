@@ -60,3 +60,11 @@ beside it (stage 2q). It is **secondary**: the verdict number, its threshold and
 `cannot_tell` is common when listings state no size (case-06 on the 2026-10-28 re-run: 10 yes, 2 no, 12 cannot_tell of 24, which
 is 42% in the verdict and 83% among the items the judge could decide), so the second figure shows how much of a low number is the
 judge declining to decide rather than a mismatch. Whether `cannot_tell` should count is a threshold decision for the owner.
+
+
+## Full run after stages 2p and 2q (2026-10-29)
+
+Run `20261029-034000-3f9fa0` (`docs/evals/shop-eval-full-run-2026-10-29.md`): mean round-2 lift +8.1 (standard error about 3.5), 9 of 12 cases improved. The refine
+focus check failed (0.111) on a measure that counted titles already shown as supply; from stage 2r it counts unseen candidates (the saved run reads 0.609). The cost
+check failed at 0.053 (case-02, 19 Serper calls). Case-06's attribute figure sits exactly at the 0.5 limit with 10 `cannot_tell`; the decidable-items line beside it is
+secondary. One run: do not read a single case's lift, and see `docs/evals/shop-lift-diagnosis-2026-10-29.md` for what moved it.

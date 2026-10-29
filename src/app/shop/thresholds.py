@@ -69,10 +69,20 @@ PHOTO_IMAGE_WAIT_S = (
 )
 PHOTO_FIRST_WAVE_GRACE_S = 4.0  # a first-wave call may finish this long after the budget (2q)
 PHOTO_RETRY_MIN_LEFT_S = 2.0  # a failed photo call is retried once only with this much budget left
+MIN_TAG_CALL_TIMEOUT_S = 8.0  # a tagging call is never given less than this (stage 2r): the
+# post-2p run had "APITimeoutError after 1.0 s" when a call started with a second of budget left
 PHOTO_CACHE_MAX = 200  # prepared thumbnails kept per service so none is fetched twice
-THIN_VARIANT_SEARCHES = (
-    2  # extra variant searches a typed search may run when fewer than 24 results
-)
+# stage 2r: the fill loop. A batch short of RESULT_COUNT after every filter, cap and guard runs
+# on-request variant searches (and pages of the ones that found something) until it is full.
+FIRST_SEARCH_MAX_CALLS = 4  # Serper calls a first search may make in all: its two pages and two
+# variants, the same 8 credits as before; a first search is the slowest thing a visitor waits for
+PLENTIFUL_UNSEEN = 60  # unseen candidates that pass the filters before the optional searches stop
+# (stage 2r): 60 is two and a half batches, enough for the caps, the guards and the quotas to pick
+# from; the case-02 Shop Agains found 80 to 218 and still spent all 9 calls
+GUARD_ALT_SUPPLY_MIN = 6  # a diversity guard is switched off for a dimension when fewer unseen
+# candidates than this carry another value than the pool's top one: the guard can only shrink the
+# batch then (stage 2r; the post-2p case-06 pool was 100% rectangular and the guard cut it to 14)
+FILL_EMPTY_STREAK_MAX = 2  # stop after this many extra searches in a row that add no new candidate
 QUERY_MAX_WORDS = 8  # words in a model-written query
 QUERY_LIKED_TITLES = 6  # liked titles shown to the query writer
 QUERY_DISLIKED_TITLES = 4  # disliked titles shown to the query writer
@@ -188,7 +198,10 @@ def all_thresholds() -> dict[str, float | int]:
         "SELLER_SEARCHES": SELLER_SEARCHES,
         "MODEL_QUERIES": MODEL_QUERIES,
         "QUERY_NOVELTY_JACCARD": QUERY_NOVELTY_JACCARD,
-        "THIN_VARIANT_SEARCHES": THIN_VARIANT_SEARCHES,
+        "FIRST_SEARCH_MAX_CALLS": FIRST_SEARCH_MAX_CALLS,
+        "FILL_EMPTY_STREAK_MAX": FILL_EMPTY_STREAK_MAX,
+        "PLENTIFUL_UNSEEN": PLENTIFUL_UNSEEN,
+        "GUARD_ALT_SUPPLY_MIN": GUARD_ALT_SUPPLY_MIN,
         "TYPED_MATCH_MIN_SHARE": TYPED_MATCH_MIN_SHARE,
         "PHOTO_TAG_BATCH": PHOTO_TAG_BATCH,
         "PHOTO_TAG_WORKERS": PHOTO_TAG_WORKERS,
@@ -196,6 +209,7 @@ def all_thresholds() -> dict[str, float | int]:
         "PHOTO_IMAGE_WAIT_S": PHOTO_IMAGE_WAIT_S,
         "PHOTO_FIRST_WAVE_GRACE_S": PHOTO_FIRST_WAVE_GRACE_S,
         "PHOTO_RETRY_MIN_LEFT_S": PHOTO_RETRY_MIN_LEFT_S,
+        "MIN_TAG_CALL_TIMEOUT_S": MIN_TAG_CALL_TIMEOUT_S,
         "PHOTO_CACHE_MAX": PHOTO_CACHE_MAX,
         "QUERY_MAX_WORDS": QUERY_MAX_WORDS,
         "QUERY_LIKED_TITLES": QUERY_LIKED_TITLES,

@@ -242,7 +242,11 @@ class ScenarioSearch:
     """Mock Serper for the browser check only (`APP_SHOP_MOCK_SCENARIO`): `thin` (14 results for the
     typed words, 3 for each variant), `dry` (12 results, then nothing for any phrasing) and `navy`
     (forty velvet chairs whose titles name no colour, half of them "Fluted"; variants find 30
-    more) and `heavy` (desk chairs from two big sellers and eleven small ones, one listed at $2.23).
+    more), `heavy` (desk chairs from two big sellers and eleven small ones, one listed at $2.23),
+    `narrow` (40 dining chairs from $120, so a price cap leaves a handful; variants find 3 each),
+    `flat` (30 rectangular rugs a page for three pages: no other shape exists) and
+    `roundshort` (40 black metal side
+    tables, only 4 of them round).
     Titles are invented, every thumbnail is a mock URL."""
 
     name = "serper"
@@ -270,6 +274,38 @@ class ScenarioSearch:
                     title=f"{FIXTURE_TITLE_PREFIX}{trait} {word} {kind} {tag}{i}",
                     seller=f"Mock Seller {i % 13}",
                     price=120.0 + 7 * i,
+                    currency="USD",
+                    rating=4.0,
+                    rating_count=50 + i,
+                    google_panel_url="https://www.google.com/search?q=mock",
+                    thumbnail_url=f"https://mock.example/thumb/{image}.jpg",
+                )
+            )
+        return out
+
+    def _catalogue(self, scenario: str, tag: str, n: int) -> list[SearchCandidate]:
+        out = []
+        for i in range(n):
+            if scenario == "flat":
+                title, price = (
+                    f"Rectangular Wool Area Rug {SCENARIO_WORDS[i % 12]}{tag}{i}",
+                    100.0 + i,
+                )
+            elif scenario == "roundshort":
+                shape = "Round" if i % 10 == 0 else "Rectangular"
+                title, price = (
+                    f"{shape} Black Metal Side Table {SCENARIO_WORDS[i % 12]}{tag}{i}",
+                    40.0 + i,
+                )
+            else:
+                title, price = f"Dining Chair {SCENARIO_WORDS[i % 12]}{tag}{i}", 120.0 + 7 * i
+            image = zlib.crc32(title.encode()) % 9000
+            out.append(
+                SearchCandidate(
+                    product_id=f"{scenario}-{tag}-{i}",
+                    title=f"{FIXTURE_TITLE_PREFIX}{title}",
+                    seller=f"Mock Seller {i % 13}",
+                    price=price,
                     currency="USD",
                     rating=4.0,
                     rating_count=50 + i,
@@ -324,6 +360,11 @@ class ScenarioSearch:
             return self._items(tag, 12 if is_base and page == 1 else 0, False)
         if self.scenario == "heavy":
             return self._heavy() if page == 1 else []
+        if self.scenario in ("narrow", "flat", "roundshort"):
+            n = 40 if is_base and page == 1 else 3 if page == 1 else 0
+            if self.scenario == "flat":
+                n = 30 if is_base and page <= 3 else 0
+            return self._catalogue(self.scenario, f"{tag}p{page}", n)
         if self.scenario == "navy":
             n = 40 if is_base and page == 1 else 30 if page == 1 and not is_base else 0
             return self._items(tag, n, True)
