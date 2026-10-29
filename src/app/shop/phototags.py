@@ -36,6 +36,9 @@ from app.shop.clock import Clock
 from app.shop.progress import Timeline
 from app.shop.thresholds import (
     PHOTO_CACHE_MAX,
+    PHOTO_FIRST_WAVE_GRACE_S,
+    PHOTO_IMAGE_WAIT_S,
+    PHOTO_RETRY_MIN_LEFT_S,
     PHOTO_TAG_BATCH,
     PHOTO_TAG_BUDGET_S,
     PHOTO_TAG_WORKERS,
@@ -90,9 +93,13 @@ class PhotoReport:
     wanted: int = 0  # candidates asked for (top N with a thumbnail, not already photo-tagged)
     with_image: int = 0  # of those, with an image that could be fetched
     tagged: int = 0  # tagged from the photo
-    calls: int = 0
+    calls: int = 0  # calls that answered (or failed) before the step ended
+    calls_started: int = 0  # calls that began, whether or not they finished in time
     failed_calls: int = 0
+    retries: int = 0  # a failed call tried once more while budget remained
+    abandoned_calls: int = 0  # started, still running when the step ended; answers not used
     skipped: int = 0  # left to their title tags because the budget ran out
+    reason: str = ""  # why anything was skipped or abandoned (empty when nothing was)
     fetched: int = 0  # real thumbnail fetches this step made
     cache_hits: int = 0  # thumbnails already in the cache (fingerprints, earlier rounds)
     seconds: float = 0.0
@@ -102,7 +109,10 @@ class PhotoReport:
     def as_dict(self) -> dict[str, Any]:
         return {
             "wanted": self.wanted, "with_image": self.with_image, "tagged": self.tagged,
-            "calls": self.calls, "failed_calls": self.failed_calls, "skipped": self.skipped,
+            "calls": self.calls, "calls_started": self.calls_started,
+            "failed_calls": self.failed_calls, "retries": self.retries,
+            "abandoned_calls": self.abandoned_calls, "skipped": self.skipped,
+            "reason": self.reason,
             "thumbnails_fetched": self.fetched, "thumbnails_cached": self.cache_hits,
             "seconds": round(self.seconds, 2), "budget_s": self.budget_s,
             "title_tags_for_the_rest": self.fallback,
@@ -162,23 +172,23 @@ def photo_tag_top(
     if not wanted:
         return report
     started = time.monotonic()
-    allowed = (
-        PHOTO_TAG_BUDGET_S
-        if time_left_s is None
-        else max(0.0, min(PHOTO_TAG_BUDGET_S, time_left_s))
-    )
-    deadline = started + allowed
+    hard_end = None if time_left_s is None else started + max(0.0, time_left_s)
     hits_before, fetches_before = cache.hits, cache.fetches
     closed = threading.Event()
     pool = ThreadPoolExecutor(max_workers=PHOTO_TAG_WORKERS + 6, thread_name_prefix="phototag")
+    state = {"started": 0, "retries": 0}  # guarded by book.lock
     try:
-        # the images first (cached ones are free), all at once, inside the budget
+        # the images first (cached ones are free), all at once, inside their own short wait: the
+        # tagging budget below starts when the first call does, not before (stage 2q)
         image_futures = {
             c.id: pool.submit(cache.image, c.thumbnail_url)
             for c in wanted
             if use_images and c.thumbnail_url.startswith("https://")
         }
-        wait(list(image_futures.values()), timeout=max(0.0, deadline - time.monotonic()))
+        image_wait = PHOTO_IMAGE_WAIT_S
+        if hard_end is not None:
+            image_wait = max(0.0, min(image_wait, hard_end - time.monotonic()))
+        wait(list(image_futures.values()), timeout=image_wait)
         images: dict[str, PreparedImage] = {}
         for c in wanted:
             fut = image_futures.get(c.id)
@@ -193,25 +203,55 @@ def photo_tag_top(
         batches = [with_images[i : i + chunk] for i in range(0, len(with_images), chunk)]
         batches += [without[i : i + chunk] for i in range(0, len(without), chunk)]
 
+        calls_at = time.monotonic()  # the budget's clock: the first call starts now
+        budget_s = PHOTO_TAG_BUDGET_S
+        if hard_end is not None:
+            budget_s = max(0.0, min(budget_s, hard_end - calls_at))
+        deadline = calls_at + budget_s
+        grace_end = deadline + PHOTO_FIRST_WAVE_GRACE_S
+        if hard_end is not None:
+            grace_end = min(grace_end, hard_end)
+        no_time = hard_end is not None and hard_end - calls_at <= 0.2
+        first_wave = PHOTO_TAG_WORKERS
+
         def one(
-            batch: list[Taggable],
+            n: int, batch: list[Taggable]
         ) -> tuple[list[Taggable], dict[int, dict[str, str | None]], bool, bool]:
-            """(batch, rows, failed, ran): a batch that never started (no time left) is skipped,
-            not a failed call."""
-            remaining = deadline - time.monotonic()
-            if remaining <= 0.2 or closed.is_set():
+            """(batch, rows, failed, ran). The first wave always starts (unless the hard stop is
+            here); a later batch starts only while budget remains; a failed call is tried once more
+            when at least PHOTO_RETRY_MIN_LEFT_S of the budget remains."""
+            if (
+                closed.is_set()
+                or no_time
+                or (n >= first_wave and deadline - time.monotonic() <= 0.2)
+            ):
                 return batch, {}, False, False
-            rows, entry = run_call(
-                batch, book, budget, MODE_TOOL, False, clock,
-                max(1.0, min(config.shop_tag_call_timeout_s, remaining)),
-                images={c.id: images[c.id] for c in batch} if batch[0].id in images else None,
-                timeline=timeline,
-            )  # fmt: skip
-            return batch, rows, bool(entry["error"]) or not rows, True
+            attempt = 0
+            while True:
+                with book.lock:
+                    state["started"] += 1
+                end = grace_end if n < first_wave else deadline
+                rows, entry = run_call(
+                    batch, book, budget, MODE_TOOL, attempt > 0, clock,
+                    max(1.0, min(config.shop_tag_call_timeout_s, end - time.monotonic())),
+                    images={c.id: images[c.id] for c in batch} if batch[0].id in images else None,
+                    timeline=timeline,
+                )  # fmt: skip
+                failed = bool(entry["error"]) or not rows
+                if not failed or attempt > 0 or closed.is_set():
+                    return batch, rows, failed, True
+                if deadline - time.monotonic() < PHOTO_RETRY_MIN_LEFT_S:
+                    return batch, rows, failed, True
+                attempt += 1
+                with book.lock:
+                    state["retries"] += 1
 
         workers = ThreadPoolExecutor(max_workers=PHOTO_TAG_WORKERS, thread_name_prefix="phototags")
-        futures = [workers.submit(one, b) for b in batches]
+        futures = [workers.submit(one, n, b) for n, b in enumerate(batches)]
         done, pending = wait(futures, timeout=max(0.0, deadline - time.monotonic()))
+        if pending:  # past the budget: calls already running get a short grace, nothing new starts
+            running = max(0.0, grace_end - time.monotonic())
+            done, pending = wait(futures, timeout=running)
         closed.set()  # whatever is still running is abandoned: its answer is not used
         workers.shutdown(wait=False, cancel_futures=True)
         for job in done:
@@ -230,6 +270,10 @@ def photo_tag_top(
                         tag_source[item.id] = "photo"
                     report.tagged += 1
         report.skipped += sum(len(b) for f, b in zip(futures, batches, strict=True) if f in pending)
+        report.calls_started = state["started"]
+        report.retries = state["retries"]
+        report.abandoned_calls = max(0, report.calls_started - report.retries - report.calls)
+        report.reason = _reason(report, no_time, budget_s)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     report.fetched = cache.fetches - fetches_before
@@ -237,3 +281,24 @@ def photo_tag_top(
     report.seconds = time.monotonic() - started
     report.fallback = report.tagged < report.wanted
     return report
+
+
+def _reason(report: PhotoReport, no_time: bool, budget_s: float) -> str:
+    """Why candidates were left to their title tags, in words (empty when none were)."""
+    if report.skipped <= 0 and report.abandoned_calls <= 0:
+        return ""
+    parts: list[str] = []
+    if no_time:
+        parts.append(f"hard stop: no time left to start the {report.skipped} candidates' calls")
+    else:
+        if report.abandoned_calls:
+            parts.append(
+                f"{report.abandoned_calls} calls were still running when the "
+                f"{budget_s:.0f} s budget and the grace after it ended; their answers were not used"
+            )
+        idle = report.skipped
+        if idle and not report.abandoned_calls:
+            parts.append(f"{idle} candidates were not started: the {budget_s:.0f} s budget ended")
+        elif idle:
+            parts.append(f"{idle} candidates left to their title tags")
+    return "; ".join(parts)

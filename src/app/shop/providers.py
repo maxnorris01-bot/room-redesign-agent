@@ -241,7 +241,8 @@ SCENARIO_WORDS = (
 class ScenarioSearch:
     """Mock Serper for the browser check only (`APP_SHOP_MOCK_SCENARIO`): `thin` (14 results for the
     typed words, 3 for each variant), `dry` (12 results, then nothing for any phrasing) and `navy`
-    (forty velvet chairs whose titles name no colour, half of them "Fluted"; variants find 30 more).
+    (forty velvet chairs whose titles name no colour, half of them "Fluted"; variants find 30
+    more) and `heavy` (desk chairs from two big sellers and eleven small ones, one listed at $2.23).
     Titles are invented, every thumbnail is a mock URL."""
 
     name = "serper"
@@ -278,6 +279,35 @@ class ScenarioSearch:
             )
         return out
 
+    def _heavy(self) -> list[SearchCandidate]:
+        sellers = (
+            ["Big Seller A"] * 20 + ["Big Seller B"] * 13 + [f"Small Seller {i}" for i in range(11)]
+        )
+        out = []
+        for i, seller in enumerate(sellers):
+            title = f"{FIXTURE_TITLE_PREFIX}Ergonomic Mesh Desk Chair {SCENARIO_WORDS[i % 12]}{i}"
+            price = 120.0 + 7 * i
+            if i == 5:
+                title, price = (
+                    f"{FIXTURE_TITLE_PREFIX}Evo Mesh Backrest Ergonomic Office Chair",
+                    2.23,
+                )
+            image = zlib.crc32(title.encode()) % 9000
+            out.append(
+                SearchCandidate(
+                    product_id=f"heavy-{i}",
+                    title=title,
+                    seller=seller,
+                    price=price,
+                    currency="USD",
+                    rating=4.0,
+                    rating_count=50 + i,
+                    google_panel_url="https://www.google.com/search?q=mock",
+                    thumbnail_url=f"https://mock.example/thumb/{image}.jpg",
+                )
+            )
+        return out
+
     def search(
         self, query: str, gl: str = "us", hl: str = "en", page: int = 1
     ) -> list[SearchCandidate]:
@@ -292,6 +322,8 @@ class ScenarioSearch:
             return self._items(tag, 14 if is_base and page == 1 else 3 if page == 1 else 0, False)
         if self.scenario == "dry":
             return self._items(tag, 12 if is_base and page == 1 else 0, False)
+        if self.scenario == "heavy":
+            return self._heavy() if page == 1 else []
         if self.scenario == "navy":
             n = 40 if is_base and page == 1 else 30 if page == 1 and not is_base else 0
             return self._items(tag, n, True)

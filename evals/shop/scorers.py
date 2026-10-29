@@ -25,6 +25,7 @@ class Listing:
     seller: str
     thumbnail_url: str = ""
     fingerprint: int | None = None
+    source: dict[str, str] | None = None  # stage 2q: {"kind", "query"} of the search that found it
 
 
 @dataclass
@@ -50,6 +51,7 @@ def listings_from_view(
         Listing(
             id=r["id"], title=r["title"], price=r.get("price"), seller=r.get("seller", ""),
             thumbnail_url=r.get("thumbnail_url", ""), fingerprint=fps.get(r["id"]),
+            source=r.get("source") or None,
         )
         for r in view["search"]["results"]
     ]  # fmt: skip

@@ -504,6 +504,29 @@
         ]));
       });
     }
+    if (mq && mq.note) {
+      box.appendChild(h('p', { class: 'why-line' }, [mq.note]));
+    }
+    if (b.seller_cap) {
+      var capSteps = (b.seller_cap.steps || []).map(function (x) {
+        return x.cap + ' per seller gave ' + x.size + (x.kept ? '' : ' (not kept)');
+      }).join(', ');
+      box.appendChild(h('p', { class: 'why-line' }, [
+        (b.seller_cap.message || 'The per-seller cap stayed at ' + b.seller_cap.base + '.') +
+        (capSteps ? ' Tried: ' + capSteps + '.' : '')
+      ]));
+    }
+    if (b.price_outliers) {
+      b.price_outliers.dropped.forEach(function (d) {
+        box.appendChild(h('p', { class: 'why-line' }, ['Left out "' + d.title + '": ' + d.reason + '.']));
+      });
+    }
+    if (b.typed && b.typed.photo && b.typed.photo.reason) {
+      box.appendChild(h('p', { class: 'why-line why-warn' }, [
+        'Photo tags: ' + b.typed.photo.tagged + ' of ' + b.typed.photo.wanted + ' (' + b.typed.photo.calls_started +
+        ' calls started, ' + b.typed.photo.retries + ' retried). ' + b.typed.photo.reason + '.'
+      ]));
+    }
     if (b.marketplace_excluded) {
       box.appendChild(h('p', { class: 'why-line' }, [
         'Left out by the marketplace exclusion: ' + b.marketplace_excluded + ' candidate(s).'

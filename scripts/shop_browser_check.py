@@ -1036,6 +1036,7 @@ def run_checks(
             run_fixes(browser, base7, shots, console_errors)
             run_open(browser, base8, shots, console_errors)
             run_dry(browser, scenarios, shots, console_errors)
+            run_fixes_2q(browser, scenarios, shots, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -1319,6 +1320,49 @@ def run_dry(browser: Any, bases: dict[str, str], shots: Path, console_errors: li
     page.locator("#refine-chips .chip", has_text="matched by description").wait_for(timeout=15000)
     check(True, "after a Shop Again the written note says matched by description")
     shoot(page, "83-matched-by-description", "#refine-box")
+    context.close()
+
+
+def run_fixes_2q(
+    browser: Any, bases: dict[str, str], shots: Path, console_errors: list[str]
+) -> None:
+    """Stage 2q: a short batch relaxes the per-seller cap and says so; an implausibly cheap
+    furniture listing is left out and the page says so (mock `heavy` scenario)."""
+    print("stage 2q: relaxed seller cap, dropped price outlier")
+
+    def shoot(page: Page, name: str, locator: str) -> None:
+        box = page.locator(locator).first
+        box.screenshot(path=str(shots / f"{name}.png"))
+        page.emulate_media(color_scheme="dark")
+        box.screenshot(path=str(shots / f"{name}-dark.png"))
+        page.emulate_media(color_scheme="light")
+        page.set_viewport_size({"width": 390, "height": 844})
+        box.scroll_into_view_if_needed()
+        box.screenshot(path=str(shots / f"{name}-mobile.png"))
+        check(
+            page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+            f"no sideways scroll at 390 px ({name})",
+        )
+        page.set_viewport_size({"width": 1280, "height": 900})
+
+    context, page = new_page(browser, bases["heavy"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, "ergonomic desk chairs")
+    status = page.locator("#status").inner_text()
+    check(
+        "A few sellers dominate this category; allowed up to 7 per seller to fill the batch."
+        in status,
+        f"the relaxed-cap message: {status[:160]!r}",
+    )
+    check(
+        "priced implausibly low for this kind of furniture" in status,
+        "the dropped-price note is on the page",
+    )
+    check(page.locator("#grid .card").count() == 24, "the relaxed batch is full: 24 cards")
+    check("$2.23" not in page.locator("#grid").inner_text(), "the $2.23 chair is not shown")
+    name, share = seller_share(page)
+    check(share <= 0.30, f"no seller above 30% of the batch ({name} {share:.0%})")
+    shoot(page, "85-relaxed-cap", "#status")
     context.close()
 
 
@@ -1824,6 +1868,7 @@ def main() -> int:
         tempfile.TemporaryDirectory() as dir_thin,
         tempfile.TemporaryDirectory() as dir_dry,
         tempfile.TemporaryDirectory() as dir_navy,
+        tempfile.TemporaryDirectory() as dir_heavy,
     ):
         try:
             first, port = start_server(data_dir, {"APP_SHOP_GALLERY": "1"})
@@ -1850,12 +1895,13 @@ def main() -> int:
             servers.append(seventh)
             eighth, port8 = start_server(data_dir8)
             servers.append(eighth)
-            scenario_dirs = {"thin": dir_thin, "dry": dir_dry, "navy": dir_navy}
+            scenario_dirs = {"thin": dir_thin, "dry": dir_dry, "navy": dir_navy, "heavy": dir_heavy}
             scenario_ports: dict[str, str] = {}
             for name, extra in (
                 ("thin", {"APP_SHOP_MODEL_QUERIES": "0"}),
                 ("dry", {"APP_SHOP_MODEL_QUERIES": "0", "APP_SHOP_THIN_VARIANTS": "0"}),
                 ("navy", {}),
+                ("heavy", {"APP_SHOP_MODEL_QUERIES": "0", "APP_SHOP_THIN_VARIANTS": "0"}),
             ):
                 server_n, port_n = start_server(
                     scenario_dirs[name], {"APP_SHOP_MOCK_SCENARIO": name, **extra}

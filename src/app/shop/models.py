@@ -165,6 +165,14 @@ class AlsoAt(_Strict):
     price: float | None = None
 
 
+class ResultSource(_Strict):
+    """Which search first found a result (stage 2q): `kind` is base, writer, seller, peer,
+    thin_variant, supply or refill; `query` is that search's words (never a URL or a key)."""
+
+    kind: str
+    query: str
+
+
 class ShopResult(_Strict):
     id: str
     title: str
@@ -184,6 +192,7 @@ class ShopResult(_Strict):
     rating: float | None = None
     rating_count: int | None = None
     also_at: list[AlsoAt] = []  # stage 2n: the same product from other sellers (text only)
+    source: ResultSource | None = None  # stage 2q: the search that found it (None in old sessions)
 
 
 class FilterCounts(BaseModel):
@@ -202,6 +211,8 @@ class FilterCounts(BaseModel):
     rated_excluded: int = 0  # of those, how many were rated (stage 2g; seen_excluded counts both)
     dedupe: dict[str, Any] = {}  # stage 2g: what each de-duplication rule removed
     marketplace_excluded: int = 0  # stage 2i: candidates dropped by the exclude-marketplace chip
+    price_outliers: int = 0  # stage 2q: implausibly cheap furniture listings dropped
+    price_outlier_rows: list[dict[str, Any]] = []  # ... each with its price, the median and why
 
 
 def result_id(product_id: str) -> str:

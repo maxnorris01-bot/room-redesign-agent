@@ -283,6 +283,9 @@ eval to tune):
 | PHOTO_TAG_BATCH | 12 | candidates per photo tagging call (stage 2p) |
 | PHOTO_TAG_WORKERS | 3 | photo tagging calls at once (stage 2p) |
 | PHOTO_TAG_BUDGET_S | 6.0 | seconds allowed for the photo tagging step; candidates not done keep their title tags and the trace says so (stage 2p; judgment) |
+| PHOTO_IMAGE_WAIT_S | 2.0 | seconds the photo step waits for thumbnails that are not cached yet, before the calls' budget clock starts (stage 2q; judgment) |
+| PHOTO_FIRST_WAVE_GRACE_S | 4.0 | a first-wave photo call that started inside the budget may finish this long after it, never past the hard stop (stage 2q; judgment) |
+| PHOTO_RETRY_MIN_LEFT_S | 2.0 | a failed photo call is retried once only when at least this much of the budget remains (stage 2q; judgment) |
 | PHOTO_CACHE_MAX | 200 | prepared thumbnails kept in memory per service, shared by the fingerprint and photo tagging steps (stage 2p) |
 | THIN_VARIANT_SEARCHES | 2 | variant searches a typed search may add when fewer than 24 results survive, inside a Shop Again's normal Serper cap (stage 2p) |
 | MODEL_QUERIES | 2 | model-written search queries per Shop Again (stage 2i) |
@@ -321,6 +324,9 @@ eval to tune):
 | SELLER_CAP_SHARE | 0.30 | one ordinary seller's share of a batch; the cap is clamp(floor(0.30 x batch size), 2, 4) (stage 2p; judgment) |
 | SELLER_CAP_MIN | 2 | fewest results per seller the cap formula allows (stage 2p) |
 | SELLER_CAP_MAX | 4 | most results per seller the cap formula allows; the old fixed cap (stage 2p) |
+| PRICE_OUTLIER_MEDIAN_SHARE | 0.10 | a furniture candidate priced under this share of the pool's median price, and under the floor below, is dropped as a part or swatch listing (stage 2q; judgment) |
+| PRICE_OUTLIER_FLOOR_USD | 15.0 | ... and under this many dollars, so a $39 chair or a cheap pool keeps its items (stage 2q; judgment) |
+| PRICE_OUTLIER_MIN_POOL | 8 | priced candidates a pool needs before its median is used (stage 2q) |
 | MINORITY_POOL_SHARE | 0.40 | an open dimension's value under this share of the pool triggers targeted searches for it (stage 2e) |
 | OPEN_STRATUM_FLOOR | 0.25 | share of the batch slots a value with a loved item gets when shape is open (stage 2e) |
 | CANDIDATE_TAG_BATCH | 40 | titles per candidate tagging call (stage 2e: 100; stage 2g: 40, run concurrently) |
@@ -1093,3 +1099,41 @@ value (a back type would add a column to every tagging row); "no leather" and an
 
 Not done and open: the attribute judge still counts "cannot tell" as a miss (a threshold decision for the owner); no live run has
 checked the new calls (photo tagging time, the writer on every Shop Again, the flags).
+
+## Amendment, stage 2q (2026-10-28): fixes from the post-2p live re-run
+
+Evidence: `docs/evals/shop-eval-rerun-2026-10-28.md` (four cases; not the 12-case run, and it does not replace the baseline).
+Thresholds and `thresholds.json` were left as they were.
+
+Photo budget. The case-04 trace `wanted 36, tagged 0, calls 0, skipped 36, 6.01 s` did not mean no call started: the thumbnails were
+cached, three calls started and were still running at the 6 s deadline, were abandoned and were counted as skipped. The step now
+waits for uncached thumbnails separately (`PHOTO_IMAGE_WAIT_S`), starts the 6 s clock at the first call, always starts the first wave
+and lets it finish up to `PHOTO_FIRST_WAVE_GRACE_S` after the budget (never past the hard stop), retries a failed call once when
+`PHOTO_RETRY_MIN_LEFT_S` of budget remains, and records `calls_started`, `retries`, `abandoned_calls` and a `reason`. The 6 s budget
+and the 36-candidate default are unchanged; the worst case for the step is now 10 s, not 6.
+
+Variants stay on the request. `shop_queries` v4. Code, not the prompt, decides: `shop.hardwords` lists the request's hard words (the
+category, each parsed style, material, colour and must-have, refine chips, sizes such as 8x10 or 84 inch); a variant must hold every
+one, or a listed synonym from `vocab`/`categories` from a group of at most 3 keywords (a bigger group is a tagging bucket:
+"upholstered" holds velvet, linen and leather); it must not carry a style, material or colour word the request did not contain.
+The deterministic fillers are neutral (premium, affordable, designer, quality, stylish, popular, best). When fewer than two variants
+survive, fewer searches run and the trace says so. The cost: a variant can no longer add a "leaning toward" word; leanings still act
+in the ranker and the selection.
+
+Sources. `ShopResult.source = {kind, query}` (base, writer, seller, peer, thin_variant, supply, refill), the first search that found
+a product. The eval writes it on every item and prints a secondary table by source (no threshold).
+
+Seller cap. The first walk keeps clamp(floor(0.30 x size), 2, 4). A batch under 24 from a pool of at least 24 raises the cap to 5, 6, 7
+(`seller_cap_ceiling` = floor(0.30 x 24)); a relaxed batch is kept only when longer and no seller holds more than 0.30 of the batch
+shown; the steps and "A few sellers dominate this category; allowed up to N per seller to fill the batch." are in the trace and the
+page. Otherwise the batch is tightened as before. The case-06 batches of 14 were limited by the shape diversity guard, not the cap
+(the pool was 100% rectangular and the guard allows 14 of one shape); that is open (docs/todo.md).
+
+Price outliers. A furniture-category candidate priced under 10% of the pool's median and under $15, in a pool of at least 8 priced
+candidates, is dropped, listed in the trace and counted in the page's note; rugs, curtains and lamps are excluded.
+
+Eval. A secondary line per case and overall prints attribute match among items the judge could decide on, `good / (good + no)`, with
+the `cannot_tell` count; the verdict number still counts `cannot_tell` as a miss. `plan.py` uses the measured re-run (pipeline $0.0328
+a case including Serper, 24 credits); case-04 ($0.0489) is 2.2% under the $0.05 threshold.
+
+Not done and open: no live run has checked any of this; the diversity guard; the judge's calibration; repeated runs.
