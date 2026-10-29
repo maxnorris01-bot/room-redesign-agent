@@ -24,7 +24,7 @@ from app.shop.models import (
     ShopQuery,
     clean_request,
 )
-from app.shop.vocab import COLOR_LABELS, OTHER, normalize
+from app.shop.vocab import COLOR_LABELS, OTHER, normalize, typed_shape_words
 
 PARSE_MAX_TOKENS = 900  # stage 2k: 600, plus the context list and the colour suggestions
 MAX_PRICE_USD = 1_000_000.0
@@ -145,6 +145,7 @@ def build_query(request: str, parsed: ShopParse) -> ShopQuery:
         price_max=price_max,
         style_terms=_terms(parsed.style_terms),
         material_terms=_terms(parsed.material_terms),
+        shape_terms=typed_shape_words(request),
         must_have=_terms(parsed.must_have),
         avoid=_terms(parsed.avoid),
         color_terms=own_colors[:MAX_SUGGESTED],

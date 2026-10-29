@@ -105,6 +105,13 @@ def headline(record: SearchRecord) -> str:
     text = (
         f"{n} new results." if n >= 24 else f"Only {n} new results" + (f" ({why})." if why else ".")
     )
+    fill = batch.get("fill") or {}
+    if n < 24 and fill.get("steps"):  # stage 2r: what the fill loop tried and why it stopped
+        count = len(fill["steps"])
+        text += (
+            f" Searched {count} more variant{'s' if count != 1 else ''} "
+            f"(stopped: {fill.get('stop', '')})."
+        )
     reason = str(record.tagging.get("tag_reason", ""))
     if reason:
         short = reason if len(reason) <= 80 else reason[:77].rstrip() + "..."
@@ -116,7 +123,9 @@ def headline(record: SearchRecord) -> str:
     for (
         w
     ) in record.warnings:  # stage 2p: a typed colour, material or finish the pool could not supply
-        if re.match(r"Only \d+ of \d+ results match your ", w):
+        if re.match(r"Only \d+ of \d+ results match your ", w) or w.startswith(
+            ("A few sellers dominate", "Left out ", "Not mixing ")
+        ):  # stage 2q and 2r notes: the relaxed cap, a dropped price, a guard switched off
             text += " " + w
     return text
 
@@ -896,10 +905,12 @@ class ShopService:
         """Delete one chip of the request (stage 2k): a context item (its colour effect goes with it
         when no colour-bearing item is left), a suggested colour (it leaves the search and the
         ranking), a colour to avoid (it is no longer demoted), and (stage 2p) a typed product colour
-        or material (its quota goes with it). It applies to the current
+        material or shape (its quota goes with it). It applies to the current
         topic's typed request, so it holds for every later Shop Again."""
-        if kind not in ("context", "suggested", "avoid", "color_term", "material"):
-            raise ApiError(400, "kind must be context, suggested, avoid, color_term or material")
+        if kind not in ("context", "suggested", "avoid", "color_term", "material", "shape_term"):
+            raise ApiError(
+                400, "kind must be context, suggested, avoid, color_term, material or shape_term"
+            )
         if not isinstance(value, str) or not value.strip() or len(value) > 40:
             raise ApiError(400, "value must be short text")
         self._load(session_id)
@@ -926,6 +937,11 @@ class ShopService:
                 if color is None or color not in base.color_terms:
                     raise ApiError(404, "no such chip")
                 update = {"color_terms": [c for c in base.color_terms if c != color]}
+            elif kind == "shape_term":  # a typed shape (stage 2r): its quota goes with the chip
+                kept_shapes = [t for t in base.shape_terms if " ".join(t.lower().split()) != text]
+                if len(kept_shapes) == len(base.shape_terms):
+                    raise ApiError(404, "no such chip")
+                update = {"shape_terms": kept_shapes}
             elif kind == "material":  # a typed material: its quota goes with the chip
                 kept_terms = [m for m in base.material_terms if " ".join(m.lower().split()) != text]
                 if len(kept_terms) == len(base.material_terms):

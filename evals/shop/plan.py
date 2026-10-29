@@ -20,23 +20,21 @@ JUDGE_TOKENS_PER_IMAGE = 150  # a small product thumbnail
 JUDGE_OUT_BASE = 40
 JUDGE_OUT_PER_ITEM = 14
 REFINE_USD = 0.001
-# Measured on the post-2p live re-run of four cases (docs/evals/shop-eval-rerun-2026-10-28.md): the
-# pipeline's Anthropic cost of one case (a search and two Shop Agains, with the query writer and the
-# photo tagging stage 2p added), by case 04 / 06 / 10 / 12, its Serper credits, and one judge call.
-# They replace the first run's figures ($0.0074 and 17 credits, before stage 2p) and the estimates
-# stage 2p made for the new calls. Four cases are a small sample: case-04 alone cost $0.0489.
+# Measured on the first full 12-case run after stages 2p and 2q (docs/evals/shop-eval-full-run-2026-10-29.md,
+# run 20261029-034000-3f9fa0): the pipeline's cost of one case (Anthropic plus Serper, as the threshold
+# counts it: a search and two Shop Agains, with the query writer and the photo tagging), its Serper
+# credits, and one judge call (138 calls, $0.0615). They replace the four-case re-run's figures.
 MEASURED_CASE_PIPELINE_USD = {
-    "case-04": 0.0489,
-    "case-06": 0.0278,
-    "case-10": 0.0254,
-    "case-12": 0.0289,
-}
+    "case-01": 0.0246, "case-02": 0.053, "case-03": 0.0294, "case-04": 0.0399, "case-05": 0.035,
+    "case-06": 0.033, "case-07": 0.0254, "case-08": 0.0375, "case-09": 0.0303, "case-10": 0.0254,
+    "case-11": 0.0271, "case-12": 0.0292,
+}  # fmt: skip
 MEASURED_PIPELINE_USD_PER_CASE = round(
     sum(MEASURED_CASE_PIPELINE_USD.values()) / len(MEASURED_CASE_PIPELINE_USD), 4
-)  # 0.0328, writer and photo calls included
-MEASURED_WORST_CASE_PIPELINE_USD = max(MEASURED_CASE_PIPELINE_USD.values())
-MEASURED_CREDITS_PER_CASE = 24  # case-04 38, case-06 14, case-12 16 (mean 22.7), case-10 12
-MEASURED_JUDGE_CALL_USD = 0.0004
+)  # 0.03, writer and photo calls included
+MEASURED_WORST_CASE_PIPELINE_USD = max(MEASURED_CASE_PIPELINE_USD.values())  # case-02, over 0.05
+MEASURED_CREDITS_PER_CASE = 19  # 226 credits over 12 cases; 12 (case-07, 11) to 38 (case-02)
+MEASURED_JUDGE_CALL_USD = 0.00045  # $0.0615 over 138 calls
 
 
 def judge_call_usd(config: Config) -> float:
@@ -77,6 +75,7 @@ def estimate(config: Config, cases: list[Case], t: Thresholds) -> dict[str, Any]
         + judge_calls_per_case * MEASURED_JUDGE_CALL_USD
         + credits_per_case * credit_usd
     )
+    rerun_cached_usd = 5 * (per_case_pipeline + judge_calls_per_case * MEASURED_JUDGE_CALL_USD)
     return {
         "per_case_pipeline_usd": round(per_case_pipeline + credits_per_case * credit_usd, 4),
         "per_case_anthropic_usd": round(per_case_pipeline, 4),
@@ -93,6 +92,8 @@ def estimate(config: Config, cases: list[Case], t: Thresholds) -> dict[str, Any]
         "per_shop_again_anthropic_usd": round(per_again_usd, 4),
         "per_shop_again_credits": round(per_again_credits, 1),
         "rerun_5_cases_usd": round(rerun_usd, 4),
+        "rerun_5_cases_cached_usd": round(rerun_cached_usd, 4),  # every Serper call a cache hit
+        "total_usd_cached": round(anthropic, 4),  # a whole run with every Serper call a cache hit
         "rerun_5_cases_credits": round(5 * credits_per_case),
         "hard_stop_anthropic_usd": t.hard_stop_anthropic_usd,
         "hard_stop_serper_credits": t.hard_stop_serper_credits,
@@ -100,8 +101,8 @@ def estimate(config: Config, cases: list[Case], t: Thresholds) -> dict[str, Any]
         "within_credit_stop": n * credits_worst_case <= t.hard_stop_serper_credits,
         "worst_measured_case_usd": MEASURED_WORST_CASE_PIPELINE_USD,
         "assumptions": [
-            f"measured on the post-2p live re-run (4 cases): pipeline ${MEASURED_PIPELINE_USD_PER_CASE} "
-            f"per case (Anthropic plus Serper, as the threshold counts it, with the query writer and photo tagging; case-04 alone "
+            f"measured on the first full 12-case run after stages 2p and 2q: pipeline ${MEASURED_PIPELINE_USD_PER_CASE} "
+            f"per case (Anthropic plus Serper, as the threshold counts it, with the query writer and photo tagging; case-02 alone "
             f"${MEASURED_WORST_CASE_PIPELINE_USD}), {MEASURED_CREDITS_PER_CASE} Serper credits per "
             f"case, judge call ${MEASURED_JUDGE_CALL_USD}",
             f"{judge_calls_per_case} judge calls per case ({ROUNDS} batches, category and persona "
@@ -138,16 +139,19 @@ def plan_lines(config: Config, cases: list[Case], t: Thresholds) -> list[str]:
         f"judges ${est['judge_usd']:.2f} over {est['judge_calls']} calls)",
         f"  Serper {est['serper_credits_expected']} credits expected, "
         f"{est['serper_credits_worst']} worst case (about ${est['serper_usd_expected']:.2f})",
-        f"  total about ${est['total_usd_expected']:.2f}",
+        f"  total about ${est['total_usd_expected']:.2f} (with every Serper call a cache hit: "
+        f"about ${est['total_usd_cached']:.2f}, 0 credits)",
         f"  one Shop Again about ${est['per_shop_again_usd']:.4f} "
         f"(Anthropic ${est['per_shop_again_anthropic_usd']:.4f}, "
         f"{est['per_shop_again_credits']} Serper credits)",
         f"  a 5-case re-run about ${est['rerun_5_cases_usd']:.2f}, "
-        f"{est['rerun_5_cases_credits']} Serper credits (make eval-shop-live CASES=...)",
+        f"{est['rerun_5_cases_credits']} Serper credits; about ${est['rerun_5_cases_cached_usd']:.2f} "
+        "with every Serper call a cache hit (make eval-shop-live CASES=...)",
         f"  pipeline cost per case about ${est['per_case_pipeline_usd']:.3f} "
         f"(threshold ${t.cost_per_request_usd_max:.2f}: judges not included)",
-        f"  the costliest measured case (case-04) cost ${est['worst_measured_case_usd']:.4f}, "
-        f"{100 * (1 - est['worst_measured_case_usd'] / t.cost_per_request_usd_max):.1f}% under "
+        f"  the costliest measured case (case-02) cost ${est['worst_measured_case_usd']:.4f}, "
+        f"{abs(100 * (1 - est['worst_measured_case_usd'] / t.cost_per_request_usd_max)):.1f}% "
+        f"{'under' if est['worst_measured_case_usd'] <= t.cost_per_request_usd_max else 'OVER'} "
         "that threshold",
         f"  hard stops: Anthropic ${t.hard_stop_anthropic_usd:.2f}, "
         f"Serper {t.hard_stop_serper_credits} credits "

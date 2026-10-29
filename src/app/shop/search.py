@@ -20,7 +20,7 @@ import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.categories import canonical_category, category_hits
@@ -57,7 +57,7 @@ from app.shop.parse import color_word, parse_request
 from app.shop.phototags import ThumbCache, photo_tag_top
 from app.shop.pricecheck import split_price_outliers
 from app.shop.progress import Progress, Timeline
-from app.shop.queries import QueryInput, QueryResult, variant_queries
+from app.shop.queries import QueryInput, QueryResult, extra_fillers, variant_queries
 from app.shop.refine import RefineSet
 from app.shop.retailers import (
     MARKETPLACE_BUDGET,
@@ -73,6 +73,9 @@ from app.shop.thresholds import (
     COLOR_AVOID_MAX_SHARE,
     COLOR_SUGGESTED_MIN_SHARE,
     DIVERSITY_MAX_SHARE,
+    FILL_EMPTY_STREAK_MAX,
+    FIRST_SEARCH_MAX_CALLS,
+    GUARD_ALT_SUPPLY_MIN,
     LEAN_AWAY_MAX_SHARE,
     LEAN_TOWARD_MIN_SHARE,
     MARKET_MIN_RESULTS,
@@ -81,13 +84,13 @@ from app.shop.thresholds import (
     NEAR_FP_TOP,
     NEAR_FP_WORKERS,
     OPEN_STRATUM_FLOOR,
+    PLENTIFUL_UNSEEN,
     REFINE_FOCUS_MIN_SHARE,
     SELLER_CAP_MAX,
     SELLER_CAP_SHARE,
     SELLER_MAX_SHARE,
     SELLER_PINNED_SHARE,
     SELLER_SEARCHES,
-    THIN_VARIANT_SEARCHES,
     TIER_BATCH_SHARE,
     TYPED_MATCH_MIN_SHARE,
     seller_cap,
@@ -186,6 +189,7 @@ class AgainContext:
     lean_toward: list[tuple[str, str]] = field(default_factory=list)
     lean_away: list[tuple[str, str]] = field(default_factory=list)
     query_writer: Callable[[], QueryResult] | None = None
+    query_input: QueryInput | None = None  # stage 2r: what the writer saw, reused by the fill loop
     query_result: QueryResult | None = None
     typed: list[TypedAttr] = field(default_factory=list)  # stage 2p: typed attributes as quotas
     tag_source: dict[str, str] = field(default_factory=dict)
@@ -622,6 +626,70 @@ def strata_quotas(
         v = max((v for v in values if quota[v] < cap), key=lambda v: (weight[v], v))
         quota[v] += 1
     return quota
+
+
+def filter_breakdown(
+    counts: FilterCounts, shown: int, seller_capped: int, guarded: int
+) -> dict[str, int]:
+    """Where every candidate the searches returned went (stage 2r): shown, or removed by price,
+    category or size, an implausible price, being seen or rated, being a duplicate, the seller cap,
+    a diversity guard, or something else (an excluded seller or marketplace, the cut of the pool, a
+    refine chip). The parts sum to `returned` by construction (`other` is the remainder)."""
+    kept_unshown = max(0, counts.kept - shown)
+    capped = min(seller_capped, kept_unshown)
+    guard = min(guarded, kept_unshown - capped)
+    parts = {
+        "price": counts.no_price + counts.out_of_range,
+        "category_or_size": counts.wrong_category,
+        "price_outlier": counts.price_outliers,
+        "seen_or_rated": counts.seen_excluded,
+        "duplicate": counts.duplicates,
+        "seller_cap": capped,
+        "diversity_guard": guard,
+    }
+    other = max(0, counts.returned - shown - sum(parts.values()))
+    return {"returned": counts.returned, "shown": shown, **parts, "other": other}
+
+
+def explain_breakdown(counts: FilterCounts, filtered_out: int, parts: dict[str, int]) -> str:
+    """The sentence a short batch shows: the old three numbers, then what made up "filtered
+    out" and what the seller cap, the guards and everything else held back (zeros left out)."""
+    text = (
+        f"{counts.seen_excluded} seen or rated, {counts.duplicates} duplicates, "
+        f"{filtered_out} filtered out"
+    )
+    inside = [
+        f"{parts[k]} {what}"
+        for k, what in (
+            ("price", "outside your price"),
+            ("category_or_size", "the wrong category or size"),
+            ("price_outlier", "priced implausibly low"),
+        )
+        if parts[k]
+    ]
+    if inside:
+        text += f" ({', '.join(inside)})"
+    after = [
+        f"{parts[k]} {what}"
+        for k, what in (
+            ("seller_cap", "held back by the seller cap"),
+            ("diversity_guard", "by diversity guards"),
+            ("other", "removed for other reasons"),
+        )
+        if parts[k]
+    ]
+    return text + ("; " + ", ".join(after) if after else "")
+
+
+def fill_phrase(fill: dict[str, Any]) -> str:
+    """What the fill loop did, for the page ("" when it did not run)."""
+    steps = fill.get("steps") or []
+    if not steps:
+        return ""
+    return (
+        f"searched {len(steps)} more variant{'s' if len(steps) != 1 else ''} "
+        f"(stopped: {fill.get('stop', '')})"
+    )
 
 
 def seller_cap_info(log: list[dict[str, Any]], pool_size: int) -> dict[str, Any]:
@@ -1358,19 +1426,44 @@ def run_query(
     def model_entry(text: str, page: int) -> dict[str, Any]:
         return {"query": text, "page": page, "found": 0, "new_candidates": 0, "error": ""}
 
+    early_stops: list[dict[str, Any]] = []
+    typed_early: list[TypedAttr] = again.typed if again is not None else []
+
+    def plentiful(before: str) -> bool:
+        """Stage 2r: whether the optional searches (`before` names the next one) can be skipped."""
+        if (
+            again is None or not config.shop_early_stop
+        ):  # off in a bare Config, on from the environment
+            return False
+        ok, why = supply_is_plentiful(pool, again, typed_early)
+        early_stops.append({"before": before, "stopped": ok, "why": why, "unseen": len(pool)})
+        return ok
+
     if parallel:
-        # wave one: the first page of every phrasing and of every peer, at the same time; the
-        # model query writer runs beside them (nothing here depends on it)
-        jobs: list[tuple[str, int, tuple[str, str] | None]] = [
+        # wave one: the typed query and the sellers the shopper liked, at the same time; the model
+        # query writer runs beside them (nothing here depends on it). Then the writer's variants.
+        # The optional searches (the profile's other phrasings, retailers that are not liked
+        # sellers) run only if the pool is not plentiful by then (stage 2r).
+        every: list[tuple[str, int, tuple[str, str] | None]] = [
             (texts[i], first[i], None) for i in eligible
         ]
-        job_index: list[int | None] = list(eligible)
-        room = max(0, cap - len(jobs))
+        every_index: list[int | None] = list(eligible)
+        room = max(0, cap - len(every))
         for peer_key, peer_name, peer_text in peers[:room]:
             qkey = query_key(peer_text)
-            jobs.append((peer_text, skip.get(qkey, 0) + 1, (peer_key, peer_name)))
-            job_index.append(None)
-        jobs, job_index = jobs[:cap], job_index[:cap]
+            every.append((peer_text, skip.get(qkey, 0) + 1, (peer_key, peer_name)))
+            every_index.append(None)
+        every, every_index = every[:cap], every_index[:cap]
+        liked_keys = again.liked_seller_keys if again is not None else set()
+        core_ix = [
+            n for n, ((_t, _p, peer), idx) in enumerate(zip(every, every_index, strict=True))
+            if (idx == 0 or (peer is not None and peer[0] in liked_keys))
+        ] or list(range(len(every)))  # fmt: skip
+        if again is None or not config.shop_early_stop:  # one wave, as before the flag
+            core_ix = list(range(len(every)))
+        late_ix = [n for n in range(len(every)) if n not in core_ix]
+        jobs = [every[n] for n in core_ix]
+        job_index = [every_index[n] for n in core_ix]
         submitted = clock.now()
 
         def search_and_queue(
@@ -1383,42 +1476,51 @@ def run_query(
                 steps.advance("searching")
             return got
 
+        def settle(
+            wave: list[tuple[str, int, tuple[str, str] | None]],
+            index: list[int | None],
+            outcomes: list[list[SearchCandidate] | Exception],
+            first_wave: bool,
+        ) -> None:
+            nonlocal calls
+            calls += len(wave)
+            for n, ((text, page, peer), idx, got) in enumerate(
+                zip(wave, index, outcomes, strict=True)
+            ):
+                entry = peer_entry(peer[1], peer[0], text, page) if peer else None
+                if isinstance(got, Exception):
+                    if first_wave and n == 0:
+                        raise got  # nothing to show without the first search
+                    if peer is None:
+                        warnings.append(
+                            f"Search page {page} unavailable ({got}); showing what was found."
+                        )
+                        if idx is not None:
+                            finished.add(idx)
+                    else:
+                        warnings.append(f"Search for {peer[1]} unavailable ({got}).")
+                        assert entry is not None
+                        entry["error"] = "search failed"
+                        peer_log.append(entry)
+                    continue
+                added = absorb(
+                    text, page, got,
+                    str(entry["kind"]) if peer is not None and entry is not None else "base",
+                )  # fmt: skip
+                if not got and peer is None and idx is not None:
+                    finished.add(idx)
+                if peer is not None:
+                    supplied.update(c.product_id for c in added)
+                    assert entry is not None
+                    entry["found"], entry["new_candidates"] = len(got), len(added)
+                    peer_log.append(entry)
+
         workers = min(config.shop_search_workers, max(1, len(jobs))) + (1 if writer else 0)
         with ThreadPoolExecutor(max_workers=workers) as ex:
             writer_future = ex.submit(timed_writer) if writer is not None else None
             outcomes = list(ex.map(search_and_queue, jobs))
             query_result = writer_future.result() if writer_future is not None else None
-        calls += len(jobs)
-        for n, ((text, page, peer), idx, got) in enumerate(
-            zip(jobs, job_index, outcomes, strict=True)
-        ):
-            entry = peer_entry(peer[1], peer[0], text, page) if peer else None
-            if isinstance(got, Exception):
-                if n == 0:
-                    raise got  # nothing to show without the first search
-                if peer is None:
-                    warnings.append(
-                        f"Search page {page} unavailable ({got}); showing what was found."
-                    )
-                    if idx is not None:
-                        finished.add(idx)
-                else:
-                    warnings.append(f"Search for {peer[1]} unavailable ({got}).")
-                    assert entry is not None
-                    entry["error"] = "search failed"
-                    peer_log.append(entry)
-                continue
-            added = absorb(
-                text, page, got,
-                str(entry["kind"]) if peer is not None and entry is not None else "base",
-            )  # fmt: skip
-            if not got and peer is None and idx is not None:
-                finished.add(idx)
-            if peer is not None:
-                supplied.update(c.product_id for c in added)
-                assert entry is not None
-                entry["found"], entry["new_candidates"] = len(got), len(added)
-                peer_log.append(entry)
+        settle(jobs, job_index, outcomes, True)
         mq = model_query_jobs(query_result)
         if mq:  # the accepted model queries, page one each, at the same time
             if steps is not None:
@@ -1437,6 +1539,20 @@ def run_query(
                     supplied.update(c.product_id for c in added)
                     row["found"], row["new_candidates"] = len(got), len(added)
                 model_log.append(row)
+        if late_ix:  # the optional phrasings and retailers, unless the pool is already plentiful
+            late = [every[n] for n in late_ix][: max(0, cap - calls - 1)]
+            late_at = [every_index[n] for n in late_ix][: len(late)]
+            names = ", ".join(w[2][1] if w[2] else w[0] for w in late)
+            if late and plentiful(f"{len(late)} optional search(es): {names}"):
+                if steps is not None:
+                    steps.set_total("searching", max(1, n_searches - len(late)))
+            elif late:
+                submitted = clock.now()
+                with ThreadPoolExecutor(
+                    max_workers=min(config.shop_search_workers, len(late))
+                ) as ex3:
+                    late_out = list(ex3.map(search_and_queue, late))
+                settle(late, late_at, late_out, False)
         extra_plan = [
             (i, pg)
             for i, pg in plan
@@ -1507,38 +1623,7 @@ def run_query(
                 row["found"], row["new_candidates"] = len(got), len(added)
             model_log.append(row)
     thin_info: dict[str, Any] = {}
-    if again is None and config.shop_thin_variants and search.name == "serper" and pool is not None:
-        # stage 2p: a typed search that cannot fill a batch tries up to THIN_VARIANT_SEARCHES
-        # differently worded searches before giving up, inside a Shop Again's normal Serper cap
-        shown_possible = len(cap_per_seller(pool, SELLER_CAP)[0])
-        variant_cap = min(max_calls + THIN_VARIANT_SEARCHES, config.shop_again_max_serper_calls)
-        want = min(THIN_VARIANT_SEARCHES, variant_cap - calls)
-        if shown_possible < RESULT_COUNT and want > 0 and not expired("the variant searches"):
-            with timeline.span("model", "write variant queries"):
-                made = variant_queries(
-                    QueryInput(
-                        base=query, adjusted=query, used=list(used), existing=list(used),
-                        setting=setting_lines(query),
-                    ),
-                    budget, config,
-                )  # fmt: skip
-            thin_info = {
-                "before": shown_possible, "asked_model": config.shop_model_queries,
-                "from_fallback": made.fallback, "dropped": list(made.dropped), "variants": [],
-                "note": made.note,
-            }  # fmt: skip
-            for text in made.accepted[:want]:
-                calls += 1
-                got = fetch(text, 1)
-                row = {"query": text, "found": 0, "new_candidates": 0, "error": ""}
-                if isinstance(got, Exception):
-                    row["error"] = "search failed"
-                    warnings.append(f"A variant search was unavailable ({got}).")
-                else:
-                    added = absorb(text, 1, got, "thin_variant")
-                    row["found"], row["new_candidates"] = len(got), len(added)
-                thin_info["variants"].append(row)
-            thin_info["after"] = len(cap_per_seller(pool, SELLER_CAP)[0])
+    fill_info: dict[str, Any] = {}
     if steps is not None:
         steps.finish("searching")
     timeline.phase_end("searching")
@@ -1672,6 +1757,8 @@ def run_query(
             if step is None:
                 break
             dim, value, count, known = step
+            if plentiful(f"the supply search for {value} {dim}"):
+                break
             text = " ".join(f"{phrase_word(dim, value)} {query.search_text}".split())[
                 :MAX_SEARCH_TEXT_CHARS
             ]
@@ -1764,8 +1851,16 @@ def run_query(
 
     seller_cap_log: list[dict[str, Any]] = []
 
+    guard_state: list[dict[str, Any]] = []
+
     def select() -> tuple[list[ShopResult], int, int]:
         seller_cap_log.clear()
+        guard_state.clear()
+        caps_now = again.guard_caps if again is not None else None
+        if again is not None:
+            fallback_tags = tag_of if tag_of is not None else (lambda c: title_tags(c.title))
+            caps_now, off = effective_guards(ordered, again.guard_caps, fallback_tags)
+            guard_state.extend(off)
         return build_results(
             ordered,
             query,
@@ -1773,7 +1868,7 @@ def run_query(
             again.affinity_sellers if again is not None else None,
             again.pinned_sellers if again is not None else None,
             None,
-            again.guard_caps if again is not None else None,
+            caps_now,
             tag_of,
             strata,
             tier_limit,
@@ -1807,6 +1902,111 @@ def run_query(
                 kept_pairs.append(pair)
         ordered = kept_pairs
     results, capped, diversity_skipped = select()
+
+    def fill_batch() -> None:
+        """Stage 2r: a batch short of RESULT_COUNT after every filter, cap and guard runs the next
+        on-request variant search and selects again: the writer's variants (prompt v4, every hard
+        word kept), then the neutral fillers, then page 2 of a variant that found something. It
+        stops when the batch is full, at the call cap (a Shop Again's 9; a first search's
+        FIRST_SEARCH_MAX_CALLS), after FILL_EMPTY_STREAK_MAX searches in a row that add nothing, or
+        at the hard stop, and records every step and the reason."""
+        nonlocal results, capped, diversity_skipped, ordered, calls, thin_info, fill_info
+        if len(results) >= RESULT_COUNT or search.name != "serper":
+            return
+        if not config.shop_thin_variants:  # off in a bare Config, on from the environment
+            return
+        limit = cap if again is not None else FIRST_SEARCH_MAX_CALLS
+        start = len(results)
+        log: list[dict[str, Any]] = []
+        info: dict[str, Any] = {
+            "target": RESULT_COUNT, "shown_start": start, "calls_at_start": calls,
+            "call_limit": limit, "steps": log, "stop": "",
+        }  # fmt: skip
+        fill_info = info
+        if calls >= limit:
+            info["stop"] = f"no search call left ({limit} used)"
+            return
+        if expired("the fill searches"):
+            info["stop"] = "the hard stop"
+            return
+        base_input = again.query_input if again is not None else None
+        qi = (
+            replace(base_input, used=[*base_input.used, *used], existing=list(used))
+            if base_input is not None
+            else QueryInput(
+                base=query, adjusted=query, used=list(used), existing=list(used),
+                setting=setting_lines(query),
+            )
+        )  # fmt: skip
+        with timeline.span("model", "write variant queries"):
+            made = variant_queries(qi, budget, config)
+        more = extra_fillers(
+            replace(qi, existing=[*qi.existing, *made.accepted]),
+            limit - calls - len(made.accepted),
+        )
+        model_n = len(made.accepted) - made.fallback
+        queue: list[tuple[str, str]] = []
+        for n, text in enumerate([*made.accepted, *more]):
+            if again is None:
+                kind = "thin_variant"
+            else:
+                kind = "writer" if n < model_n else "filler"
+            queue.append((kind, text))
+        info.update(asked_model=config.shop_model_queries, from_fallback=made.fallback + len(more),
+                    dropped=list(made.dropped), note=made.note)  # fmt: skip
+        paging: list[tuple[str, str]] = []
+        empty = 0
+        while True:
+            if len(results) >= RESULT_COUNT:
+                info["stop"] = "the batch is full"
+            elif calls >= limit:
+                info["stop"] = f"the search cap ({limit} calls) was reached"
+            elif empty >= FILL_EMPTY_STREAK_MAX:
+                info["stop"] = f"{FILL_EMPTY_STREAK_MAX} searches in a row added nothing new"
+            elif expired("the fill searches"):
+                info["stop"] = "the hard stop"
+            elif not queue and not paging:
+                info["stop"] = "no more variants to try"
+            if info["stop"]:
+                break
+            kind, text = queue.pop(0) if queue else paging.pop(0)
+            key = query_key(text)
+            page = max(skip.get(key, 0), pages.get(key, 0)) + 1
+            calls += 1
+            row: dict[str, Any] = {
+                "kind": kind, "query": text, "page": page, "found": 0, "new_candidates": 0,
+                "shown_before": len(results), "shown_after": len(results), "error": "",
+            }  # fmt: skip
+            got = fetch(text, page)
+            log.append(row)
+            if isinstance(got, Exception):
+                row["error"] = "search failed"
+                warnings.append(f"A variant search was unavailable ({got}).")
+                empty += 1
+                continue
+            added = absorb(text, page, got, kind)
+            supplied.update(c.product_id for c in added)
+            new_pairs = [(c, "") for c in added]
+            for c, _r in new_pairs:
+                pool_index[c.product_id] = len(pool_index) + 1
+            ordered = ordered + new_pairs
+            tag_top(new_pairs, supply=True)
+            results, capped, diversity_skipped = select()
+            row.update(found=len(got), new_candidates=len(added), shown_after=len(results))
+            empty = 0 if added else empty + 1
+            if added:
+                paging.append((kind, text))  # page 2 of a variant that found something, last
+        info["shown_end"] = len(results)
+        if again is None:
+            thin_info = {
+                "before": start, "after": len(results), "asked_model": config.shop_model_queries,
+                "from_fallback": info["from_fallback"], "dropped": info["dropped"],
+                "note": info["note"],
+                "variants": [{k: r[k] for k in ("query", "found", "new_candidates", "error")}
+                             for r in log],
+            }  # fmt: skip
+
+    fill_batch()
     if (
         again is not None
         and len(results) < RESULT_COUNT
@@ -1907,8 +2107,12 @@ def run_query(
             "seller": by_seller,  # every seller in the batch, by canonical name
         }
         pool_known = composition_info.get("pool_after", {})
+        off_dims = {g["dimension"]: g for g in guard_state}
         for dim, cap_share in again.guard_caps.items():
             top = diversity.get(dim)
+            if dim in off_dims:
+                warnings.append(off_dims[dim]["message"])
+                continue
             if dim in again.typed_dims or top is None or top[1] <= cap_share:
                 continue  # a dimension the typed request names is not a thing to warn about
             label = dim.replace("_", " ")
@@ -1936,22 +2140,23 @@ def run_query(
     filtered_out = (
         counts.no_price + counts.out_of_range + counts.wrong_category + counts.price_outliers
     )
-    explanation = (
-        f"{counts.seen_excluded} seen or rated, {counts.duplicates} duplicates, "
-        f"{filtered_out} filtered out"
-    )
+    breakdown = filter_breakdown(counts, len(results), capped, diversity_skipped)
+    explanation = explain_breakdown(counts, filtered_out, breakdown)
+    phrase = fill_phrase(fill_info)
+    fill_note = (phrase[0].upper() + phrase[1:] + ". ") if phrase else ""
     exhausted: dict[str, Any] = {}
     if again is not None and len(results) < RESULT_COUNT:
         if results:
             warnings.append(
-                f"Only {len(results)} new results found: {explanation}. Try changing the request."
+                f"Only {len(results)} new results found: {explanation}. "
+                f"{fill_note}Try changing the request."
             )
         else:  # stage 2p: nothing unseen is left; say so plainly and keep the reason
             warnings.append(EXHAUSTED_MESSAGE)
             exhausted = {
                 "reason": explanation,
                 "seen_or_rated": counts.seen_excluded, "duplicates": counts.duplicates,
-                "filtered_out": filtered_out, "serper_calls": calls,
+                "filtered_out": filtered_out, "serper_calls": calls, "breakdown": breakdown,
                 "queries_used_before": len(again.skip_pages),
                 "writer_asked": bool(query_result and query_result.asked),
                 "writer_accepted": list(query_result.accepted) if query_result else [],
@@ -1961,15 +2166,18 @@ def run_query(
         why = ", ".join(
             f"{n} {what}"
             for n, what in (
-                (filtered_out, "filtered out by price or category"),
+                (breakdown["price"], "outside your price"),
+                (breakdown["category_or_size"], "the wrong category or size"),
+                (breakdown["price_outlier"], "priced implausibly low"),
                 (counts.duplicates, "duplicates"),
-                (capped, "held back by the per-seller cap"),
+                (breakdown["seller_cap"], "held back by the per-seller cap"),
+                (breakdown["diversity_guard"], "held back by diversity guards"),
             )
             if n
         )
         warnings.append(
             f"Only {len(results)} results matched" + (f" ({why})" if why else "")
-            + "; try broadening the request."
+            + f"; {phrase + '; ' if phrase else ''}try broadening the request."
         )  # fmt: skip
     elif not results:
         warnings.append("No results matched the filters. Try loosening the price or the wording.")
@@ -1992,13 +2200,21 @@ def run_query(
             "wanted": RESULT_COUNT, "got": len(results), "seen_or_rated": counts.seen_excluded,
             "rated": counts.rated_excluded, "duplicates": counts.duplicates,
             "filtered_out": filtered_out, "seller_capped": capped, "guarded": diversity_skipped,
-            "explanation": explanation,
+            "explanation": explanation, "breakdown": breakdown,
         }  # fmt: skip
         composition_info["refill"] = refill_log
         if typed_info:
             composition_info["typed"] = typed_info
         if cap_info:
             composition_info["seller_cap"] = cap_info
+        if fill_info:
+            composition_info["fill"] = fill_info
+        if early_stops:
+            composition_info["early_stops"] = early_stops
+        if guard_state:
+            composition_info["guards_off"] = guard_state
+        if again.refine is not None and again.refine.focus_pairs():
+            composition_info["focus_supply"] = focus_supply_info(ordered, results, again, tag_of)
         if outlier_info:
             composition_info["price_outliers"] = outlier_info
         if exhausted:
@@ -2101,6 +2317,7 @@ def run_query(
         composition=composition_info,
         trace={
             **({"thin": thin_info} if thin_info else {}),
+            **({"fill": fill_info} if fill_info and again is None else {}),
             **({"typed": typed_info} if typed_info and again is None else {}),
             **({"seller_cap": cap_info} if cap_info and again is None else {}),
             **({"price_outliers": outlier_info} if outlier_info and again is None else {}),
@@ -2255,6 +2472,113 @@ def _merged_tags(c: SearchCandidate, again: AgainContext) -> tuple[Mapping[str, 
     if got is not None:
         return got, "model"
     return title_tags(c.title), "keyword"
+
+
+def effective_guards(
+    ordered: list[tuple[SearchCandidate, str]],
+    guard_caps: dict[str, float],
+    tag_of: Callable[[SearchCandidate], Mapping[str, str | None]],
+) -> tuple[dict[str, float], list[dict[str, Any]]]:
+    """The diversity guards that still apply to this pool (stage 2r). A guard caps how much of a
+    batch one value of a dimension may take; when fewer than `GUARD_ALT_SUPPLY_MIN` unseen
+    candidates carry another value it can only shrink the batch, so it is switched off for that
+    dimension and the returned list says so (dimension, top value, how many carry another, the
+    sentence). A guard that would not bite (the top value fits its cap anyway) is left alone."""
+    caps: dict[str, float] = {}
+    off: list[dict[str, Any]] = []
+    for dim, share in guard_caps.items():
+        held: dict[str, int] = {}
+        for c, _ in ordered:
+            for v in tag_values(dim, tag_of(c).get(dim)):
+                if v != OTHER:
+                    held[v] = held.get(v, 0) + 1
+        if not held:
+            caps[dim] = share
+            continue
+        top = max(held, key=lambda v: held[v])
+        others = sum(held.values()) - held[top]
+        limit = int(share * RESULT_COUNT)
+        if others < GUARD_ALT_SUPPLY_MIN and held[top] > limit:
+            label = dim.replace("_", " ")
+            off.append(
+                {
+                    "dimension": dim, "top": top, "top_count": held[top], "alternatives": others,
+                    "cap": limit, "message": (
+                        f"Not mixing {label}: only {others} of the {len(ordered)} new candidates "
+                        f"are not {top}, so the {label} limit is off for this batch."
+                    ),
+                }
+            )  # fmt: skip
+        else:
+            caps[dim] = share
+    return caps, off
+
+
+def focus_supply_info(
+    ordered: list[tuple[SearchCandidate, str]],
+    results: list[ShopResult],
+    again: AgainContext,
+    tag_of: Callable[[SearchCandidate], Mapping[str, str | None]] | None,
+) -> dict[str, Any]:
+    """For each focus chip: how many unseen candidates that passed every filter match it (the
+    supply the selection could draw on), and how many of the batch do (stage 2r)."""
+    tags = tag_of if tag_of is not None else (lambda c: title_tags(c.title))
+    ids = {result_id(c.product_id): c for c, _ in ordered}
+    pairs = again.refine.focus_pairs() if again.refine is not None else []
+    return {
+        "unseen_pool": len(ordered),
+        "pairs": [
+            {
+                "dimension": d, "value": v,
+                "unseen_flagged": sum(1 for c, _ in ordered if _focus_holds(c, d, v, tags)),
+                "in_batch": sum(
+                    1 for r in results if r.id in ids and _focus_holds(ids[r.id], d, v, tags)
+                ),
+            }
+            for d, v in pairs
+        ],
+    }  # fmt: skip
+
+
+def supply_is_plentiful(
+    candidates: list[SearchCandidate], again: AgainContext, typed: list[TypedAttr]
+) -> tuple[bool, str]:
+    """Whether a Shop Again's optional searches can stop (stage 2r): at least `PLENTIFUL_UNSEEN`
+    unseen candidates pass the filters, and from them the typed quotas, the focus shares and the
+    diversity guards can still be met (judged on the tags the candidates carry now: the model's when
+    tagged, else the title keywords, so a quota the tags cannot show yet keeps the search going).
+    Returns (plentiful, the reason in words)."""
+    n = len(candidates)
+    if n < PLENTIFUL_UNSEEN:
+        return False, f"{n} unseen candidates, under {PLENTIFUL_UNSEEN}"
+
+    def tags_of(c: SearchCandidate) -> Mapping[str, str | None]:
+        return _merged_tags(c, again)[0]
+
+    tagged = [tags_of(c) for c in candidates]
+    want = typed_mod.target(RESULT_COUNT)
+    for attr in typed:
+        have = sum(1 for t in tagged if typed_mod.matches(t, attr))
+        if have < want:
+            return False, f"{attr.label}: {have} of the {want} wanted can be met so far"
+    if again.refine is not None:
+        reserve = math.ceil(REFINE_FOCUS_MIN_SHARE * RESULT_COUNT)
+        for dim, value in again.refine.focus_pairs():
+            have = sum(1 for c in candidates if _focus_holds(c, dim, value, tags_of))
+            if have < reserve:
+                return False, f"focus {value}: {have} of the {reserve} wanted can be met so far"
+    for dim, share in again.guard_caps.items():
+        if dim in again.typed_dims:
+            continue
+        held: dict[str, int] = {}
+        for t in tagged:
+            for v in tag_values(dim, t.get(dim)):
+                if v != OTHER:
+                    held[v] = held.get(v, 0) + 1
+        others = n - max(held.values(), default=0)
+        if others < RESULT_COUNT - int(share * RESULT_COUNT):
+            return False, f"{dim.replace('_', ' ')}: only {others} candidates of another value"
+    return True, f"{n} unseen candidates; the quotas, focus and guards can be met"
 
 
 def pool_composition(

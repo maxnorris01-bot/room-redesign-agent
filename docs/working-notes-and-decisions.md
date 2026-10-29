@@ -210,6 +210,13 @@ this choice over the alternatives. Note what's still open or deferred within it,
   the batch shown; the price guard needs three conditions (furniture, under 10% of the median, under $15). Found, not fixed:
   case-06's 14 results came from the shape diversity guard (todo). The attribute figure among decidable items is a secondary
   line; whether `cannot_tell` should count is Max's threshold decision. See `docs/sessions/2026-10-28-shop-fixes-2q.md`.
+- **2026-10-29, stage 2r (ADR 0012 amended): fixes from the first full 12-case run.** Decisions: a short batch triggers on the shown count and fills with
+  on-request variants, not on the raw pool; optional searches stop at 60 unseen candidates when the quotas can be met (the personalising
+  searches always run); the refine-focus check counts unseen candidates only, a measurement change with the threshold left at 0.5 and the
+  baseline document as the record of the old measure; a guard is off when fewer than 6 unseen candidates carry another value; a typed shape is a
+  quota (evidence is thinner than for colour: the judge does not say which attribute an item broke); a tagging call needs 8 s or is not started.
+  New behaviours are off in a bare Config and on from the environment (`APP_SHOP_THIN_VARIANTS`, `APP_SHOP_EARLY_STOP`), so older tests did not move.
+  The eval can record and replay Serper responses (gitignored); a replay is structural only. See `docs/sessions/2026-10-29-shop-fixes-2r.md`.
 
 ## See also
 

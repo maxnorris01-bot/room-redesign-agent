@@ -102,6 +102,7 @@ class ShopQuery(_Strict):
     material_terms: list[str] = []
     must_have: list[str] = []
     avoid: list[str] = []
+    shape_terms: list[str] = []  # stage 2r: shapes the request types ("round"): a quota, deletable
     # stage 2k: what the request says about the product's own colour, and about the setting
     color_terms: list[str] = []  # colour ids of the product itself ("navy_dark_blue")
     context: list[ContextItem] = []

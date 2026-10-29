@@ -531,10 +531,10 @@ def test_supply_stops_at_the_open_cap_of_six_calls_and_the_warning_has_real_coun
         len(search.calls) == 6 and outcome.serper_calls == 6
     )  # APP_SHOP_AGAIN_MAX_SERPER_CALLS_TOTAL
     assert outcome.serper_credits == 12  # the extra credits are reported
-    warning = next(w for w in outcome.warnings if "Could not keep shape mixed" in w)
-    assert "mostly rectangular" in warning and "6 searches were run" in warning
-    assert "The pool of 80 had 80 rectangular" in warning  # the real counts, after the supply step
-    assert outcome.composition["batch"]["shape"]["rectangular"] == 14  # held to the 60% cap
+    # stage 2r: after the supply searches found no other shape the guard is off, and says so
+    warning = next(w for w in outcome.warnings if "Not mixing shape" in w)
+    assert "only 0 of the 80 new candidates are not rectangular" in warning  # the real counts
+    assert outcome.composition["batch"]["shape"]["rectangular"] == 24  # the batch is full
 
 
 def test_the_open_call_cap_is_configurable_and_never_below_the_normal_cap(

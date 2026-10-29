@@ -54,6 +54,16 @@ def main(argv: list[str] | None = None) -> int:
     rj.add_argument("--results", type=Path, required=True, help="the saved results file")
     rj.add_argument("--rounds", default="1,2,3", help="comma-separated rounds (default 1,2,3)")
     rj.add_argument("--cases", default="", help="comma-separated case ids (default: all)")
+    lint = sub.add_parser("lint", help="list anomalies in a saved results file (zero spend)")
+    lint.add_argument("--results", type=Path, required=True)
+    lift = sub.add_parser("lift", help="offline lift diagnosis of a saved results file")
+    lift.add_argument("--results", type=Path, required=True)
+    lift.add_argument("--out", type=Path, default=None)
+    replay = sub.add_parser(
+        "replay",
+        help="structural check against saved Serper responses; mock model and judges, zero spend",
+    )
+    replay.add_argument("--case", action="append", default=[], help="only these case ids")
     rep = sub.add_parser("report", help="render a Markdown report from a results file")
     rep.add_argument("results", nargs="?", type=Path, help="default: the newest results file")
     rep.add_argument("--out", type=Path, default=None, help="write here instead of stdout")
@@ -75,6 +85,29 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "rejudge":
         return rejudge_command(args, cases)
+    if args.command == "lint":
+        from evals.shop.lint import lint_file
+
+        if not args.results.is_file():
+            print(f"no such results file: {args.results}", file=sys.stderr)
+            return 2
+        print(lint_file(args.results))
+        return 0
+    if args.command == "lift":
+        from evals.shop.diagnose_lift import render_file as lift_text
+
+        if not args.results.is_file():
+            print(f"no such results file: {args.results}", file=sys.stderr)
+            return 2
+        text = lift_text(args.results)
+        if args.out:
+            args.out.write_text(text + "\n")
+            print(f"wrote {args.out}")
+        else:
+            print(text)
+        return 0
+    if args.command == "replay":
+        return replay_command(cases)
     if args.command == "report":
         path = args.results or _newest()
         if path is None:
@@ -94,7 +127,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\nREFUSED: {why}", file=sys.stderr)
             return 2
         load_env()
-    env = build_env(args.command)
+    try:
+        env = build_env(args.command)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     payload = run_all(cases, env, progress=lambda m: print(m, flush=True))
     path = write_results(payload)
     print(json.dumps({"verdict": payload["verdict"], "totals": payload["totals"]}, indent=2))
@@ -107,6 +144,32 @@ def main(argv: list[str] | None = None) -> int:
             else 1
         )
     return 0 if payload["verdict"]["status"] == "pass" else 1
+
+
+def replay_command(cases: list[Case], cache_dir: Path | None = None) -> int:
+    """Zero spend: the saved Serper responses, the mock model, persona and judges."""
+    from evals.shop.cache import CACHE_DIR, EMPTY_HELP, cache_entries
+    from evals.shop.structural import EMPTY_MESSAGE, render
+
+    folder = cache_dir or CACHE_DIR
+    if cache_entries(folder) == 0:
+        print(f"{EMPTY_MESSAGE}\n({EMPTY_HELP}; looked in {folder})", file=sys.stderr)
+        return 2
+    env = build_env("mock", serper_cache="replay", cache_dir=folder)
+    payload = run_all(cases, env, progress=lambda m: print(m, flush=True))
+    print()
+    print(render(payload))
+    missing = list(env.cache.missing) if env.cache is not None else []
+    if missing:
+        print(
+            f"\n{len(missing)} request(s) were not in the saved responses; run a live eval once "
+            "with recording so they are saved:",
+            file=sys.stderr,
+        )
+        for text in dict.fromkeys(missing):
+            print(f"  - {text}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def rejudge_command(args: argparse.Namespace, cases: list[Case]) -> int:

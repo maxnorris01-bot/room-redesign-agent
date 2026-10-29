@@ -5,7 +5,9 @@ or a finish makes those attributes quotas, not hints. At least `TYPED_MATCH_MIN_
 must match by the best tag the item has (a photo tag when there is one, else the title tag), where
 tagged supply exists. An untagged item, or one whose tag is `other`, does not match. When the pool
 cannot supply enough, the shortfall is reported in the trace and in a banner naming the attribute.
-Match rules (what "navy" or "dark blue" accepts) live in `app.shop.vocab`.
+Match rules (what "navy" or "dark blue" accepts) live in `app.shop.vocab`. Since stage 2r a typed
+shape ("round") is a quota too, with a rule that accepts that shape only (oval, square and
+rectangular stay separate).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from app.shop.vocab import COLOR_LABELS, title_value, typed_values
 COLOR_DIM = "color"
 MATERIAL_DIM = "material"
 FINISH_DIM = "color_finish"
+SHAPE_DIM = "shape"
 Tags = Mapping[str, str | None]
 
 
@@ -65,6 +68,10 @@ def typed_attributes(query: ShopQuery) -> list[TypedAttr]:
             material_words.append(term)
     if material_values:  # "wood and metal": an item made of either matches
         add(MATERIAL_DIM, " or ".join(material_words), frozenset(material_values))
+    shapes = [t for t in query.shape_terms if typed_values(SHAPE_DIM, t)]
+    if shapes:  # "round or oval": an item of either shape matches
+        values = frozenset(v for t in shapes for v in typed_values(SHAPE_DIM, t))
+        add(SHAPE_DIM, " or ".join(shapes), values)
     finish = title_value(FINISH_DIM, query.request)
     if finish:
         words = re.findall(r"[a-z]+", finish)

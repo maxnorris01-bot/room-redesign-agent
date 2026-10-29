@@ -138,7 +138,8 @@ class Config:
     shop_prep_enabled: bool = False  # off for a bare Config (tests); `from_env` turns it on
     shop_near_duplicates: bool = False  # stage 2n: collapse the same product from other vendors
     shop_photo_tag_top_n: int = 0  # stage 2p: candidates tagged from their photo (off bare; env 36)
-    shop_thin_variants: bool = False  # stage 2p: variant searches when a typed search is thin
+    shop_thin_variants: bool = False  # stage 2p, 2r: the fill loop (variant searches, short batch)
+    shop_early_stop: bool = False  # stage 2r: skip optional searches when the pool is plentiful
     shop_gallery: bool = False  # stage 2o: "More photos" (dormant: the lookup takes seconds)
     shop_auto_lookups: bool = (
         False  # stage 2o: resolve loved and liked items ahead (off bare; env on)
@@ -313,6 +314,8 @@ class Config:
             not in ("0", "false", "no"),
             shop_photo_tag_top_n=int(os.environ.get("APP_SHOP_PHOTO_TAG_TOP_N", "36")),
             shop_thin_variants=os.environ.get("APP_SHOP_THIN_VARIANTS", "1").strip()
+            not in ("0", "false", "no"),
+            shop_early_stop=os.environ.get("APP_SHOP_EARLY_STOP", "1").strip()
             not in ("0", "false", "no"),
             shop_gallery=os.environ.get("APP_SHOP_GALLERY", "0").strip().lower()
             in ("1", "true", "yes"),

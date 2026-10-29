@@ -16,6 +16,7 @@ reason. A case that raises is recorded as failed with its error and the run goes
 from __future__ import annotations
 
 import dataclasses
+import os
 import secrets
 import shutil
 import tempfile
@@ -34,6 +35,7 @@ from app.shop.store import SessionStore
 from app.shopping import ProductLookup, SearchProvider
 from app.thumbnails import Thumbnailer, build_thumbnailer
 from evals.shop import scorers as sc
+from evals.shop.cache import CACHE_DIR, CacheStats, CachingSerper, cache_mode
 from evals.shop.coverage import category_findings
 from evals.shop.evaluate import evaluate, verdict
 from evals.shop.judges import Caller, JudgeItem, ModelJudge
@@ -91,6 +93,7 @@ class Env:
     state: RunState
     make_providers: Callable[[Case], tuple[SearchProvider, ProductLookup]]
     notes: list[str] = field(default_factory=list)
+    cache: CacheStats | None = None  # stage 2r: the Serper record/replay cache (eval only)
 
 
 def eval_config(mode: str) -> Config:
@@ -100,18 +103,40 @@ def eval_config(mode: str) -> Config:
     return dataclasses.replace(base, llm_mode=mode, shop_auto_lookups=False, shop_gallery=False)
 
 
-def build_env(mode: str, caller: Caller | None = None, config: Config | None = None) -> Env:
+def build_env(
+    mode: str,
+    caller: Caller | None = None,
+    config: Config | None = None,
+    serper_cache: str | None = None,
+    cache_dir: Path = CACHE_DIR,
+) -> Env:
+    """`serper_cache` is a mode from `evals.shop.cache` (default: `EVAL_SHOP_SERPER_CACHE`, which is
+    `record` for a live run and `off` otherwise). Mock runs ignore it unless it is `replay`."""
     config = config or eval_config(mode)
     thumbnailer = build_thumbnailer(config)
     judge = ModelJudge(config, thumbnailer, **({"caller": caller} if caller else {}))
     thresholds = load_thresholds()
 
+    chosen = serper_cache or cache_mode(os.environ, "record" if mode == "live" else "off")
+    stats = CacheStats(mode=chosen) if chosen != "off" else None
+
     def providers(case: Case) -> tuple[SearchProvider, ProductLookup]:
+        if stats is not None and chosen == "replay":
+            key = ""  # a replay sends nothing
+            return CachingSerper(
+                key, stats, cache_dir, config.serper_credits_per_call
+            ), ShopFixtureLookup()
         if mode == "mock":
             return RouterSearch(fixture_case=case.fixture != "generic"), ShopFixtureLookup()
-        return build_shop_providers(config)
+        search, lookup = build_shop_providers(config)
+        if stats is not None and search.name == "serper":
+            key = os.environ.get("SERPER_API_KEY", "")
+            search = CachingSerper(key, stats, cache_dir, config.serper_credits_per_call)
+        return search, lookup
 
-    return Env(mode, config, thumbnailer, judge, RunState(thresholds), providers)
+    env = Env(mode, config, thumbnailer, judge, RunState(thresholds), providers)
+    env.cache = stats
+    return env
 
 
 def product_color_row(
@@ -196,6 +221,7 @@ def trace_summary(view: dict[str, Any]) -> dict[str, Any]:
             if k in batch
         },
         "seller_cap": trace.get("seller_cap") or batch.get("seller_cap"),
+        "fill": trace.get("fill") or batch.get("fill"),
         "price_outliers": trace.get("price_outliers") or batch.get("price_outliers"),
     }  # fmt: skip
 
@@ -207,6 +233,14 @@ def search_texts(view: dict[str, Any]) -> list[str]:
     if s.get("used_query"):
         texts.append(s["used_query"]["search_text"])
     return [t for t in texts if t]
+
+
+def unseen_focus_supply(view: dict[str, Any]) -> int | None:
+    """The pipeline's own count of unseen candidates, past every filter, that match the shopper's
+    focus (the first focus chip), or None when it did not report one (stage 2r)."""
+    supply = ((view["search"].get("trace") or {}).get("batch") or {}).get("focus_supply") or {}
+    pairs = supply.get("pairs") or []
+    return int(pairs[0]["unseen_flagged"]) if pairs else None
 
 
 def judge_items(listings: list[sc.Listing]) -> list[JudgeItem]:
@@ -236,7 +270,8 @@ def play_round(
         seconds=float(s["seconds"]["total"]),
     )  # fmt: skip
     pipeline_anthropic = float(s["anthropic_usd"])
-    env.state.add(pipeline_anthropic, float(s["serper_credits"]))
+    saved = env.cache.take_saved() if env.cache is not None else 0.0  # cache hits cost nothing
+    env.state.add(pipeline_anthropic, max(0.0, float(s["serper_credits"]) - saved))
 
     spent_before = env.judge.stats.cost_usd
     items = judge_items(listings)
@@ -306,7 +341,9 @@ def play_round(
         if step.effect == "exclude_seller":
             refine["exclusion"] = sc.exclusion_respected(listings, step.sellers)
         else:
-            refine["focus"] = sc.focus_share(listings, step.title_term, seen_titles)
+            refine["focus"] = sc.focus_share(
+                listings, step.title_term, seen_titles, unseen_focus_supply(view)
+            )
         row["refine"] = refine
     return row, batch
 
@@ -468,6 +505,7 @@ def run_all(
         "checks": checks,
         "verdict": verdict(results, checks, stopped),
         "notes": env.notes,
+        "serper_cache": env.cache.as_dict() if env.cache is not None else {"mode": "off"},
     }
 
 

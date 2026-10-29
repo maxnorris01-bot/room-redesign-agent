@@ -1037,6 +1037,7 @@ def run_checks(
             run_open(browser, base8, shots, console_errors)
             run_dry(browser, scenarios, shots, console_errors)
             run_fixes_2q(browser, scenarios, shots, console_errors)
+            run_fixes_2r(browser, scenarios, shots, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -1363,6 +1364,85 @@ def run_fixes_2q(
     name, share = seller_share(page)
     check(share <= 0.30, f"no seller above 30% of the batch ({name} {share:.0%})")
     shoot(page, "85-relaxed-cap", "#status")
+    context.close()
+
+
+def run_fixes_2r(
+    browser: Any, bases: dict[str, str], shots: Path, console_errors: list[str]
+) -> None:
+    """Stage 2r: the fill loop's stop reason, the filtered-out breakdown, a guard switched off, and
+    a typed shape quota with a deletable chip (mock scenarios `narrow`, `flat`, `roundshort`)."""
+    print("stage 2r: fill stop reason, breakdown, guard off, typed shape")
+
+    def shoot(page: Page, name: str, locator: str) -> None:
+        box = page.locator(locator).first
+        box.screenshot(path=str(shots / f"{name}.png"))
+        page.emulate_media(color_scheme="dark")
+        box.screenshot(path=str(shots / f"{name}-dark.png"))
+        page.emulate_media(color_scheme="light")
+        page.set_viewport_size({"width": 390, "height": 844})
+        box.scroll_into_view_if_needed()
+        box.screenshot(path=str(shots / f"{name}-mobile.png"))
+        check(
+            page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+            f"no sideways scroll at 390 px ({name})",
+        )
+        page.set_viewport_size({"width": 1280, "height": 900})
+
+    context, page = new_page(browser, bases["narrow"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, "dining chairs under $150")
+    status = page.locator("#status").inner_text()
+    check(
+        "outside your price" in status and "more variants (stopped:" in status,
+        f"the first search says what removed results and why the fill stopped: {status[:170]!r}",
+    )
+    shoot(page, "86-fill-stop", "#status")
+    rate_nth(page, 0, "love")
+    page.click("#shop-again")
+    wait_for_results(page)
+    status = page.locator("#status").inner_text()
+    check(
+        "new results (" in status
+        and "held back by the seller cap" in status
+        and "more variants (stopped:" in status,
+        f"a short Shop Again lists the causes and the fill stop: {status[:200]!r}",
+    )
+    shoot(page, "87-breakdown", "#status")
+    context.close()
+
+    context, page = new_page(browser, bases["flat"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, "area rugs")
+    rate_nth(page, 0, "love")
+    page.click("#shop-again")
+    wait_for_results(page)
+    status = page.locator("#status").inner_text()
+    check(
+        re.search(r"Not mixing shape: only 0 of the \d+ new candidates are not rect", status)
+        is not None,
+        f"the guard-off notice: {status[:160]!r}",
+    )
+    check("Could not keep shape" not in status, "no misleading 'could not keep' for it")
+    check(page.locator("#grid .card").count() > 0, "the batch is shown")
+    shoot(page, "88-guard-off", "#status")
+    context.close()
+
+    context, page = new_page(browser, bases["roundshort"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    search(page, "round black metal side tables")
+    status = page.locator("#status").inner_text()
+    check(
+        re.search(r"Only \d+ of \d+ results match your shape round: the pool had \d+", status)
+        is not None,
+        f"the typed shape banner: {status[:140]!r}",
+    )
+    chip = page.locator("#chips .chip.ctx", has_text="Shape")
+    check(chip.count() == 1 and chip.locator(".x").count() == 1, "the shape chip can be deleted")
+    shoot(page, "89-typed-shape", "#status")
+    chip.locator(".x").click()
+    chip.wait_for(state="detached", timeout=10000)
+    check(page.locator("#chips .chip.ctx", has_text="Shape").count() == 0, "deleting removes it")
     context.close()
 
 
@@ -1869,6 +1949,9 @@ def main() -> int:
         tempfile.TemporaryDirectory() as dir_dry,
         tempfile.TemporaryDirectory() as dir_navy,
         tempfile.TemporaryDirectory() as dir_heavy,
+        tempfile.TemporaryDirectory() as dir_narrow,
+        tempfile.TemporaryDirectory() as dir_flat,
+        tempfile.TemporaryDirectory() as dir_roundshort,
     ):
         try:
             first, port = start_server(data_dir, {"APP_SHOP_GALLERY": "1"})
@@ -1895,13 +1978,24 @@ def main() -> int:
             servers.append(seventh)
             eighth, port8 = start_server(data_dir8)
             servers.append(eighth)
-            scenario_dirs = {"thin": dir_thin, "dry": dir_dry, "navy": dir_navy, "heavy": dir_heavy}
+            scenario_dirs = {
+                "thin": dir_thin,
+                "dry": dir_dry,
+                "navy": dir_navy,
+                "heavy": dir_heavy,
+                "narrow": dir_narrow,
+                "flat": dir_flat,
+                "roundshort": dir_roundshort,
+            }
             scenario_ports: dict[str, str] = {}
             for name, extra in (
                 ("thin", {"APP_SHOP_MODEL_QUERIES": "0"}),
                 ("dry", {"APP_SHOP_MODEL_QUERIES": "0", "APP_SHOP_THIN_VARIANTS": "0"}),
                 ("navy", {}),
                 ("heavy", {"APP_SHOP_MODEL_QUERIES": "0", "APP_SHOP_THIN_VARIANTS": "0"}),
+                ("narrow", {"APP_SHOP_MODEL_QUERIES": "0"}),
+                ("flat", {"APP_SHOP_MODEL_QUERIES": "0"}),
+                ("roundshort", {"APP_SHOP_MODEL_QUERIES": "0"}),
             ):
                 server_n, port_n = start_server(
                     scenario_dirs[name], {"APP_SHOP_MOCK_SCENARIO": name, **extra}

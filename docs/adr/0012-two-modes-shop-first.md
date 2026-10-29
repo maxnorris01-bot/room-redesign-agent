@@ -283,6 +283,11 @@ eval to tune):
 | PHOTO_TAG_BATCH | 12 | candidates per photo tagging call (stage 2p) |
 | PHOTO_TAG_WORKERS | 3 | photo tagging calls at once (stage 2p) |
 | PHOTO_TAG_BUDGET_S | 6.0 | seconds allowed for the photo tagging step; candidates not done keep their title tags and the trace says so (stage 2p; judgment) |
+| FIRST_SEARCH_MAX_CALLS | 4 | Serper calls a first search may make in all, the fill loop's variants included: two pages and two variants, 8 credits as before (stage 2r; judgment) |
+| FILL_EMPTY_STREAK_MAX | 2 | the fill loop stops after this many extra searches in a row that add no new candidate surviving the filters (stage 2r; judgment) |
+| PLENTIFUL_UNSEEN | 60 | a Shop Again skips its optional searches (profile phrasings, non-liked peers, extra pages, supply) once this many unseen candidates pass the filters and the typed quotas, the focus shares and the guards can be met from them (stage 2r; judgment) |
+| GUARD_ALT_SUPPLY_MIN | 6 | a diversity guard is off for a dimension when fewer unseen candidates than this carry another value than the pool's top one and the guard would otherwise cut the batch; the trace and a message say so (stage 2r; judgment) |
+| MIN_TAG_CALL_TIMEOUT_S | 8.0 | the shortest timeout a candidate or photo tagging call is given; a call that cannot have it (the budget or the hard stop leaves less) is not started, and a call that timed out is retried once only when this much remains (stage 2r; judgment) |
 | PHOTO_IMAGE_WAIT_S | 2.0 | seconds the photo step waits for thumbnails that are not cached yet, before the calls' budget clock starts (stage 2q; judgment) |
 | PHOTO_FIRST_WAVE_GRACE_S | 4.0 | a first-wave photo call that started inside the budget may finish this long after it, never past the hard stop (stage 2q; judgment) |
 | PHOTO_RETRY_MIN_LEFT_S | 2.0 | a failed photo call is retried once only when at least this much of the budget remains (stage 2q; judgment) |
@@ -1137,3 +1142,52 @@ the `cannot_tell` count; the verdict number still counts `cannot_tell` as a miss
 a case including Serper, 24 credits); case-04 ($0.0489) is 2.2% under the $0.05 threshold.
 
 Not done and open: no live run has checked any of this; the diversity guard; the judge's calibration; repeated runs.
+
+## Amendment, stage 2r (2026-10-29): fixes from the first full 12-case run
+
+Evidence: `docs/evals/shop-eval-full-run-2026-10-29.md` and `docs/evals/shop-lift-diagnosis-2026-10-29.md` (one run; nothing replaces the
+baseline). Thresholds and `thresholds.json` were left as they were.
+
+Fill loop. The pre-rank "thin first search" block, which looked at the pool size, is replaced by a loop after the first full selection, for a
+first search and a Shop Again alike. When fewer than 24 results are actually selected (after filters, de-duplication, near-duplicate
+collapse, seller caps, guards and typed quotas) and Serper budget remains, it runs the writer's variants (`shop_queries` v4, every hard
+word kept), then neutral fillers, then page 2 of a variant that found something, and selects again after each. It stops when the batch is
+full, at the call cap (a Shop Again's 9; a first search's `FIRST_SEARCH_MAX_CALLS` = 4), after `FILL_EMPTY_STREAK_MAX` (2) searches in a row
+that add no new candidate surviving the filters, or at the hard stop. Every step (kind, query, page, found, new, shown before and after) and the
+stop reason are in the trace and "How I decided". "N filtered out" is broken into price, category or size, implausible price, seen or
+rated, duplicate, seller cap, diversity guard and other (the remainder, so the parts sum to what the searches returned). An exhausted pool
+still says so. The loop is gated by `shop_thin_variants` (off in a bare Config, on from the environment), for both searches.
+
+Early stop. A Shop Again's planned searches run in an order: the typed query and the liked-seller searches (with the writer beside them), the
+writer's variants, then the optional ones (the profile's other phrasings, retailers that are not liked sellers, supply searches). Before the
+optional ones it stops if at least `PLENTIFUL_UNSEEN` (60) unseen candidates pass the filters and the typed quotas, the focus shares and the
+guards can be met from them (judged on the tags they carry now, so a quota that cannot yet be shown keeps the search going). Gated by
+`shop_early_stop` (off bare, on from the environment). The 9-call cap is unchanged.
+
+Refine focus supply (a measurement change after the baseline, threshold 0.5 unchanged). `supply` used to mean a title already shown in an
+earlier round carried the focus word, which counts items that cannot be shown again. It now means the pipeline's own count of unseen
+candidates, past every filter, that match the focus (`trace.batch.focus_supply`), and a round is scored only when that count covers the quota
+the focus reserves, ceil(0.5 x the batch). Results from before keep the old reading, marked `measure: seen titles`. On the saved full run
+the case-10 round 3 (9 shown, 1 hit, 0.111) is no longer scored and the check reads 0.609, a pass. Variants keep the words of an active focus
+chip or note.
+
+Diversity guards. A guard is switched off for a dimension when fewer than `GUARD_ALT_SUPPLY_MIN` (6) unseen candidates carry another value than the
+pool's top one and the guard would otherwise cut the batch; the trace (`guards_off`) and a message say so. With alternatives the guard is
+fully active. A typed shape ("round black metal side tables") is now a 70% quota like a typed colour, material or finish (a rule that accepts
+that shape only), with the same shortfall banner and a deletable chip (`ShopQuery.shape_terms`). The saved case-09 first batch (5 outright
+"no" answers) had colour and material enforced and no shape quota; the judge's answers do not say which attribute each item broke, so the
+evidence for the shape quota is that shape was the only typed attribute without one and 3 of the 5 titles never say "round".
+
+Tagging timeout. A candidate or photo tagging call is never given less than `MIN_TAG_CALL_TIMEOUT_S` (8 s) and is not started when the budget or
+the hard stop leaves less; a timed-out call is retried once when that much remains. (The case-04 "APITimeoutError after 1.0 s" was a queued call
+given the one second that was left.)
+
+Eval-only tools. `EVAL_SHOP_SERPER_CACHE` (record, use, replay, off) saves and replays Serper responses under the gitignored
+`evals/shop/cache/serper/` (never headers or keys; entries older than 14 days are ignored; the app never reads it); the results file and the
+report state the mode, hits, misses and credits saved and say "cached pool, not a fresh-world run" when there were hits. `make eval-shop-replay`
+is a zero-spend structural check on the saved responses with the mock model; `make eval-shop-lint` lists anomalies in a saved results file;
+`python -m evals.shop lift` is the offline lift diagnosis. `plan.py` uses the full run's measured costs ($0.0325 a case including Serper, 19
+credits, $0.00045 a judge call).
+
+Not done and open: nothing here has been checked live; the diversity guard still counts the "other" value in its warnings; judge calibration
+against human labels; repeated runs; manual Open under the session lock; rug sizes from the product page.

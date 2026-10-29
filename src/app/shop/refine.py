@@ -39,7 +39,7 @@ from app.shop.thresholds import (
     REFINE_MAX_CHIPS,
     REFINE_MAX_PER_SUBMIT,
 )
-from app.shop.vocab import DIMENSIONS, OTHER, normalize
+from app.shop.vocab import COLOR_LABELS, DIMENSIONS, OTHER, normalize
 
 REFINE_TOOL = "record_refinements"
 REFINE_MAX_TOKENS = 500
@@ -307,6 +307,14 @@ class RefineSet:
             *(("seller", seller_key(n)) for n in self.focus_sellers),
             *(("note", cid) for cid in self.focus_notes),
         ]
+
+    def focus_words(self) -> list[str]:
+        """The words of every active "focus on" chip and focus note (stage 2r): a search variant
+        written for a short batch must keep them, or its results cannot serve the focus."""
+        words = list(self.focus_notes.values())
+        for _dim, value in self.focus_values:
+            words.append(COLOR_LABELS.get(value, value.replace("_", " ").replace("-", " ")))
+        return [w for w in dict.fromkeys(" ".join(x.split()) for x in words) if w]
 
     def note_specs(self) -> list[tuple[str, str]]:
         """(chip id, phrase) of every active free note, at most `FREE_NOTES_MAX`: what the tagging

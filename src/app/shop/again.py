@@ -435,6 +435,7 @@ def _query_input(
         existing=[*planned, *(p[2] for p in ctx.peer_queries)],
         setting=setting_lines(adjusted),
         used=used_queries(session), seen=len(session.results), rated=len(rows),
+        focus_words=ctx.refine.focus_words() if ctx.refine is not None else [],
     )  # fmt: skip
 
 
@@ -564,6 +565,7 @@ def run_shop_again(
     qinput = _query_input(session, base, query, profile, ctx, queries)
     if qinput is not None:
         qinput.setting += writer_lines(rs)
+    ctx.query_input = qinput
     if config.shop_model_queries and qinput is not None:
         ctx.query_writer = partial(variant_queries, qinput, budget, config)
     ctx.clock, ctx.progress, ctx.hard_stop_at = clock, progress, started + config.shop_hard_stop_s

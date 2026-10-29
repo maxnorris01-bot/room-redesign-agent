@@ -182,6 +182,7 @@
     if (price) add('Price', price);
     q.style_terms.forEach(function (t) { add('Style', t); });
     q.material_terms.forEach(function (t) { ctxChip('Material', t, 'material', t, ''); });
+    (q.shape_terms || []).forEach(function (t) { ctxChip('Shape', t, 'shape_term', t, ''); });
     q.must_have.forEach(function (t) { add('Must have', t); });
     q.avoid.forEach(function (t) { add('Avoid', t, 'avoid'); });
     (q.color_terms || []).forEach(function (c) { ctxChip('Color', colorName(c), 'color_term', colorName(c), ''); });
@@ -506,6 +507,29 @@
     }
     if (mq && mq.note) {
       box.appendChild(h('p', { class: 'why-line' }, [mq.note]));
+    }
+    if (b.fill && b.fill.steps && b.fill.steps.length) {
+      b.fill.steps.forEach(function (x) {
+        box.appendChild(h('p', { class: 'why-line' }, [
+          'Fill search (' + x.kind + ') "' + x.query + '" page ' + x.page + ', found ' + x.found + ', ' +
+          x.new_candidates + ' new; shown ' + x.shown_before + ' to ' + x.shown_after +
+          (x.error ? ' (' + x.error + ')' : '') + '.'
+        ]));
+      });
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Fill stopped: ' + b.fill.stop + ' (' + b.fill.shown_start + ' shown before, ' + b.fill.shown_end + ' after).'
+      ]));
+    } else if (b.fill && b.fill.stop) {
+      box.appendChild(h('p', { class: 'why-line' }, ['Fill did not run: ' + b.fill.stop + '.']));
+    }
+    var bd = b.shortfall && b.shortfall.breakdown;
+    if (bd) {
+      box.appendChild(h('p', { class: 'why-line' }, [
+        'Where the ' + bd.returned + ' candidates went: shown ' + bd.shown + ', price ' + bd.price +
+        ', category or size ' + bd.category_or_size + ', implausible price ' + bd.price_outlier +
+        ', seen or rated ' + bd.seen_or_rated + ', duplicates ' + bd.duplicate + ', seller cap ' + bd.seller_cap +
+        ', diversity guards ' + bd.diversity_guard + ', other ' + bd.other + '.'
+      ]));
     }
     if (b.seller_cap) {
       var capSteps = (b.seller_cap.steps || []).map(function (x) {

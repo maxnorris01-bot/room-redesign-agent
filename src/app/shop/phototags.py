@@ -35,6 +35,7 @@ from app.shop.candidates import (
 from app.shop.clock import Clock
 from app.shop.progress import Timeline
 from app.shop.thresholds import (
+    MIN_TAG_CALL_TIMEOUT_S,
     PHOTO_CACHE_MAX,
     PHOTO_FIRST_WAVE_GRACE_S,
     PHOTO_IMAGE_WAIT_S,
@@ -211,7 +212,7 @@ def photo_tag_top(
         grace_end = deadline + PHOTO_FIRST_WAVE_GRACE_S
         if hard_end is not None:
             grace_end = min(grace_end, hard_end)
-        no_time = hard_end is not None and hard_end - calls_at <= 0.2
+        no_time = hard_end is not None and hard_end - calls_at < MIN_TAG_CALL_TIMEOUT_S
         first_wave = PHOTO_TAG_WORKERS
 
         def one(
@@ -233,14 +234,20 @@ def photo_tag_top(
                 end = grace_end if n < first_wave else deadline
                 rows, entry = run_call(
                     batch, book, budget, MODE_TOOL, attempt > 0, clock,
-                    max(1.0, min(config.shop_tag_call_timeout_s, end - time.monotonic())),
+                    max(
+                        MIN_TAG_CALL_TIMEOUT_S,
+                        min(config.shop_tag_call_timeout_s, end - time.monotonic()),
+                    ),
                     images={c.id: images[c.id] for c in batch} if batch[0].id in images else None,
                     timeline=timeline,
                 )  # fmt: skip
                 failed = bool(entry["error"]) or not rows
                 if not failed or attempt > 0 or closed.is_set():
                     return batch, rows, failed, True
-                if deadline - time.monotonic() < PHOTO_RETRY_MIN_LEFT_S:
+                if (
+                    deadline - time.monotonic() < PHOTO_RETRY_MIN_LEFT_S
+                    or end - time.monotonic() < MIN_TAG_CALL_TIMEOUT_S
+                ):
                     return batch, rows, failed, True
                 attempt += 1
                 with book.lock:

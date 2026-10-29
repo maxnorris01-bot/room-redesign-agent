@@ -306,9 +306,11 @@ def test_the_tagging_budget_ends_the_work_and_the_rest_stays_unknown(
     use_client(monkeypatch, client)
     book = TagBook()
     tag_results(taggables(200), book, Budget(config()), clock, workers=1)  # five batches of 40
-    assert book.calls == 3 and book.tagged == 120  # calls at 0, 6 and 12 s; none after 15 s
-    assert book.skipped == 80 and all(book.get(f"r{i}") is None for i in range(120, 200))
-    assert clock.now() - 1000.0 == pytest.approx(18.0)  # three calls, then it stopped
+    # stage 2r: a call needs at least MIN_TAG_CALL_TIMEOUT_S (8 s) left, so the call at 12 s (3 s of
+    # budget left) is not started: calls at 0 and 6 s only
+    assert book.calls == 2 and book.tagged == 80
+    assert book.skipped == 120 and all(book.get(f"r{i}") is None for i in range(80, 200))
+    assert clock.now() - 1000.0 == pytest.approx(12.0)  # two calls, then it stopped
 
 
 def test_the_hard_stop_shortens_the_tagging_deadline_and_the_request_timeout(
@@ -325,9 +327,12 @@ def test_the_hard_stop_shortens_the_tagging_deadline_and_the_request_timeout(
     monkeypatch.setattr(candidates_mod, "complete", spy)
     use_client(monkeypatch, RouterClient())
     tag_results(
-        taggables(5), TagBook(), Budget(config()), clock, workers=1, until=clock.now() + 4.5
+        taggables(5), TagBook(), Budget(config()), clock, workers=1, until=clock.now() + 9.5
     )
-    assert seen == [4.5]  # never longer than the time left (12 s per call otherwise)
+    assert seen == [9.5]  # never longer than the time left (12 s per call otherwise)
+    short = TagBook()  # stage 2r: under the 8 s minimum nothing is started (it would only time out)
+    tag_results(taggables(5), short, Budget(config()), clock, workers=1, until=clock.now() + 4.5)
+    assert short.calls == 0 and short.skipped == 5 and seen == [9.5]
     late = TagBook()
     tag_results(taggables(5), late, Budget(config()), clock, workers=1, until=clock.now() - 1)
     assert late.calls == 0 and late.skipped == 5  # already past the stop: nothing is sent

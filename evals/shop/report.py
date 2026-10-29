@@ -123,6 +123,50 @@ def decidable_section(data: dict[str, Any]) -> list[str]:
     return out + [""]
 
 
+def cache_section(data: dict[str, Any]) -> list[str]:
+    """The Serper cache the run used (stage 2r): mode, hits, misses and credits saved."""
+    cache = data.get("serper_cache") or {}
+    if cache.get("mode") in (None, "off"):
+        return []
+    out = ["", "## Serper cache", "",
+           f"- Mode {cache['mode']}: {cache.get('hits', 0)} hits, {cache.get('misses', 0)} misses, "
+           f"{cache.get('recorded', 0)} responses saved, {cache.get('credits_saved', 0):.0f} credits saved "
+           f"(spent {data['totals']['serper_credits']:.0f})"]  # fmt: skip
+    if cache.get("hits"):
+        out.append(
+            "- **Cached pool, not a fresh-world run.** The searches returned saved responses; "
+            "the verdict logic is unchanged, but the pool the pipeline saw is not today's."
+        )
+    if cache.get("missing"):
+        out.append(f"- {len(cache['missing'])} request(s) were not in the saved responses.")
+    return out
+
+
+def measurement_notes(data: dict[str, Any]) -> list[str]:
+    """Where a scorer's measurement differs from the baseline's (stage 2r), said in the footer."""
+    focus = [
+        rd["refine"]["focus"]
+        for c in data["cases"] for rd in c.get("rounds", [])
+        if rd.get("refine") and rd["refine"].get("focus")
+    ]  # fmt: skip
+    if not focus:
+        return []
+    kinds = {f.get("measure", "seen titles") for f in focus}
+    out = ["", "## Measurement notes", ""]
+    if "unseen" in kinds:
+        out.append("- Refine focus: supply is the pipeline's count of unseen candidates that matched the "
+                   "focus and passed every filter, and a round is scored only when that count covers the "
+                   "quota the focus reserves (ceil(0.5 x the batch)). The baseline counted any title "
+                   "already shown, which includes items that cannot be shown again; the threshold (0.5) "
+                   "is unchanged. Stage 2r.")  # fmt: skip
+    if "seen titles" in kinds:
+        out.append(
+            "- Refine focus in this file uses the earlier reading of supply (a title already shown "
+            "or in the batch), because the pipeline did not report an unseen count."
+        )
+    return out
+
+
 def render(data: dict[str, Any]) -> str:
     v = data["verdict"]
     out: list[str] = [
@@ -284,8 +328,10 @@ def render(data: dict[str, Any]) -> str:
         f"- First search: median {num(statistics.median(searches) if searches else None)} s; "
         f"Shop Again: median {num(statistics.median(agains) if agains else None)} s, "
         f"max {num(max(agains) if agains else None)} s",
-        "", "## Limits of this eval", "", LIMITS, "",
     ]  # fmt: skip
+    out += cache_section(data)
+    out += measurement_notes(data)
+    out += ["", "## Limits of this eval", "", LIMITS, ""]
     return "\n".join(out)
 
 

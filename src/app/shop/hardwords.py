@@ -87,9 +87,12 @@ def _sizes(request: str) -> list[HardWord]:
     return out
 
 
-def hard_words(base: ShopQuery, adjusted: ShopQuery) -> list[HardWord]:
+def hard_words(
+    base: ShopQuery, adjusted: ShopQuery, focus: tuple[str, ...] | list[str] = ()
+) -> list[HardWord]:
     """The request's hard words: the category, the parsed styles, materials, colours and must-haves
-    (the shopper's refine chips included, through `adjusted`), and the sizes the request writes."""
+    (the shopper's refine chips included, through `adjusted`), the sizes the request writes, and the
+    words of an active "focus on" chip or note (`focus`, stage 2r)."""
     out: list[HardWord] = []
     seen: set[tuple[str, tuple[str, ...]]] = set()
 
@@ -113,6 +116,8 @@ def hard_words(base: ShopQuery, adjusted: ShopQuery) -> list[HardWord]:
         add("color", label, _synonym_forms(COLOR_KEYWORDS, label))
     for term in [*base.must_have, *adjusted.must_have]:
         add("must_have", term, [])
+    for phrase in focus:
+        add("focus", phrase, [])
     for size in _sizes(base.request):
         key = ("size", tuple(tokens(size.label)))
         if key not in seen:
@@ -141,13 +146,19 @@ def _attribute_phrases() -> list[tuple[str, ...]]:
 ATTRIBUTE_PHRASES = _attribute_phrases()
 
 
-def allowed_words(base: ShopQuery, adjusted: ShopQuery, words: list[HardWord]) -> set[str]:
+def allowed_words(
+    base: ShopQuery,
+    adjusted: ShopQuery,
+    words: list[HardWord],
+    focus: tuple[str, ...] | list[str] = (),
+) -> set[str]:
     """Every word a variant may carry although it is an attribute word: the request's own words,
     the parsed fields, the refine chips, and each hard word's listed synonyms."""
     texts = [
         base.request, base.search_text, *base.style_terms, *base.material_terms, *base.must_have,
         *adjusted.must_have, *adjusted.material_terms, *base.color_terms, *adjusted.color_terms,
         *(COLOR_LABELS.get(c, c) for c in (*base.color_terms, *adjusted.color_terms)),
+        *focus,
     ]  # fmt: skip
     allowed = {t for text in texts for t in tokens(text.replace("_", " "))}
     for w in words:

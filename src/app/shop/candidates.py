@@ -44,7 +44,7 @@ from app.shop.clock import Clock
 from app.shop.models import CandidateTags
 from app.shop.progress import Timeline
 from app.shop.redact import describe_exception
-from app.shop.thresholds import CANDIDATE_TAG_BATCH, FREE_NOTES_MAX
+from app.shop.thresholds import CANDIDATE_TAG_BATCH, FREE_NOTES_MAX, MIN_TAG_CALL_TIMEOUT_S
 from app.shop.vocab import DIMENSIONS, normalize, normalize_style, vocab_text
 
 TAG_TOKENS_PER_ROW = 16  # a text row is about 14 tokens
@@ -550,11 +550,11 @@ def tag_batch(
     for what is still untagged, in pieces of half the batch size. No retry when the deadline has
     passed or when a call came back with no text content in under `FAST_FAIL_S` seconds. The
     text-rows format is no longer a fallback (`MODE_ROWS` stays for the diagnostic)."""
-    if clock.now() >= deadline:
+    if deadline - clock.now() < MIN_TAG_CALL_TIMEOUT_S:  # a call needs time to answer (stage 2r)
         with book.lock:
             book.skipped += len(batch)
         return
-    timeout_s = max(1.0, min(timeout_s, deadline - clock.now()))  # never run past the deadline
+    timeout_s = max(MIN_TAG_CALL_TIMEOUT_S, min(timeout_s, deadline - clock.now()))
     rows, entry = run_call(
         batch,
         book,
@@ -570,16 +570,21 @@ def tag_batch(
         _store(batch, rows, book)
     weak = entry["stop_reason"] == "max_tokens" or len(rows) < MIN_PARSED_SHARE * len(batch)
     fast_empty = "no text content" in entry["error"] and entry["seconds"] < FAST_FAIL_S
-    if weak and not fast_empty and clock.now() < deadline and not closed.is_set():
+    if (
+        weak
+        and not fast_empty
+        and deadline - clock.now() >= MIN_TAG_CALL_TIMEOUT_S
+        and not closed.is_set()
+    ):
         # ONE retry round: the same tool call, for what is still untagged, in pieces of half the
         # batch (never a second round, and never another format)
         left = [t for t in batch if book.get(t.id) is None]
         size = max(5, len(batch) // 2)
         for start in range(0, len(left), size):
-            if clock.now() >= deadline or closed.is_set():
+            if deadline - clock.now() < MIN_TAG_CALL_TIMEOUT_S or closed.is_set():
                 break
             piece = left[start : start + size]
-            timeout_s = max(1.0, min(timeout_s, deadline - clock.now()))
+            timeout_s = max(MIN_TAG_CALL_TIMEOUT_S, min(timeout_s, deadline - clock.now()))
             more, entry = run_call(
                 piece, book, budget, MODE_TOOL, True, clock, timeout_s, timeline=timeline
             )

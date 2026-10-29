@@ -20,3 +20,5 @@ render-output/
 # Shop Mode sessions (ratings, comments, searches)
 shop-data/
 evals/shop/results/
+# real Google Shopping responses recorded for the eval (public repo: never commit them)
+evals/shop/cache/
