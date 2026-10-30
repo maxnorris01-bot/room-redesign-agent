@@ -51,6 +51,7 @@ COLORS = ["#c9d6df", "#e8d8c3", "#d4e0cf", "#e9cfd2", "#d9d3ea", "#f1e5b8"]
 COFFEE = "coffee tables with a mix of wood and metal with storage"
 PREMIUM = "Hartwell & Co"  # the invented premium seller in the mock fixtures
 FAILS: list[str] = []
+BET_IDS: dict[str, str] = {}  # stage 2s: the seeded sessions for the seller-bet check
 
 
 def check(ok: bool, what: str) -> None:
@@ -948,9 +949,11 @@ def run_checks(
             )
             top2, share2 = seller_share(page)
             print(f"   pinned batch: top seller {top2} {share2:.0%}")
+            # stage 2s: a pin raises the seller's ceiling to 80% but the allowance still has to
+            # be earned batch by batch, so it is no longer "more than half" at once
             check(
-                share2 > 0.5 and share2 <= 0.8,
-                "a pinned seller may fill more than half, never more than 80%",
+                share2 <= 0.8,
+                "a pinned seller stays within its allowance, never more than 80%",
             )
             check(
                 chips(page) == request_chips,
@@ -1038,6 +1041,7 @@ def run_checks(
             run_dry(browser, scenarios, shots, console_errors)
             run_fixes_2q(browser, scenarios, shots, console_errors)
             run_fixes_2r(browser, scenarios, shots, console_errors)
+            run_seller_bets(browser, scenarios["bets"], BET_IDS, shots, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -1443,6 +1447,109 @@ def run_fixes_2r(
     chip.locator(".x").click()
     chip.wait_for(state="detached", timeout=10000)
     check(page.locator("#chips .chip.ctx", has_text="Shape").count() == 0, "deleting removes it")
+    context.close()
+
+
+def seed_bets(data_dir: str) -> dict[str, str]:
+    """Stage 2s: two sessions of the owner's mixed case on the mock catalogue, made in-process
+    (the page then opens them). `first`: the premium seller's chip was learned and the first Shop
+    Again ran, so the panel shows its first-try allowance. `revoke`: the same, and the three items
+    shown under the boost were then disliked, so the next Shop Again revokes it."""
+    from app.config import Config
+    from app.shop.providers import PREMIUM_SELLER, build_shop_providers
+    from app.shop.service import ShopService
+
+    cfg = Config.from_env()
+    search, lookup = build_shop_providers(cfg)
+    svc = ShopService(cfg, SessionStore(Path(data_dir)), search, lookup)
+
+    def pick(rows: list[dict[str, Any]], *needles: str, premium: bool = True) -> str:
+        for r in rows:
+            if (r["seller"] == PREMIUM_SELLER) == premium and all(n in r["title"] for n in needles):
+                return str(r["id"])
+        raise RuntimeError(f"no result with {needles}")
+
+    out: dict[str, str] = {}
+    for name in ("first", "revoke"):
+        view = svc.search(None, COFFEE)
+        sid, rows = view["session_id"], view["search"]["results"]
+        for needles, premium, rating in (
+            (("Round Walnut Drum",), True, "love"),
+            (("Rectangular Wood and Black Metal",), True, "love"),
+            (("Round Brushed Brass Drum",), True, "love"),
+            (("Rectangular Walnut",), True, "love"),
+            (("Round ",), False, "like"),
+            (("Rectangular ",), False, "like"),
+            (("Oval ",), False, "dislike"),
+        ):
+            svc.rate(sid, pick(rows, *needles, premium=premium), rating)
+        rated = set(svc.store.load(sid).ratings)
+        others = [r["id"] for r in rows if r["seller"] != PREMIUM_SELLER and r["id"] not in rated]
+        for rid in others[:6]:  # a low baseline: the premium seller's 4 of 4 is then 1.5x it
+            svc.rate(sid, rid, "dislike")
+        shown = svc.shop_again(sid)["search"]["results"]
+        if name == "revoke":
+            mine = [
+                r["id"] for r in shown
+                if r["seller"] == PREMIUM_SELLER and (r.get("source") or {}).get("kind") == "seller"
+            ]  # fmt: skip
+            for rid in mine[:4]:
+                svc.rate(sid, rid, "dislike")
+        out[name] = sid
+    return out
+
+
+def run_seller_bets(
+    browser: Any, base: str, ids: dict[str, str], shots: Path, console_errors: list[str]
+) -> None:
+    """Stage 2s: the first-try allowance in "How I decided", and the revocation message."""
+    print("stage 2s: first-try allowance, revoked seller bet")
+
+    def shoot(page: Page, name: str, locator: str) -> None:
+        box = page.locator(locator).first
+        box.screenshot(path=str(shots / f"{name}.png"))
+        page.emulate_media(color_scheme="dark")
+        box.screenshot(path=str(shots / f"{name}-dark.png"))
+        page.emulate_media(color_scheme="light")
+        page.set_viewport_size({"width": 390, "height": 844})
+        box.scroll_into_view_if_needed()
+        box.screenshot(path=str(shots / f"{name}-mobile.png"))
+        check(
+            page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+            f"no sideways scroll at 390 px ({name})",
+        )
+        page.set_viewport_size({"width": 1280, "height": 900})
+
+    context, page = open_session(browser, base, ids["first"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    page.click("#shop-again")  # the boosted items are still unrated: the bet stays a first try
+    wait_for_results(page)
+    page.locator("#why-toggle").click()
+    line = page.locator("#why .why-line", has_text="slots, first try")
+    check(line.count() >= 1, "How I decided names the seller's allowance: 'N slots, first try'")
+    check(
+        "Hartwell & Co: 4 slots, first try" in page.locator("#why").inner_text(),
+        "the allowance reads '4 slots, first try'",
+    )
+    check("exposure" in page.locator("#why .why-evidence").inner_text().lower(),
+          "the evidence table has an exposure column")  # fmt: skip
+    shoot(page, "90-first-try", "#why .why-line:has-text('first try')")
+    context.close()
+
+    context, page = open_session(browser, base, ids["revoke"])
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    page.click("#shop-again")
+    wait_for_results(page)
+    status = page.locator("#status").inner_text()
+    check(
+        "Tried more Hartwell & Co; you did not like most of it, so I stopped." in status,
+        f"the revocation message: {status[:150]!r}",
+    )
+    check(
+        page.locator("#pref-chips .chip.pref", has_text="seller: Hartwell").count() == 0,
+        "the seller chip is gone",
+    )
+    shoot(page, "91-revoked", "#status")
     context.close()
 
 
@@ -1952,6 +2059,7 @@ def main() -> int:
         tempfile.TemporaryDirectory() as dir_narrow,
         tempfile.TemporaryDirectory() as dir_flat,
         tempfile.TemporaryDirectory() as dir_roundshort,
+        tempfile.TemporaryDirectory() as dir_bets,
     ):
         try:
             first, port = start_server(data_dir, {"APP_SHOP_GALLERY": "1"})
@@ -2002,6 +2110,10 @@ def main() -> int:
                 )
                 servers.append(server_n)
                 scenario_ports[name] = f"http://127.0.0.1:{port_n}/"
+            BET_IDS.update(seed_bets(dir_bets))
+            bets_server, bets_port = start_server(dir_bets)
+            servers.append(bets_server)
+            scenario_ports["bets"] = f"http://127.0.0.1:{bets_port}/"
             tailoring = seed_session(
                 SessionStore(Path(data_dir6)), replay=REPLAY_FILE_EVIDENCE
             ).session_id

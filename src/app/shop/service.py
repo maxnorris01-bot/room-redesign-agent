@@ -124,7 +124,7 @@ def headline(record: SearchRecord) -> str:
         w
     ) in record.warnings:  # stage 2p: a typed colour, material or finish the pool could not supply
         if re.match(r"Only \d+ of \d+ results match your ", w) or w.startswith(
-            ("A few sellers dominate", "Left out ", "Not mixing ")
+            ("A few sellers dominate", "Left out ", "Not mixing ", "Tried more ")
         ):  # stage 2q and 2r notes: the relaxed cap, a dropped price, a guard switched off
             text += " " + w
     return text
@@ -770,6 +770,8 @@ class ShopService:
                     live.profile.pinned_sellers,
                 )
             live.profile = profile
+            if outcome.bets:  # stage 2s: each seller's allowance and what was shown under it
+                live.seller_bets = outcome.bets
             live.shop_agains_used += 1
             if refine_note:
                 outcome.warnings.insert(0, refine_note)

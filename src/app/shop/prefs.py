@@ -562,6 +562,7 @@ def merge_profile_v3(
             "dropped_guesses": dropped,
             "images": images,
             "pinned_sellers": pinned,
+            "dismissed": dict(previous.dismissed),  # a revoked seller bet keeps its wait (2s)
             "rated_count": rated_count,
             "trace": decisions.trace,
             "tagging": info,
@@ -725,7 +726,10 @@ def reapply_removed(
                 if not is_removed(e.text, removed)
                 and not (late and e.attr_kind == "exclude_marketplace")
             ],
-            "dismissed": dict(dismissed) if dismissed is not None else profile.dismissed,
+            # a revoked seller bet (stage 2s) made by this very Shop Again is kept beside the rest
+            "dismissed": {**profile.dismissed, **dismissed}
+            if dismissed is not None
+            else profile.dismissed,
             "guesses": keep(profile.guesses),
             "adjustments": adj.model_copy(
                 update={

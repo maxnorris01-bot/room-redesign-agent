@@ -166,6 +166,26 @@ class AlsoAt(_Strict):
     price: float | None = None
 
 
+class BetBatch(_Strict):
+    """Items shown under a seller's boost in one batch (named search or above the ordinary cap)."""
+
+    index: int  # the search record's 1-based index
+    ids: list[str] = []
+    judged: bool = False  # its outcome has been read once (grown on, or not)
+
+
+class SellerBet(_Strict):
+    """One seller's allowance (stage 2s): how far its exposure has grown, whether it was revoked
+    (and at how many rated items, for the return rule), and what was shown under the boost."""
+
+    key: str
+    name: str
+    level: int = 0  # successful boosted batches so far
+    status: Literal["active", "revoked"] = "active"
+    revoked_at: int | None = None
+    batches: list[BetBatch] = []
+
+
 class ResultSource(_Strict):
     """Which search first found a result (stage 2q): `kind` is base, writer, seller, peer,
     thin_variant, supply or refill; `query` is that search's words (never a URL or a key)."""

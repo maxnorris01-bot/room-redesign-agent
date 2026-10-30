@@ -39,6 +39,7 @@ from app.shop.models import (
     FilterCounts,
     LinkKind,
     ResultSource,
+    SellerBet,
     ShopQuery,
     ShopResult,
     clean_request,
@@ -190,6 +191,10 @@ class AgainContext:
     lean_away: list[tuple[str, str]] = field(default_factory=list)
     query_writer: Callable[[], QueryResult] | None = None
     query_input: QueryInput | None = None  # stage 2r: what the writer saw, reused by the fill loop
+    # stage 2s: each learned seller's total slots in a batch (None: the old half-batch affinity),
+    # and what the panel says about each bet
+    seller_slots: dict[str, int] | None = None
+    bet_rows: list[dict[str, Any]] = field(default_factory=list)
     query_result: QueryResult | None = None
     typed: list[TypedAttr] = field(default_factory=list)  # stage 2p: typed attributes as quotas
     tag_source: dict[str, str] = field(default_factory=dict)
@@ -258,6 +263,8 @@ class SearchOutcome:
         default_factory=dict
     )  # for the session cache
     peer_log: list[dict[str, Any]] = field(default_factory=list)  # peer searches and their yield
+    boosted: dict[str, str] = field(default_factory=dict)  # stage 2s: result id -> seller key
+    bets: dict[str, SellerBet] = field(default_factory=dict)  # stage 2s: the bets after this batch
     pool_snapshot: list[dict[str, Any]] = field(default_factory=list)  # compact pool, for replays
     request_trace: dict[str, Any] = field(
         default_factory=dict
@@ -741,6 +748,7 @@ def build_results(
     sources: dict[str, ResultSource] | None = None,
     relax_log: list[dict[str, Any]] | None = None,
     relaxing: bool = False,
+    seller_slots: dict[str, int] | None = None,
 ) -> tuple[list[ShopResult], int, int]:
     """Walk the ranked order, up to `RESULT_COUNT`, keeping:
 
@@ -829,6 +837,8 @@ def build_results(
             return False
         key = seller_key(candidate.seller)
         cap = pinned_cap if key in pinned else affinity_cap if key in affinity else base_cap
+        if seller_slots is not None and key in seller_slots:  # stage 2s: one allowance per seller
+            cap = max(base_cap, seller_slots[key])
         if per_seller.get(key, 0) >= cap:
             seller_skipped.add(index)
             return False
@@ -988,7 +998,7 @@ def build_results(
         return build_results(
             ordered, query, pool_index, affinity_sellers, pinned_sellers, guard_dims, guard_caps,
             tags, strata, tier_limit, leanings, colors, focus, groups, cap_override=cap,
-            typed=typed, sources=sources, relaxing=relax,
+            typed=typed, sources=sources, relaxing=relax, seller_slots=seller_slots,
         )  # fmt: skip
 
     if relaxing:  # a relaxed walk is judged by the caller; it is never tightened again
@@ -1879,6 +1889,7 @@ def run_query(
             typed=typed_attrs,
             sources=item_sources,
             relax_log=seller_cap_log,
+            seller_slots=again.seller_slots if again is not None else None,
         )
 
     if (
@@ -2213,6 +2224,13 @@ def run_query(
             composition_info["early_stops"] = early_stops
         if guard_state:
             composition_info["guards_off"] = guard_state
+        if again.seller_slots is not None:
+            boosted = boosted_items(results, set(again.seller_slots))
+            composition_info["seller_bets"] = [
+                {**row, "shown": sum(1 for r in results if seller_key(r.seller) == row["key"]),
+                 "boosted_now": sum(1 for k in boosted.values() if k == row["key"])}
+                for row in again.bet_rows
+            ]  # fmt: skip
         if again.refine is not None and again.refine.focus_pairs():
             composition_info["focus_supply"] = focus_supply_info(ordered, results, again, tag_of)
         if outlier_info:
@@ -2292,6 +2310,9 @@ def run_query(
             "results": len(results),
         }
     return SearchOutcome(
+        boosted=boosted_items(results, set(again.seller_slots))
+        if again is not None and again.seller_slots is not None
+        else {},
         query=query,
         results=results,
         counts=counts,
@@ -2472,6 +2493,22 @@ def _merged_tags(c: SearchCandidate, again: AgainContext) -> tuple[Mapping[str, 
     if got is not None:
         return got, "model"
     return title_tags(c.title), "keyword"
+
+
+def boosted_items(results: list[ShopResult], keys: set[str]) -> dict[str, str]:
+    """The items of a batch shown under a seller's boost (stage 2s): those that came through the
+    seller's named search, and those above the ordinary per-seller cap, by seller key."""
+    ordinary = seller_cap(RESULT_COUNT)
+    seen: dict[str, int] = {}
+    out: dict[str, str] = {}
+    for r in results:
+        key = seller_key(r.seller)
+        if key not in keys:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+        if (r.source is not None and r.source.kind == "seller") or seen[key] > ordinary:
+            out[r.id] = key
+    return out
 
 
 def effective_guards(
