@@ -1,6 +1,6 @@
 .PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-standard-live \
 	eval-nightly eval-nightly-live spike spike-live report reports render render-live shop shop-live shop-check shop-diagnose \
-	eval-shop-plan eval-shop-mock eval-shop-live eval-shop-report eval-shop-rejudge
+	eval-shop-plan eval-shop-mock eval-shop-live eval-shop-report eval-shop-rejudge deploy-check deploy-smoke
  
 install:
 	uv sync
@@ -135,3 +135,12 @@ eval-shop-report:
 # Narrow it with ARGS='--rounds 1,2 --cases case-06,case-09'.
 eval-shop-rejudge:
 	EVAL_SHOP_CONFIRM=$(EVAL_SHOP_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop rejudge --results $(RESULTS) $(if $(CASES),--cases $(CASES),) $(ARGS)
+
+# Obvious mistakes in the Dockerfile, .dockerignore and fly.toml, without running docker or fly.
+deploy-check:
+	uv run python -m app.shop.deploycheck
+
+# The deployment-mode server on a temporary SQLite database and mock providers: /healthz, a 401, a
+# login, an authenticated call, a cap_reached and the maintenance answer. No network, no docker.
+deploy-smoke:
+	APP_LLM_MODE=mock uv run python scripts/deploy_smoke.py

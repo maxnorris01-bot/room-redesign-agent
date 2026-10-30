@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from app.shop.models import FilterCounts, ShopQuery, ShopResult
-from app.shop.store import RatingRecord, SearchRecord, Session, SessionStore, now_iso, now_iso_ms
+from app.shop.store import RatingRecord, SearchRecord, Session, SessionBackend, now_iso, now_iso_ms
 
 REPLAY_DIR = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "shop"
 REPLAY_FILE = "owner_session_replay.json"  # the first real session (West Elm)
@@ -43,7 +43,7 @@ def _result(rid: str, title: str, price: float, seller: str, rank: int) -> ShopR
 
 
 def seed_session(
-    store: SessionStore,
+    store: SessionBackend,
     west_elm_extras: int | None = None,
     comments: dict[str, str] | None = None,
     extra_ratings: dict[str, tuple[str, str]] | None = None,

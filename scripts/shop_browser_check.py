@@ -1042,6 +1042,7 @@ def run_checks(
             run_fixes_2q(browser, scenarios, shots, console_errors)
             run_fixes_2r(browser, scenarios, shots, console_errors)
             run_seller_bets(browser, scenarios["bets"], BET_IDS, shots, console_errors)
+            run_local_unchanged(browser, base, shots, console_errors)
             check(console_errors == [], f"no console or page errors {console_errors[:3]}")
         finally:
             browser.close()
@@ -1550,6 +1551,69 @@ def run_seller_bets(
         "the seller chip is gone",
     )
     shoot(page, "91-revoked", "#status")
+    context.close()
+
+
+def run_local_unchanged(browser: Any, base: str, shots: Path, console_errors: list[str]) -> None:
+    """Stage D1: with no deployment settings the local page is what it was: the home view, a results
+    view and the Saved panel, no login, the old `/api` routes; the deployed prefix and /healthz are
+    404 here."""
+    print("stage D1: the local page is unchanged (home, results, Saved)")
+
+    def shoot(page: Page, name: str, locator: str | None = None) -> None:
+        def take(suffix: str) -> None:
+            path = str(shots / f"{name}{suffix}.png")
+            if locator:
+                page.locator(locator).first.screenshot(path=path)
+            else:
+                page.screenshot(path=path)
+
+        take("")
+        page.emulate_media(color_scheme="dark")
+        take("-dark")
+        page.emulate_media(color_scheme="light")
+        page.set_viewport_size({"width": 390, "height": 844})
+        take("-mobile")
+        check(
+            page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+            f"no sideways scroll at 390 px ({name})",
+        )
+        page.set_viewport_size({"width": 1280, "height": 900})
+
+    context, page = new_page(browser, base)
+    page.on("pageerror", lambda e: console_errors.append(str(e)))
+    check(page.locator("#search-form").is_visible(), "the home view shows the search form")
+    check(page.locator("#examples button, #examples a").count() >= 1, "the examples are listed")
+    check(
+        page.evaluate(
+            "async () => { const r = await fetch('/api/auth/session');"
+            " return (await r.json()).local === true; }"
+        ),
+        "locally /api/auth/session says local, no login",
+    )
+    check(
+        page.evaluate(
+            "async () => [(await fetch('/api/shop/session')).status,"
+            " (await fetch('/healthz')).status]"
+        )
+        == [404, 404],
+        "the deployment prefix and /healthz are not served locally",
+    )
+    shoot(page, "92-local-home")
+    page.fill("#request", COFFEE)
+    page.click("#search-btn")
+    page.locator(".card").first.wait_for(timeout=15000)
+    page.locator(".skeleton").first.wait_for(state="detached", timeout=15000)
+    check(page.locator("#grid .card").count() > 0, "a search shows a results grid with no login")
+    shoot(page, "93-local-results")
+    rate_nth(page, 0, "love")
+    page.locator("#saved-toggle").click()
+    page.locator("#saved").wait_for(state="visible")
+    check(
+        page.locator("#saved-row .card, #saved-row *").count() >= 1,
+        "the Saved panel shows the loved item",
+    )
+    shoot(page, "94-local-saved", "#saved")
     context.close()
 
 

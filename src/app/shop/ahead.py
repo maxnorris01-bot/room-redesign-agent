@@ -20,7 +20,7 @@ from contextlib import contextmanager
 
 from app.config import Config
 from app.shop.resolve import auto_lookups_used, fill_rating, record_lookup, resolve
-from app.shop.store import SessionError, SessionStore
+from app.shop.store import SessionBackend, SessionError
 from app.shopping import ProductDetails, ProductLookup, ProviderError
 
 AHEAD_WORKERS = 2  # lookups running at once
@@ -28,7 +28,7 @@ AHEAD_PENDING = 16  # lookups waiting for a worker; more are not queued
 
 
 class LookAhead:
-    def __init__(self, config: Config, store: SessionStore, lookup: ProductLookup) -> None:
+    def __init__(self, config: Config, store: SessionBackend, lookup: ProductLookup) -> None:
         self.config = config
         self.store = store
         self.lookup = lookup

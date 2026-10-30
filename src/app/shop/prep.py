@@ -24,6 +24,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import partial
+from typing import Any
 
 from app.config import BudgetExceededError, Config
 from app.images import PreparedImage
@@ -35,7 +36,7 @@ from app.shop.models import ShopResult
 from app.shop.nearby import Fingerprinter
 from app.shop.prefs import read_rated_items, reading_entry
 from app.shop.redact import describe_exception
-from app.shop.store import SessionError, SessionStore, comment_key
+from app.shop.store import SessionBackend, SessionError, comment_key
 from app.thumbnails import Thumbnailer, fetch_traced
 
 MAX_ERRORS_KEPT = 5
@@ -53,7 +54,7 @@ class PrepManager:
     def __init__(
         self,
         config: Config,
-        store: SessionStore,
+        store: SessionBackend,
         thumbnailer: Thumbnailer | None,
         clock: Clock | None = None,
         fingerprinter: Fingerprinter | None = None,
@@ -64,6 +65,7 @@ class PrepManager:
         self.thumbnailer = thumbnailer
         self.clock = clock or Clock()
         self.enabled = config.shop_prep_enabled
+        self.guard: Any = None  # the spend caps (deployment mode)
         self._pool = ThreadPoolExecutor(
             max_workers=config.shop_prep_max_concurrent, thread_name_prefix="shopprep"
         )
@@ -103,6 +105,8 @@ class PrepManager:
         skipped."""
         if not self.enabled or not results:
             return 0
+        if self.guard is not None and not self.guard.background_ok(sid):
+            return 0  # past a spend cap: no background work starts (stage D1)
         try:
             session = self.store.load(sid)
         except SessionError:
