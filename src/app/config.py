@@ -139,6 +139,7 @@ class Config:
     shop_near_duplicates: bool = False  # stage 2n: collapse the same product from other vendors
     shop_photo_tag_top_n: int = 0  # stage 2p: candidates tagged from their photo (off bare; env 36)
     shop_thin_variants: bool = False  # stage 2p, 2r: the fill loop (variant searches, short batch)
+    shop_seller_bets: bool = False  # stage 2s: graduated seller allowance with revocation
     shop_early_stop: bool = False  # stage 2r: skip optional searches when the pool is plentiful
     shop_gallery: bool = False  # stage 2o: "More photos" (dormant: the lookup takes seconds)
     shop_auto_lookups: bool = (
@@ -316,6 +317,8 @@ class Config:
             shop_thin_variants=os.environ.get("APP_SHOP_THIN_VARIANTS", "1").strip()
             not in ("0", "false", "no"),
             shop_early_stop=os.environ.get("APP_SHOP_EARLY_STOP", "1").strip()
+            not in ("0", "false", "no"),
+            shop_seller_bets=os.environ.get("APP_SHOP_SELLER_BETS", "1").strip()
             not in ("0", "false", "no"),
             shop_gallery=os.environ.get("APP_SHOP_GALLERY", "0").strip().lower()
             in ("1", "true", "yes"),

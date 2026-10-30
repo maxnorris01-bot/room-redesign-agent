@@ -33,6 +33,7 @@ from app.shop.models import (
     LinkKind,
     Rating,
     RefineChip,
+    SellerBet,
     ShopQuery,
     ShopResult,
     StoredProfile,
@@ -147,6 +148,8 @@ class Session(_Model):
     # stage 2e: the model's tags of shown and candidate results by result id (a dimension the title
     # does not show is null); a result in here is never tagged again
     tag_cache: dict[str, dict[str, str | None]] = Field(default_factory=dict)
+    # stage 2s: each learned seller's allowance and the items shown under its boost
+    seller_bets: dict[str, SellerBet] = Field(default_factory=dict)
     # stage 2f: peer retailers already searched: key -> {name, searches, new, empty}
     searched_peers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # stage 2h: where each cached tag came from ("title" or "photo": a photo tag is never replaced
@@ -376,6 +379,7 @@ def advance_topic(session: Session, query: ShopQuery, request: str) -> str:
     session.current_topic = topic.id
     session.profile = None
     session.searched_peers = {}
+    session.seller_bets = {}
     tail = " Your saved items are still in Saved." + cleared
     if not key:
         return (

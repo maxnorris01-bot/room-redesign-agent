@@ -29,8 +29,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.shop.bets import dismissed_keys
 from app.shop.evidence import (
     Evidence,
+    baseline_of,
     group_rows,
     lean_text,
     leaning_entries,
@@ -747,7 +749,8 @@ def _evidence(
         text = FAMILY_LABELS.get(value, value)
         return removed_hit(lean_text(direction, dim, value)) or typed_hit(text, dim)
 
-    sellers, seller_trace = seller_entries(rated)
+    waiting = dismissed_keys(dict(dismissed or {}), baseline_of(rated).rated)
+    sellers, seller_trace = seller_entries(rated, waiting)
     tier, tier_trace = tier_entry(rated)
     leanings: list[ProfileEntry] = []
     leaning_rows: list[dict[str, Any]] = []

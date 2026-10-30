@@ -183,9 +183,12 @@ def _stat_numbers(stat: Stat, base: Baseline) -> str:
 # ---- seller and tier chips ------------------------------------------------------------------------
 
 
-def seller_entries(rated: dict[str, Rated]) -> tuple[list[ProfileEntry], dict[str, Any]]:
+def seller_entries(
+    rated: dict[str, Rated], excluded: set[str] | frozenset[str] = frozenset()
+) -> tuple[list[ProfileEntry], dict[str, Any]]:
     """Up to `MAX_SELLER_CHIPS` seller chips (highest like rate first) and the trace of every seller
-    with a rated item."""
+    with a rated item. `excluded` are seller keys whose bet was revoked and is still waiting out its
+    ratings (stage 2s): they earn no chip."""
     base = baseline_of(rated)
     total_mass = sum(
         LOVE_WEIGHT if r.rating == "love" else LIKE_WEIGHT
@@ -199,6 +202,8 @@ def seller_entries(rated: dict[str, Rated]) -> tuple[list[ProfileEntry], dict[st
         fails = toward_fails(s, base)
         if tier_of(s.label) == MARKETPLACE_BUDGET:
             fails.append("marketplace and budget retailers never earn a positive chip")
+        if s.key in excluded:
+            fails.append("its boost did not work out; it waits for more ratings")
         candidates.append(
             {
                 "seller": s.label, "rated": s.rated, "liked": s.liked, "like_rate": round(s.rate, 4),

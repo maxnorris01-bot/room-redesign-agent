@@ -169,3 +169,6 @@ Stage 2r (fixes from the first full 12-case run): a batch short of 24 after ever
 call cap is reached or two searches in a row add nothing, and says why; a Shop Again stops its optional searches when the unseen pool is plentiful
 and the quotas can be met; a diversity guard is off when the pool has no alternative value; a typed shape is a quota; a tagging call is never given
 less than 8 s; the eval can record and replay Serper responses and lint a saved results file. See ADR 0012, stage 2r.
+
+Stage 2s (seller affinity that checks its own bet): a learned seller gets one allowance (chip, named search and pin alike) that starts at 4 slots of 24, grows by 2 only when
+its boosted items were liked, and is revoked at once when at least 3 of them are rated and mostly disliked; the seller can return after 8 further ratings. See ADR 0012, stage 2s.

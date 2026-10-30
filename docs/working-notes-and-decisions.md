@@ -217,6 +217,11 @@ this choice over the alternatives. Note what's still open or deferred within it,
   quota (evidence is thinner than for colour: the judge does not say which attribute an item broke); a tagging call needs 8 s or is not started.
   New behaviours are off in a bare Config and on from the environment (`APP_SHOP_THIN_VARIANTS`, `APP_SHOP_EARLY_STOP`), so older tests did not move.
   The eval can record and replay Serper responses (gitignored); a replay is structural only. See `docs/sessions/2026-10-29-shop-fixes-2r.md`.
+- **2026-10-30, stage 2s (ADR 0012 amended): a seller affinity that checks its own bet.** Decisions: exposure must match the evidence behind it, so a seller's chip,
+  named search and pin share one allowance that starts at a sixth of a batch and grows only on proof; what the boost earned is recorded per item and read separately (3
+  rated, 35% or under the baseline revokes at once); revocation reuses the marketplace dismissal logic with the same 8 further ratings; a pin raises a ceiling, it no longer
+  skips the proof; the shopper's own "more from X" keeps its half batch; the tier chip is left alone (different code). Read the saved run first: case-01 round 2 and
+  case-02 round 3 confirmed the failure, case-01 round 3 (Target, 10 of 12 liked) the case for letting a good bet grow. See `docs/sessions/2026-10-30-shop-seller-affinity.md`.
 
 ## See also
 

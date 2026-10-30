@@ -288,6 +288,15 @@ eval to tune):
 | PLENTIFUL_UNSEEN | 60 | a Shop Again skips its optional searches (profile phrasings, non-liked peers, extra pages, supply) once this many unseen candidates pass the filters and the typed quotas, the focus shares and the guards can be met from them (stage 2r; judgment) |
 | GUARD_ALT_SUPPLY_MIN | 6 | a diversity guard is off for a dimension when fewer unseen candidates than this carry another value than the pool's top one and the guard would otherwise cut the batch; the trace and a message say so (stage 2r; judgment) |
 | MIN_TAG_CALL_TIMEOUT_S | 8.0 | the shortest timeout a candidate or photo tagging call is given; a call that cannot have it (the budget or the hard stop leaves less) is not started, and a call that timed out is retried once only when this much remains (stage 2r; judgment) |
+| SELLER_FIRST_SHARE | 1/6 | a newly learned seller (chip, named search or pin) gets this share of a batch as its total slots, 4 of 24, never below the ordinary cap (stage 2s; judgment) |
+| SELLER_GROW_STEP_SHARE | 1/12 | each success adds this share of a batch, 2 slots of 24 (stage 2s; judgment) |
+| SELLER_PROVEN_MAX_SHARE | 1/3 | the most a proven seller gets, 8 of 24 (stage 2s; judgment) |
+| SELLER_TOP_MIN_RATE | 0.60 | the allowance may pass a third, up to SELLER_MAX_SHARE (half), only when the last two judged boosted batches were liked at this rate (stage 2s; judgment) |
+| SELLER_GROW_MIN_RATED | 3 | boosted items of the previous batch that must be rated before it is judged (stage 2s) |
+| SELLER_GROW_MIN_RATE | 0.50 | the like rate of a judged boosted batch that counts as a success (stage 2s; judgment) |
+| SELLER_REVOKE_MIN_RATED | 3 | rated boosted items before a seller's bet can be revoked (stage 2s) |
+| SELLER_REVOKE_MAX_RATE | 0.35 | a bet is revoked when its boosted items' like rate is under this, or under the session baseline (stage 2s; judgment) |
+| SELLER_REDISMISS_RATED | 8 | a revoked seller can return only after this many further ratings, as for the marketplace exclusion (stage 2s) |
 | PHOTO_IMAGE_WAIT_S | 2.0 | seconds the photo step waits for thumbnails that are not cached yet, before the calls' budget clock starts (stage 2q; judgment) |
 | PHOTO_FIRST_WAVE_GRACE_S | 4.0 | a first-wave photo call that started inside the budget may finish this long after it, never past the hard stop (stage 2q; judgment) |
 | PHOTO_RETRY_MIN_LEFT_S | 2.0 | a failed photo call is retried once only when at least this much of the budget remains (stage 2q; judgment) |
@@ -1191,3 +1200,29 @@ credits, $0.00045 a judge call).
 
 Not done and open: nothing here has been checked live; the diversity guard still counts the "other" value in its warnings; judge calibration
 against human labels; repeated runs; manual Open under the session lock; rug sizes from the product page.
+
+## Amendment, stage 2s (2026-10-30): a seller affinity that checks its own bet
+
+Evidence: the full live run `shop-live-20261029-140403-6d1a50.json` (read-only). Once a seller chip was learned the seller could take up to half a batch from a
+first sample of 4 rated and 2 liked items, and what the boost itself earned was read only inside the overall like rate, one batch late: case-01 round 2 gave Wayfair 12 of 24
+(all from its named search) and 8 of 12 were disliked; case-02 round 3, the last round, gave Wayfair 12 and 11 were disliked; case-01 round 3 gave Target 12 and 10 were liked
+(the boost can be right). Thresholds and `thresholds.json` were left as they were.
+
+One allowance per seller. A seller's chip, its named searches and a pin share a single number of total slots in a batch (`bets.allowance`), never below the ordinary cap:
+a new bet gets 4 of 24 (`SELLER_FIRST_SHARE`, a sixth, scaled with the batch), each judged boosted batch with at least 3 items rated and 50% liked adds 2 slots, up to a third of the
+batch, and up to half only when the last two judged batches were liked at 60% or more; a pin raises the ceiling (the pinned share) but not the starting point, and without an
+active bet a pin does nothing (before, it outlived its chip and kept up to 19 slots). A seller the shopper asked for by name ("more from X") keeps its half batch.
+
+The bet is checked. An item is "boosted" when it was shown through the seller's named search or above the ordinary cap of 4; the ids are stored per batch on the session
+(`SellerBet.batches`). At the start of each Shop Again (`again.prepare_bets`) the ratings that arrived are read: with at least 3 boosted items rated and a like rate under 35% or
+under the session baseline the bet is revoked at once. Revocation reuses the dismissal logic of the marketplace chip: `profile.dismissed["seller:<key>"]`, so the chip does not return
+(`evidence.seller_entries(rated, excluded)`), the named search stops (`again.seller_plan`), the seller gets the ordinary cap, the message "Tried more Wayfair; you did not like most of
+it, so I stopped." is shown, and the seller can earn a chip again only after 8 further ratings (`SELLER_REDISMISS_RATED`), as a new first-try bet. Fewer than 3 ratings change nothing.
+"How I decided" lists each bet ("Wayfair: 4 slots, first try (3 of 4 boosted items liked)") and the evidence table has an exposure column.
+
+Two bugs fixed on the way: `build_profile` did not carry `dismissed` forward and `reapply_removed` replaced it with the stored copy, so a dismissal other than the
+marketplace's would have been lost. The retailer-tier chip shares only the evidence rule, not the code that gives room (`tier_limit`) or a named search, and is unchanged.
+Gated by `shop_seller_bets` (`APP_SHOP_SELLER_BETS`, off in a bare Config, on from the environment).
+
+Not done and open: nothing here has been checked live; the tier chip; whether 4 slots (equal to the ordinary cap) is too timid a first try, in which case the named search's
+candidates and the ranker's preference are all a new bet gets.

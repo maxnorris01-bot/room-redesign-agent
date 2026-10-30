@@ -158,6 +158,27 @@ def seller_cap_ceiling(target_size: int) -> int:
     return math.floor(SELLER_CAP_SHARE * target_size)
 
 
+# stage 2s: a seller bet. A learned seller chip used to give the seller up to half a batch from a
+# first sample of 4 rated and 2 liked items, and the result of that boost was read only inside the
+# overall like rate, a batch late. Now the allowance (the seller's total slots in a batch, never
+# below the ordinary cap) starts small, grows only on proof and is revoked on a bad outcome.
+SELLER_FIRST_SHARE = 1 / 6  # a new bet: 4 of a 24-item batch (a sixth), scaled with the batch size
+SELLER_GROW_STEP_SHARE = 1 / 12  # each success adds 2 slots of 24
+SELLER_PROVEN_MAX_SHARE = 1 / 3  # the most a proven seller gets (8 of 24) ...
+# ... until its last two judged boosted batches were liked at this rate: then half the batch
+SELLER_TOP_MIN_RATE = 0.60
+SELLER_GROW_MIN_RATED = 3  # boosted items of the last batch that must be rated to judge it
+SELLER_GROW_MIN_RATE = 0.50  # ... and the like rate that counts as a success
+SELLER_REVOKE_MIN_RATED = 3  # rated boosted items before a bet can be revoked
+SELLER_REVOKE_MAX_RATE = 0.35  # revoked below this like rate, or below the session baseline
+SELLER_REDISMISS_RATED = 8  # a revoked seller can return only after this many further ratings
+
+
+def seller_slots(share: float, batch_size: int = RESULT_COUNT) -> int:
+    """A share of a batch as whole slots (a sixth of 24 is 4), never fewer than 1."""
+    return max(1, round(share * batch_size))
+
+
 # stage 2e: supply and selection for open dimensions
 MINORITY_POOL_SHARE = 0.40  # an open value under this share of the pool triggers targeted searches
 OPEN_STRATUM_FLOOR = 0.25  # a value with a loved item gets at least this share of the batch slots
@@ -202,6 +223,15 @@ def all_thresholds() -> dict[str, float | int]:
         "FILL_EMPTY_STREAK_MAX": FILL_EMPTY_STREAK_MAX,
         "PLENTIFUL_UNSEEN": PLENTIFUL_UNSEEN,
         "GUARD_ALT_SUPPLY_MIN": GUARD_ALT_SUPPLY_MIN,
+        "SELLER_FIRST_SHARE": round(SELLER_FIRST_SHARE, 4),
+        "SELLER_GROW_STEP_SHARE": round(SELLER_GROW_STEP_SHARE, 4),
+        "SELLER_PROVEN_MAX_SHARE": round(SELLER_PROVEN_MAX_SHARE, 4),
+        "SELLER_TOP_MIN_RATE": SELLER_TOP_MIN_RATE,
+        "SELLER_GROW_MIN_RATED": SELLER_GROW_MIN_RATED,
+        "SELLER_GROW_MIN_RATE": SELLER_GROW_MIN_RATE,
+        "SELLER_REVOKE_MIN_RATED": SELLER_REVOKE_MIN_RATED,
+        "SELLER_REVOKE_MAX_RATE": SELLER_REVOKE_MAX_RATE,
+        "SELLER_REDISMISS_RATED": SELLER_REDISMISS_RATED,
         "TYPED_MATCH_MIN_SHARE": TYPED_MATCH_MIN_SHARE,
         "PHOTO_TAG_BATCH": PHOTO_TAG_BATCH,
         "PHOTO_TAG_WORKERS": PHOTO_TAG_WORKERS,

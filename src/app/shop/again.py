@@ -20,11 +20,20 @@ from typing import Any
 
 from app.config import Config
 from app.llm import Budget
+from app.shop.bets import (
+    DISMISS_PREFIX,
+    allowance,
+    bet_rows,
+    dismissed_keys,
+    record_batch,
+    revocation_message,
+    update_bets,
+)
 from app.shop.candidates import TagBook, Taggable, note_key, tag_results
 from app.shop.clock import Clock
 from app.shop.decide import Exposure, build_exposure, typed_dimensions
-from app.shop.evidence import seller_entries
-from app.shop.models import MAX_SEARCH_TEXT_CHARS, ShopQuery, StoredProfile
+from app.shop.evidence import baseline_of, seller_entries
+from app.shop.models import MAX_SEARCH_TEXT_CHARS, SellerBet, ShopQuery, StoredProfile
 from app.shop.nearby import Fingerprinter, meta_trace
 from app.shop.phototags import ThumbCache
 from app.shop.prefs import (
@@ -199,7 +208,9 @@ def seller_plan(
     whose last search found nothing new): "<seller> <request search text>", the next page not yet
     fetched. If fewer qualify, the remaining slots go to peers of the same tier, as before. None
     of this needs a chip to be showing."""
-    earned, _ = seller_entries(rated_map(session))
+    rated = rated_map(session)
+    waiting = dismissed_keys(dict(profile.dismissed), baseline_of(rated).rated)
+    earned, _ = seller_entries(rated, waiting)
     done = session.searched_peers
     out: list[tuple[str, str, str]] = []
     liked: set[str] = set()
@@ -223,6 +234,54 @@ def seller_plan(
             if len(out) >= SELLER_SEARCHES:
                 break
     return out, liked
+
+
+def prepare_bets(
+    session: Session, warnings: list[str]
+) -> tuple[Session, dict[str, SellerBet], dict[str, str]]:
+    """Read the ratings that arrived since the last Shop Again against each seller's bet (stage 2s):
+    grow, revoke or leave it. A revocation goes into the profile's dismissals (so the chip and the
+    named searches stop at once, and the seller waits `SELLER_REDISMISS_RATED` more ratings) and
+    says so in `warnings`. Returns (the session to build from, the bets, item id -> rating)."""
+    rated = rated_map(session)
+    ratings = {rid: r.rating for rid, r in rated.items() if r.rating}
+    base = baseline_of(rated)
+    previous = session.profile
+    dismissed = dict(previous.dismissed) if previous is not None else {}
+    waiting = dismissed_keys(dismissed, base.rated)
+    earned, _ = seller_entries(rated, waiting)
+    eligible = {seller_key(seller_name(e)): seller_name(e) for e in earned}
+    update = update_bets(session.seller_bets, ratings, base.rate, eligible, base.rated)
+    for row in update.revoked:
+        warnings.append(revocation_message(row["name"]))
+        dismissed[f"{DISMISS_PREFIX}{row['key']}"] = base.rated
+    patch: dict[str, Any] = {"seller_bets": update.bets}
+    if update.revoked and previous is not None:
+        patch["profile"] = previous.model_copy(update={"dismissed": dismissed})
+    return session.model_copy(update=patch), update.bets, ratings
+
+
+def apply_bets(
+    ctx: AgainContext,
+    profile: StoredProfile,
+    bets: dict[str, SellerBet],
+    ratings: dict[str, str],
+    focus_keys: set[str],
+) -> None:
+    """One allowance per seller (stage 2s): the chip's, the named search's and a pin's are the same
+    number of slots. A seller without an active bet gets the ordinary cap; a pin has no effect
+    without one; a seller the shopper asked for by name ("more from X") keeps its half batch."""
+    pinned = set(profile.pinned_sellers)
+    active: dict[str, dict[str, Any]] = {}
+    for entry in (e for e in profile.inferred if e.attr_kind == "seller"):
+        key = seller_key(seller_name(entry))
+        bet = bets.setdefault(key, SellerBet(key=key, name=seller_name(entry)))
+        if bet.status == "active":
+            active[key] = allowance(bet, ratings, key in pinned)
+    ctx.seller_slots = {k: int(a["slots"]) for k, a in active.items()}
+    ctx.affinity_sellers = {k for k in ctx.affinity_sellers if k in active or k in focus_keys}
+    ctx.pinned_sellers = {k for k in ctx.pinned_sellers if k in active}
+    ctx.bet_rows = bet_rows(bets, ratings, active, len(ratings))
 
 
 def again_context(
@@ -470,6 +529,10 @@ def run_shop_again(
     # a Shop Again makes many small model calls (tagging batches, retries): its own step cap
     budget = Budget(replace(config, max_steps=max(config.max_steps, config.shop_max_steps)))
     warnings: list[str] = []
+    bets: dict[str, SellerBet] | None = None
+    ratings_now: dict[str, str] = {}
+    if config.shop_seller_bets:  # stage 2s: read how each seller's boost did, before anything else
+        session, bets, ratings_now = prepare_bets(session, warnings)
     book = TagBook(cache=session.tag_cache)
     topic_now = current_topic(session)
     book.notes = build_set(topic_now.refinements if topic_now is not None else []).note_specs()
@@ -562,6 +625,8 @@ def run_shop_again(
         ctx.peer_queries = [(key, name, text), *[p for p in ctx.peer_queries if p[0] != key]][
             :SELLER_SEARCHES
         ]
+    if bets is not None:
+        apply_bets(ctx, profile, bets, ratings_now, {seller_key(n) for n in rs.focus_sellers})
     qinput = _query_input(session, base, query, profile, ctx, queries)
     if qinput is not None:
         qinput.setting += writer_lines(rs)
@@ -575,6 +640,9 @@ def run_shop_again(
     outcome = run_query(
         query, search, config, budget, warnings, started, ctx, clock, progress, near, photos
     )
+    if bets is not None:  # remember what was shown under each boost; the caller stores the bets
+        record_batch(bets, outcome.boosted, len(session.searches) + 1)
+        outcome.bets = bets
     # the request chips keep showing only what the parser read, and a refined price
     outcome.display_query = (
         base.model_copy(update={"price_min": query.price_min, "price_max": query.price_max})

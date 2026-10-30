@@ -531,6 +531,11 @@
         ', diversity guards ' + bd.diversity_guard + ', other ' + bd.other + '.'
       ]));
     }
+    (b.seller_bets || []).forEach(function (x) {
+      box.appendChild(h('p', { class: 'why-line' + (x.status === 'revoked' ? ' why-warn' : '') }, [
+        x.text + (x.status === 'active' && x.shown !== undefined ? '; ' + x.shown + ' shown this batch, ' + x.boosted_now + ' of them under the boost.' : '.')
+      ]));
+    });
     if (b.seller_cap) {
       var capSteps = (b.seller_cap.steps || []).map(function (x) {
         return x.cap + ' per seller gave ' + x.size + (x.kept ? '' : ' (not kept)');
@@ -754,9 +759,13 @@
       var evBox = h('div', { class: 'why-dim why-evidence' }, [
         h('h4', {}, ['like-rate evidence (baseline ' + pct(ev.baseline) + ' of all rated items liked)'])
       ]);
-      evBox.appendChild(whyTable(['group', 'name', 'rated', 'liked', 'like rate', 'baseline', 'verdict', 'why'],
+      var bets = {};
+      var batchTrace = (state.search && state.search.trace && state.search.trace.batch) || {};
+      (batchTrace.seller_bets || []).forEach(function (x) { bets[x.seller] = x.text.slice(x.seller.length + 2); });
+      evBox.appendChild(whyTable(['group', 'name', 'rated', 'liked', 'like rate', 'baseline', 'verdict', 'why', 'exposure'],
         ev.rows.map(function (r) {
-          return [r.kind.replace(/_/g, ' '), r.name, r.rated, r.liked, pct(r.like_rate), pct(r.baseline), r.verdict, r.reason];
+          return [r.kind.replace(/_/g, ' '), r.name, r.rated, r.liked, pct(r.like_rate), pct(r.baseline), r.verdict, r.reason,
+            r.kind === 'seller' ? (bets[r.name] || '-') : '-'];
         })));
       evBox.appendChild(h('p', { class: 'why-reason' }, [
         'A seller, retailer tier or value earns a chip or a leaning from its own like rate (at least 4 rated, 2 liked, 1.5 times the baseline and 35%); how often it was shown does not matter.'
