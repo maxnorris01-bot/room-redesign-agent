@@ -172,3 +172,7 @@ less than 8 s; the eval can record and replay Serper responses and lint a saved 
 
 Stage 2s (seller affinity that checks its own bet): a learned seller gets one allowance (chip, named search and pin alike) that starts at 4 slots of 24, grows by 2 only when
 its boosted items were liked, and is revoked at once when at least 3 of them are rated and mostly disliked; the seller can return after 8 further ratings. See ADR 0012, stage 2s.
+
+## Deployment (Shop Mode, stage D1, ADR 0013)
+Shop Mode can run as an invite-only JSON API (`python -m app.shop.serve`, `APP_DEPLOY_MODE=1`) behind the portfolio site's `/api/shop/*` rewrite. Contract: `docs/api-contract.md`; runbook: `docs/deploy.md`.
+Local use is unchanged. Caps ($0.50 session, $1.00 invite/day, $3.00 day, 8 searches, 25 Shop Agains) are proposed defaults, not locked. Out of scope: the React page, accounts, payments, Redesign Mode hosting.

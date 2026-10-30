@@ -174,6 +174,17 @@ SELLER_REVOKE_MAX_RATE = 0.35  # revoked below this like rate, or below the sess
 SELLER_REDISMISS_RATED = 8  # a revoked seller can return only after this many further ratings
 
 
+# stage D1: deployment spend caps (ADR 0013). Judgment: an invite is a friend looking around, not a
+# customer. A search or Shop Again costs about $0.03 (Anthropic plus Serper), so $0.50 a session is
+# about 15 actions, $1.00 an invite a day about 30, and $3.00 a day for everyone bounds the worst
+# day at the price of a coffee. All can be changed by environment (`APP_CAP_*`).
+CAP_SESSION_USD = 0.50
+CAP_INVITE_DAY_USD = 1.00
+CAP_GLOBAL_DAY_USD = 3.00
+CAP_SESSION_SEARCHES = 8
+CAP_SESSION_AGAINS = 25
+
+
 def seller_slots(share: float, batch_size: int = RESULT_COUNT) -> int:
     """A share of a batch as whole slots (a sixth of 24 is 4), never fewer than 1."""
     return max(1, round(share * batch_size))

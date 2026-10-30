@@ -16,6 +16,7 @@ from app.shop import store as store_mod
 from app.shop.again import run_shop_again
 from app.shop.ahead import LookAhead
 from app.shop.clock import Clock
+from app.shop.context import current_invite
 from app.shop.jobs import JobError, JobManager
 from app.shop.models import (
     MAX_COMMENT_CHARS,
@@ -53,8 +54,8 @@ from app.shop.store import (
     RatingRecord,
     SearchRecord,
     Session,
+    SessionBackend,
     SessionError,
-    SessionStore,
     Topic,
     advance_topic,
     comment_key,
@@ -85,10 +86,21 @@ DEFAULT = _Default()
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, message: str) -> None:
+    """An error the API reports. `code` and `extra` are used by the deployment API's error shape
+    (docs/api-contract.md): a cap_reached error carries `limit` and `resets_at` in `extra`."""
+
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        code: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.message = message
+        self.code = code
+        self.extra = extra or {}
 
 
 def headline(record: SearchRecord) -> str:
@@ -134,7 +146,7 @@ class ShopService:
     def __init__(
         self,
         config: Config,
-        store: SessionStore,
+        store: SessionBackend,
         search: SearchProvider,
         lookup: ProductLookup,
         thumbnailer: Thumbnailer | None | _Default = DEFAULT,
@@ -152,8 +164,14 @@ class ShopService:
         self.lookup_provider = lookup
         self.thumb_cache = ThumbCache(self.thumbnailer, config)  # one fetch per thumbnail URL
         self.fingerprinter = build_fingerprinter(config, cache=self.thumb_cache)
+        self.guard: Any = None  # the spend caps (`app.shop.caps.CapGuard`), deployment mode only
         self.ahead = LookAhead(config, store, lookup)
         self.prep = PrepManager(config, store, self.thumbnailer, self.clock, self.fingerprinter)
+
+    def _cap(self, kind: str, session_id: Any = None) -> None:
+        """Refuse to start work that would run past a spend cap (deployment mode)."""
+        if self.guard is not None:
+            self.guard.check(kind, session_id if isinstance(session_id, str) else None)
 
     # ---- views ----------------------------------------------------------------------------
 
@@ -395,6 +413,7 @@ class ShopService:
         if not cleaned:
             raise ApiError(400, "type what you are looking for")
         if session_id in (None, ""):
+            self._cap("search")
             return cleaned, None  # created after the search succeeds, so a failure leaves no file
         session = self._load(session_id)
         if len(session.searches) >= MAX_SEARCHES_PER_SESSION:
@@ -402,10 +421,15 @@ class ShopService:
                 429, f"search limit for this session reached ({MAX_SEARCHES_PER_SESSION})"
             )
         assert isinstance(session_id, str)
+        self._cap("search", session_id)
         return cleaned, session_id
 
     def _do_search(
-        self, cleaned: str, session_id: str | None, progress: Callable[[str], None] | None = None
+        self,
+        cleaned: str,
+        session_id: str | None,
+        progress: Callable[[str], None] | None = None,
+        owner: str | None = None,
     ) -> dict[str, Any]:
         near = near_context(
             self.store.load(session_id) if session_id and self.store.exists(session_id) else None,
@@ -423,7 +447,7 @@ class ShopService:
             raise ApiError(429, str(exc)) from None
         if session_id is None:
             try:
-                session_id = self.store.create().session_id
+                session_id = self.store.create(owner).session_id
             except OSError:
                 raise ApiError(500, "could not create a session") from None
         with self.store.transaction(session_id) as session:
@@ -435,13 +459,16 @@ class ShopService:
 
     def search(self, session_id: Any, request: Any) -> dict[str, Any]:
         cleaned, sid = self._prepare_search(session_id, request)
-        return self._do_search(cleaned, sid)
+        return self._do_search(cleaned, sid, owner=current_invite.get())
 
     def start_search(self, session_id: Any, request: Any) -> dict[str, Any]:
         """Start a search as a background job: `{"job_id": ...}` (poll `job_status`)."""
         cleaned, sid = self._prepare_search(session_id, request)
+        owner = current_invite.get()  # the job runs in another thread: capture it here
         return {
-            "job_id": self._start("search", sid, lambda say: self._do_search(cleaned, sid, say))
+            "job_id": self._start(
+                "search", sid, lambda say: self._do_search(cleaned, sid, say, owner)
+            )
         }
 
     def _start(
@@ -599,8 +626,10 @@ class ShopService:
     def resolve(self, session_id: Any, result_id: Any) -> dict[str, Any]:
         if not isinstance(result_id, str):
             raise ApiError(400, "result_id must be text")
-        self._load(session_id)
+        loaded = self._load(session_id)
         assert isinstance(session_id, str)
+        if result_id not in loaded.resolved:  # a cached link costs nothing and is never refused
+            self._cap("spend", session_id)
         try:
             with (
                 self.ahead.key_lock(session_id, result_id),
@@ -629,8 +658,10 @@ class ShopService:
         per-session cap). If Open or an earlier gallery already looked it up, this costs nothing."""
         if not isinstance(result_id, str):
             raise ApiError(400, "result_id must be text")
-        self._load(session_id)
+        loaded = self._load(session_id)
         assert isinstance(session_id, str)
+        if self.config.shop_gallery and result_id not in loaded.product_cache:
+            self._cap("spend", session_id)
         if not self.config.shop_gallery:
             raise ApiError(404, "not found")  # the gallery is off (APP_SHOP_GALLERY)
         try:
@@ -695,6 +726,7 @@ class ShopService:
                 429,
                 f"Shop Again limit reached ({self.config.shop_agains_per_session} per session)",
             )
+        self._cap("again", session_id)
         return session
 
     def _await_prep(
@@ -871,6 +903,7 @@ class ShopService:
         cleaned = clean_instruction(text)
         if not cleaned:
             raise ApiError(400, "type an instruction first")
+        self._cap("spend", session_id)
         session = self._load(session_id)
         assert isinstance(session_id, str)
         self._topic_of(session)

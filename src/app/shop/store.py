@@ -20,10 +20,10 @@ import secrets
 import threading
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -180,7 +180,26 @@ def valid_session_id(session_id: str) -> bool:
     return bool(SESSION_ID_RE.match(session_id))
 
 
+class SessionBackend(Protocol):
+    """What the service needs from a session store: the JSON files (`SessionStore`, the default,
+    local) and the database (`app.shop.dbstore.SqlSessionStore`, chosen by `DATABASE_URL`)."""
+
+    def create(self, owner: str | None = None) -> Session: ...
+
+    def exists(self, session_id: str) -> bool: ...
+
+    def load(self, session_id: str) -> Session: ...
+
+    def save(self, session: Session) -> None: ...
+
+    def transaction(self, session_id: str) -> AbstractContextManager[Session]: ...
+
+    def delete(self, session_id: str) -> None: ...
+
+
 class SessionStore:
+    """One JSON file per session (the default store)."""
+
     def __init__(self, root: Path = DEFAULT_ROOT) -> None:
         self.root = root
         self._locks: dict[str, threading.Lock] = {}
@@ -195,11 +214,19 @@ class SessionStore:
         with self._guard:
             return self._locks.setdefault(session_id, threading.Lock())
 
-    def create(self) -> Session:
+    @staticmethod
+    def new_session() -> Session:
         now = now_iso()
-        session = Session(session_id=secrets.token_urlsafe(12), created_at=now, updated_at=now)
+        return Session(session_id=secrets.token_urlsafe(12), created_at=now, updated_at=now)
+
+    def create(self, owner: str | None = None) -> Session:
+        """A new session on disk (`owner` is for the database store; files have no owner)."""
+        session = self.new_session()
         self.save(session)
         return session
+
+    def delete(self, session_id: str) -> None:
+        self._path(session_id).unlink(missing_ok=True)
 
     def exists(self, session_id: str) -> bool:
         return valid_session_id(session_id) and self._path(session_id).is_file()

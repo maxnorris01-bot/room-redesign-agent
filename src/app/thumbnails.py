@@ -4,10 +4,14 @@ This code fetches a URL that came from a third-party response, and may later run
 treats the URL as untrusted:
 
   * https only, including every redirect (redirects are followed by hand, at most 3);
-  * the host must resolve only to public addresses: private, loopback, link-local, reserved,
-    multicast and unspecified addresses are refused, and so are IP-literal hosts in those ranges
-    (a DNS answer could still change between the check and the connection; a server deployment
-    should also restrict egress at the network level);
+  * the host is resolved ONCE per request and must resolve only to public addresses: private,
+    loopback, link-local, unique-local (including Fly's fdaa::/16), carrier-grade NAT, reserved,
+    multicast and unspecified addresses are refused, IPv4-mapped IPv6 addresses are judged by the
+    IPv4 address inside, and so are IP-literal hosts in those ranges. The connection then goes to
+    the address that was checked (pinned: the URL carries the IP, the Host header and the TLS server
+    name stay the original host), so a DNS answer that changes between the check and the connection
+    cannot send the request somewhere else (stage D1; this closed the rebinding gap);
+  * a redirect may only stay on the same host (it is checked and pinned again);
   * a hard 3 second deadline for the whole fetch, and at most 1 MB read;
   * the content type must be an image (SVG is refused), and the bytes must decode with Pillow;
   * the image is re-encoded small (`prepare_image`, which also strips metadata);
@@ -67,12 +71,25 @@ def host_of(url: str) -> str:
         return ""
 
 
+BLOCKED_NETWORKS = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+        "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7", "fe80::/10", "fdaa::/16",
+    )
+)  # fmt: skip
+
+
 def blocked_address(ip: str) -> bool:
     """True for any address that is not a plain public unicast address."""
     try:
         addr = ipaddress.ip_address(ip.split("%")[0])
     except ValueError:
         return True  # not an address at all: refuse
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return blocked_address(str(addr.ipv4_mapped))  # ::ffff:10.0.0.1 is 10.0.0.1
+    if any(addr in net for net in BLOCKED_NETWORKS if net.version == addr.version):
+        return True
     return (
         addr.is_private
         or addr.is_loopback
@@ -102,14 +119,14 @@ class HttpThumbnailer:
         self._resolver = resolver or system_resolver
         self._max_bytes = max_bytes  # a fingerprint fetcher reads at most 500 KB
 
-    def _check_host(self, url: str) -> str | None:
-        """None when the URL is acceptable, else a short reason."""
+    def _check_host(self, url: str) -> tuple[str | None, str]:
+        """(a short reason or None, the address to connect to). The host is resolved here, once."""
         parts = urlsplit(url)
         if parts.scheme != "https":
-            return "not https"
+            return "not https", ""
         host = parts.hostname
         if not host:
-            return "no host"
+            return "no host", ""
         try:
             literal = ipaddress.ip_address(host)
         except ValueError:
@@ -117,12 +134,24 @@ class HttpThumbnailer:
         try:
             addresses = [str(literal)] if literal is not None else self._resolver(host)
         except OSError:
-            return "host did not resolve"
+            return "host did not resolve", ""
         if not addresses:
-            return "host did not resolve"
+            return "host did not resolve", ""
         if any(blocked_address(a) for a in addresses):
-            return "address not public"
-        return None
+            return "address not public", ""
+        return None, addresses[0]
+
+    @staticmethod
+    def _pinned(url: str, address: str) -> tuple[str, dict[str, str], dict[str, str]]:
+        """(the URL with the checked address in place of the host, the headers that keep the
+        original host, the extensions that keep the TLS server name)."""
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        shown = f"[{address}]" if ":" in address else address
+        netloc = shown + (f":{parts.port}" if parts.port else "")
+        pinned = parts._replace(netloc=netloc).geturl()
+        authority = host + (f":{parts.port}" if parts.port else "")
+        return pinned, {"Host": authority}, {"sni_hostname": host}
 
     def fetch(self, url: str) -> ThumbResult:
         host = host_of(url)
@@ -130,12 +159,18 @@ class HttpThumbnailer:
         current = url
         try:
             for _ in range(MAX_REDIRECTS + 1):
-                refused = self._check_host(current)
+                if urlsplit(current).scheme != "https":
+                    return ThumbResult(False, "not https", host_of(current))
+                if host_of(current) != host:  # never even looked up
+                    return ThumbResult(False, "redirect to another host", host_of(current))
+                refused, address = self._check_host(current)
                 if refused:
                     return ThumbResult(False, refused, host_of(current))
+                target, extra_headers, extensions = self._pinned(current, address)
                 with self._client.stream(
-                    "GET", current, headers={"Accept": "image/*"}, timeout=TIMEOUT_S
-                ) as response:
+                    "GET", target, headers={"Accept": "image/*", **extra_headers},
+                    timeout=TIMEOUT_S, extensions=extensions,
+                ) as response:  # fmt: skip
                     if 300 <= response.status_code < 400:
                         location = response.headers.get("location")
                         if not location:

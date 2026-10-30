@@ -721,15 +721,18 @@ def test_redirects_must_stay_https_and_public() -> None:
             else _image_response()
         )
 
-    assert _http(to("https://other.example/b.jpg")).fetch("https://cdn.example/a.jpg").ok
+    # stage D1: a redirect may stay on the same host, never go to another one
+    other = _http(to("https://other.example/b.jpg")).fetch("https://cdn.example/a.jpg")
+    assert not other.ok and other.reason == "redirect to another host"
     assert _http(to("/b.jpg")).fetch("https://cdn.example/a.jpg").ok  # relative stays https
+    assert _http(to("https://cdn.example/c/b.jpg")).fetch("https://cdn.example/a.jpg").ok
     plain = _http(to("http://other.example/b.jpg")).fetch("https://cdn.example/a.jpg")
     assert not plain.ok and plain.reason == "not https"
     resolver = lambda h: ["10.0.0.9"] if h == "internal.example" else ["93.184.216.34"]  # noqa: E731
     private = _http(to("https://internal.example/b.jpg"), resolver).fetch(
         "https://cdn.example/a.jpg"
     )
-    assert not private.ok and private.reason == "address not public"
+    assert not private.ok and private.reason == "redirect to another host"  # never resolved
     loop = _http(lambda r: httpx.Response(302, headers={"location": "https://cdn.example/a.jpg"}))
     assert loop.fetch("https://cdn.example/a.jpg").reason == "too many redirects"
     nolocation = _http(lambda r: httpx.Response(302))

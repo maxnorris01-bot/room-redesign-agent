@@ -1,0 +1,38 @@
+# One Fly Machine for the Shop Mode API (ADR 0013). Edit `app` to the name from `fly apps create`.
+# Secrets (ANTHROPIC_API_KEY, SERPER_API_KEY, SERPAPI_API_KEY, DATABASE_URL, APP_ORIGIN_SECRET,
+# APP_ALLOWED_HOSTS, APP_ALLOWED_ORIGINS, APP_PUBLIC_URL, APP_CONTACT_EMAIL) are set with
+# `fly secrets set`, never written here. See docs/deploy.md.
+app = "room-redesign-shop"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  APP_DEPLOY_MODE = "1"
+  APP_LLM_MODE = "live"
+  APP_HOST = "0.0.0.0"
+  APP_PORT = "8080"
+  APP_API_PREFIX = "/api/shop"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"    # stop when idle ...
+  auto_start_machines = true     # ... and start on the next request
+  min_machines_running = 0       # one machine exists (fly scale count 1); it may be stopped
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 25
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
