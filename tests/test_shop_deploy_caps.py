@@ -80,7 +80,19 @@ class Rig:
             return started
         job = json.loads(started.body)["job_id"]
         self.service.jobs.wait(job)
-        return self.call("GET", f"/job/{job}", cookie=cookie)
+        done = self.call("GET", f"/job/{job}", cookie=cookie)
+        # The Rig turns background preparation on, and a preparation task can finish after the job
+        # does, adding its own spend to the stored session and the counters. Settle it here so no
+        # test reads a cost or a usage row while it is still moving (a slow machine showed this).
+        # Tests of background spend itself call `service.prep.wait` explicitly and say so.
+        sid = (
+            json.loads(done.body).get("result", {}).get("session_id")
+            if done.status == 200
+            else None
+        )
+        if sid:
+            self.service.prep.wait(str(sid), 30)
+        return done
 
     def usage(self, scope: str, key: str, day: str) -> float:
         rows = self.db.transaction(
