@@ -31,3 +31,12 @@ people. Every search and Shop Again costs real provider money, so access and spe
 - One machine and in-memory jobs mean a restart loses jobs in flight (the session is kept; the visitor searches again).
 - Thumbnails are not served by this API (images load from provider https URLs), so no cache exception was needed: every response is `no-store`.
 - Not verified here: real Neon, Fly, Vercel (see `docs/deploy.md`, "Smoke test").
+
+## Found in the first deployment (stage D1.1)
+
+Every search on the real Fly machine failed within a second with a generic 500 and nothing in the log. Cause: `tracing.span` appended to the relative `runs/trace.jsonl`; the container runs as the
+non-root user `app`, but `/app` (made by `WORKDIR`) was owned by root, so the job raised `PermissionError`. Tests and diagnostics had run as a user who could write there, and the smoke had tracing disabled.
+Stopgap: the Fly secret `APP_TRACING_DISABLED=1`. Fixes: a trace write failure (`OSError`) is reported once on stderr and never fails a call; `/app` is owned by `app`; the image and `fly.toml` set
+`APP_TRACING_DISABLED=1` (traces are useless on a disposable disk); a failed job or an unexpected handler error now logs one redacted line (class, message cut to 300 characters, repository file and line;
+no ids, bodies, cookies or traces) while the client keeps the generic sentence; `make deploy-smoke` runs a search as a process whose working directory is read-only with tracing on, and `make deploy-check`
+checks the Dockerfile and `fly.toml` for these settings.

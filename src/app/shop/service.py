@@ -40,6 +40,7 @@ from app.shop.prefs import (
 )
 from app.shop.prep import PrepManager
 from app.shop.progress import SHOP_AGAIN_REFINE_STEPS, Progress
+from app.shop.redact import log_failure
 from app.shop.refine import REJECTED, add_chips, clean_instruction, interpret
 from app.shop.resolve import (
     UnknownResult,
@@ -479,14 +480,19 @@ class ShopService:
         steps: tuple[tuple[str, str], ...] | None = None,
     ) -> str:
         try:
-            return self.jobs.start(session_id, kind, work, self._job_failure, steps)
+            return self.jobs.start(
+                session_id, kind, work, lambda exc: self._job_failure(exc, kind), steps
+            )
         except JobError as exc:
             raise ApiError(exc.status, exc.message) from None
 
     @staticmethod
-    def _job_failure(exc: Exception) -> tuple[int, str]:
+    def _job_failure(exc: Exception, kind: str = "job") -> tuple[int, str]:
         if isinstance(exc, ApiError):
+            if exc.status >= 500:
+                log_failure(kind, exc)
             return exc.status, exc.message
+        log_failure(kind, exc)  # the page only gets the generic sentence; the log gets the class
         return 500, "Something went wrong; try again"
 
     def job_status(self, job_id: Any, session_id: Any) -> dict[str, Any]:

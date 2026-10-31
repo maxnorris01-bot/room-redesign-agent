@@ -9,6 +9,7 @@ innermost frame in `src/` or `scripts/`. Nothing here ever reads the environment
 from __future__ import annotations
 
 import re
+import sys
 import traceback
 from pathlib import Path
 
@@ -16,7 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 MESSAGE_CHARS = 300
 _PATTERNS = (
     re.compile(r"(?i)\bhttps?://\S+"),  # a request URL (its query may hold a key)
-    re.compile(r"(?i)(authorization|x-api-key|api[-_ ]?key|token|secret|password)\s*[:=]\s*\S+"),
+    re.compile(
+        r"(?i)(authorization|x-api-key|api[-_ ]?key|token|secret|password|cookie|shop_login)"
+        r"\s*[:=]\s*\S+"
+    ),
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{6,}"),
     re.compile(r"\b[A-Za-z0-9_-]{32,}\b"),
@@ -47,3 +51,11 @@ def describe_exception(exc: BaseException) -> tuple[str, str]:
     """(`ClassName: redacted message`, the repository location), the message cut to 300 chars."""
     message = redact(" ".join(str(exc).split()))[:MESSAGE_CHARS]
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__, repo_frame(exc)
+
+
+def log_failure(tag: str, exc: BaseException) -> None:
+    """ONE line on stderr for an unexpected failure: a short tag (a job kind or route name), the
+    exception class, its redacted message and the repository file and line. Never a session id, a
+    body, a header, a cookie or a traceback with locals."""
+    what, where = describe_exception(exc)
+    print(f"shop error [{tag}] {what}" + (f" at {where}" if where else ""), file=sys.stderr)

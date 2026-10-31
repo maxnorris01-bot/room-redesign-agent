@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from app.shop.context import current_invite
 from app.shop.deploy import CODES, LOCAL_HOST, DeploySettings
+from app.shop.redact import log_failure
 from app.shop.routes import ROUTES, STATE_CHANGING, Route, match
 from app.shop.service import UNSET, ApiError, ShopService
 
@@ -326,6 +327,11 @@ class ShopApp:
                 current_invite.reset(token)
         except ApiError as exc:
             return self._api_error(exc)
+        except Exception as exc:
+            if deploy is None:
+                raise
+            log_failure(route.name, exc)  # one redacted line; the client gets the generic sentence
+            return self._error(500, "unexpected error")
         if deploy is not None and route.name == "job" and result.get("state") == "error":
             if int(result.get("status", 500)) >= 500:  # no provider detail leaves the service
                 result = {**result, "error": "Something went wrong on our side. Please try again."}
