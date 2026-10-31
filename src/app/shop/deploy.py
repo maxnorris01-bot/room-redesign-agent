@@ -1,4 +1,4 @@
-"""Deployment settings for the invite-only Shop Mode API (ADR 0013).
+"""Deployment settings for the Shop Mode JSON API (ADR 0013, 0014).
 
 Everything comes from the environment; with `APP_DEPLOY_MODE` unset the service behaves exactly as
 it did before: 127.0.0.1, today's routes, today's page, no login. In deployment mode it serves only
@@ -16,10 +16,14 @@ from urllib.parse import urlsplit
 
 from app.shop.thresholds import (
     CAP_GLOBAL_DAY_USD,
-    CAP_INVITE_DAY_USD,
+    CAP_IP_DAY_USD,
     CAP_SESSION_AGAINS,
     CAP_SESSION_SEARCHES,
     CAP_SESSION_USD,
+    MAX_VISITORS_DAY,
+    MAX_VISITORS_PER_IP_DAY,
+    STARTS_PER_IP_MINUTE,
+    VISITOR_RETENTION_DAYS,
 )
 
 LOCAL_HOST = "127.0.0.1"
@@ -30,7 +34,7 @@ PREFIX_RE = re.compile(r"^/[a-z0-9][a-z0-9/_-]*[a-z0-9]$")
 
 # error codes of the deployment API (docs/api-contract.md)
 CODES = {
-    "login_required": 401, "forbidden": 403, "not_found": 404, "rate_limited": 429,
+    "session_required": 401, "forbidden": 403, "not_found": 404, "rate_limited": 429,
     "cap_reached": 429, "maintenance": 503, "bad_request": 400, "server_error": 500,
 }  # fmt: skip
 
@@ -66,10 +70,14 @@ class DeploySettings:
     disabled: bool = False
     database_url: str = field(default="", repr=False)
     cap_session_usd: float = CAP_SESSION_USD
-    cap_invite_day_usd: float = CAP_INVITE_DAY_USD
+    cap_ip_day_usd: float = CAP_IP_DAY_USD
     cap_global_day_usd: float = CAP_GLOBAL_DAY_USD
     cap_searches: int = CAP_SESSION_SEARCHES
     cap_shop_agains: int = CAP_SESSION_AGAINS
+    max_visitors_per_ip_day: int = MAX_VISITORS_PER_IP_DAY
+    max_visitors_day: int = MAX_VISITORS_DAY
+    starts_per_ip_minute: int = STARTS_PER_IP_MINUTE
+    retention_days: int = VISITOR_RETENTION_DAYS
 
     @property
     def secure_cookie(self) -> bool:
@@ -128,8 +136,14 @@ def from_env(environ: Mapping[str, str] | None = None) -> DeploySettings:
         disabled=_flag(env.get("APP_SHOP_DISABLED")),
         database_url=env.get("DATABASE_URL", ""),
         cap_session_usd=_number(env, "APP_CAP_SESSION_USD", CAP_SESSION_USD),
-        cap_invite_day_usd=_number(env, "APP_CAP_INVITE_DAY_USD", CAP_INVITE_DAY_USD),
+        cap_ip_day_usd=_number(env, "APP_CAP_IP_DAY_USD", CAP_IP_DAY_USD),
         cap_global_day_usd=_number(env, "APP_CAP_GLOBAL_DAY_USD", CAP_GLOBAL_DAY_USD),
         cap_searches=int(_number(env, "APP_CAP_SEARCHES", CAP_SESSION_SEARCHES)),
         cap_shop_agains=int(_number(env, "APP_CAP_SHOP_AGAINS", CAP_SESSION_AGAINS)),
+        max_visitors_per_ip_day=int(
+            _number(env, "APP_MAX_VISITORS_PER_IP_DAY", MAX_VISITORS_PER_IP_DAY)
+        ),
+        max_visitors_day=int(_number(env, "APP_MAX_VISITORS_DAY", MAX_VISITORS_DAY)),
+        starts_per_ip_minute=int(_number(env, "APP_STARTS_PER_IP_MINUTE", STARTS_PER_IP_MINUTE)),
+        retention_days=int(_number(env, "APP_VISITOR_RETENTION_DAYS", VISITOR_RETENTION_DAYS)),
     )

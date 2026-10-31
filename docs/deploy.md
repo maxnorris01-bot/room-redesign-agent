@@ -1,10 +1,11 @@
-# Deploying Shop Mode (invite-only JSON API on Fly)
+# Deploying Shop Mode (anonymous JSON API on Fly)
 
 Shop Mode runs as one Python service on a single Fly Machine. In deployment it is API only: it serves `GET /healthz` and a JSON
 API under `/api/shop`, nothing else (no HTML, no `app.js`, no CSS). The portfolio site (Vercel, React) gets its own `/shop` page
 and forwards `/api/shop/*` to this service, so the browser only ever talks to the portfolio's domain. Sessions live in a small
-hosted Postgres (Neon); invite codes, login sessions and spend counters live in the same database. The contract the React page
-uses is `docs/api-contract.md`; the decisions are ADR 0013.
+hosted Postgres (Neon); anonymous visitors, their cookies' hashes and the spend counters live in the same database. There are no invite
+codes: every visitor gets an automatic anonymous session and the limits below protect the spend. The contract the React page
+uses is `docs/api-contract.md`; the decisions are ADR 0013 and ADR 0014.
 
 Nothing in this repository has been run against a real Fly app, a real Neon database or a real Vercel deployment. The tests use mock
 providers and SQLite for the same SQL; the list in "Smoke test" is what only the real services can prove.
@@ -33,9 +34,15 @@ Settings (not secret, set with `fly secrets set` too, or in `fly.toml [env]`; `f
 | `APP_ALLOWED_HOSTS` | the Fly host name, for example `room-redesign-shop.fly.dev` (comma separated) |
 | `APP_ALLOWED_ORIGINS` | the portfolio origin, for example `https://your-portfolio.example` (comma separated); POSTs must come from it |
 | `APP_PUBLIC_URL` | the portfolio's public https URL (decides the `Secure` cookie flag) |
-| `APP_CONTACT_EMAIL` | shown by `GET /auth/session` for "ask for an invite" |
+| `APP_CONTACT_EMAIL` | shown by `GET /auth/session` (a contact line for the page, optional) |
 | `APP_SHOP_DISABLED` | `1` is the kill switch (every call but `/healthz` and `GET /auth/session` answers 503) |
-| `APP_CAP_SESSION_USD`, `APP_CAP_INVITE_DAY_USD`, `APP_CAP_GLOBAL_DAY_USD`, `APP_CAP_SEARCHES`, `APP_CAP_SHOP_AGAINS` | spend caps; defaults $0.50, $1.00, $3.00, 8 and 25 |
+| `APP_CAP_SESSION_USD` | spend cap per shop session, default `0.50` |
+| `APP_CAP_IP_DAY_USD` | spend cap per visitor address per UTC day, default `1.00` (replaces `APP_CAP_INVITE_DAY_USD`, which is no longer read) |
+| `APP_CAP_GLOBAL_DAY_USD` | spend cap for everyone per UTC day, default `2.00` |
+| `APP_CAP_SEARCHES`, `APP_CAP_SHOP_AGAINS` | searches and Shop Agains per shop session, defaults `8` and `25` |
+| `APP_MAX_VISITORS_PER_IP_DAY`, `APP_MAX_VISITORS_DAY` | visitors one address may start per UTC day (`20`), and everyone (`200`); past it `POST /auth/start` answers 429 with `Retry-After` |
+| `APP_STARTS_PER_IP_MINUTE` | `POST /auth/start` calls per address per minute, default `10` |
+| `APP_VISITOR_RETENTION_DAYS` | visitor, login and session data unused this long is deleted, default `30` (usage counters are deleted after 40 days) |
 | `APP_ALLOW_NO_SECRET` | **never set this in production.** It exists only so the service can start without `APP_ORIGIN_SECRET` for local testing |
 
 The service refuses to start in deployment mode without `APP_ORIGIN_SECRET`, `APP_ALLOWED_HOSTS`, `APP_ALLOWED_ORIGINS` and `DATABASE_URL`, and
@@ -54,21 +61,23 @@ Run these yourself, in this order. Replace the names in angle brackets.
 5. **One machine only.** `fly scale count 1` after the first deploy (the service keeps in-flight jobs in memory, so it must be a single machine).
 6. **Deploy.** `fly deploy`. Fly builds the image from the `Dockerfile` (you do not run docker).
 7. **Migrate the database.** `fly ssh console -C "python -m app.shop.admin migrate"` (it is safe to repeat; the service also migrates when it starts).
-8. **Make the first invite.** `fly ssh console -C "python -m app.shop.admin invite create --label 'First friend' --days 30"`. The code is printed once and never stored.
-   Send it to the person through a private channel. `invite list` shows label, created, last seen, spend today and revoked (never the code).
+8. **Nothing to hand out.** There are no invite codes. A visitor's browser calls `POST /auth/start` and gets an anonymous cookie. (Migration 2 drops the invite
+   tables and the earlier test data: invite-owned shop sessions, every login and the per-invite counters; today's global spend counter is kept.)
 9. **Check health.** `curl https://<app-name>.fly.dev/healthz` should print `{"ok": true}`. Any other path without the origin secret is a 403 with an empty body.
 10. **Wire the portfolio** (next section), then run the smoke test.
 
 ### Operating it
 
 - **Logs.** `fly logs`. The service logs no request lines (paths carry session ids) and never a code, cookie or secret. A failed job or an unexpected server error prints one line, `shop error [search] PermissionError: ... at src/app/...:NN` (class, redacted message, repository location); the visitor only sees the generic sentence.
-- **Revoke an invite.** `fly ssh console -C "python -m app.shop.admin invite revoke <id>"`; its logins end at once.
+- **Stop everything now.** The kill switch below; there is no per-person revoke, because there are no per-person codes.
+- **Clean up old data.** It runs by itself at start and at most every six hours (when a request arrives); `fly ssh console -C "python -m app.shop.admin purge"` runs it now.
 - **Rotate the origin secret.** `fly secrets set APP_ORIGIN_SECRET=<new>` and change the Vercel environment variable to the same value, then redeploy the portfolio. Between the two steps shop calls
-  get 403: do it quickly, or turn the kill switch on first.
+  get 403: do it quickly, or turn the kill switch on first. **Rotating it also resets every address counter**: client addresses are stored only as an HMAC keyed from this secret, so after a rotation
+  the daily per-address spend and visitor counts start from zero (the global daily cap is not reset).
 - **Kill switch.** `fly secrets set APP_SHOP_DISABLED=1` (the machine restarts; every call but `/healthz` and `GET /auth/session` answers 503 `maintenance`). `fly secrets unset APP_SHOP_DISABLED` to resume.
-- **Check spend.** `fly ssh console -C "python -m app.shop.admin caps show"` (the caps in force and today's spend) and `invite list` (per invite today).
+- **Check spend.** `fly ssh console -C "python -m app.shop.admin caps show"`: the limits in force, today's global spend and the visitors created today. It never prints a client address.
 - **Provider-side limits (an outer layer, set them).** In the Anthropic Console set a monthly spend limit for the key this service uses. Watch the Serper balance
-  (and the SerpApi plan). The app's own caps are per session, per invite and per day; these limits stop a bug or a leaked key.
+  (and the SerpApi plan). The app's own limits are per session, per visitor address and per day, and a visitor-start limit; these provider limits stop a bug or a leaked key.
 - **Idle behaviour.** The machine stops when idle and starts on the next request (a few seconds). Neon suspends the database after five minutes idle; the first query after that may be slow or fail,
   and the service retries three times before answering 500.
 
@@ -86,7 +95,7 @@ b. **No caching** of those paths. The service sends `Cache-Control: no-store` an
 c. **A preview-deployment test of a slow Shop Again (about 35 s).** Vercel documents no time limit for forwarded requests, so this is unverified. This service does not hold a request open for the slow
    work: a search and a Shop Again are background jobs (`POST` answers 202 with a job id and the page polls `GET /job/{id}` about once a second), so a slow Shop Again is many short requests. If a
    single forwarded request (including the 202) were to time out, the page can poll again with the same job id; nothing needs a long request.
-d. **A React page at `/shop`** that uses `docs/api-contract.md`: a login form driven by `GET /auth/session`, then search and results, ratings and Shop Again, and the Saved panel. Product images load
+d. **A React page at `/shop`** that uses `docs/api-contract.md`: a visit started by `POST /auth/start` when `GET /auth/session` says `authenticated: false`, then search and results, ratings and Shop Again, and the Saved panel. Product images load
    straight from the provider's https URLs (the page's CSP needs `img-src https:`).
 
 Not verified from this repository: the Vercel rewrite, header attachment, any time limit, the cookie path behaviour through the rewrite (the cookie is `Path=/api/shop`, set by the response the browser
@@ -95,9 +104,9 @@ sees from the portfolio domain), and Fly's forwarding of the client address.
 ## Smoke test (needs the real services; I could not run these)
 
 Real Postgres (Neon):
-- `python -m app.shop.admin migrate` succeeds twice; `invite create`, `invite list`, `invite revoke`, `caps show` work against it.
+- `python -m app.shop.admin migrate` succeeds twice; `caps show` and `purge` work against it, and migration 2 upgrades a database that already holds version 1 (the SQL uses `ALTER TABLE ... RENAME COLUMN`, `DROP TABLE IF EXISTS` and `INSERT ... ON CONFLICT`; the tests proved it on SQLite only).
 - A search then a reload of the session: the session survives a machine restart (the first query after Neon's five-minute suspend may be slow; the retry covers it).
-- Two browsers (two invites) cannot read each other's sessions; spend counters grow after a search and survive `fly machine restart`.
+- Two browsers (two visitors, different addresses) cannot read each other's sessions; the per-address daily cap and the visitor-start limits (429 with `Retry-After`) hold in the real database; spend counters grow after a search and survive `fly machine restart`.
 - `psycopg` over TLS (`sslmode=require`) connects from Fly; the `?` to `%s` placeholder conversion works for every query (the tests ran the same SQL on SQLite).
 
 Real Fly:
@@ -107,5 +116,14 @@ Real Fly:
 
 Real Vercel:
 - The rewrite forwards `/api/shop/*` with the secret header; `GET /api/shop/auth/session` through the portfolio domain returns the JSON.
-- Login through the portfolio sets the cookie (`Secure`, `Path=/api/shop`) and a following call is authenticated; the cookie does not appear on other portfolio paths.
-- Responses are not cached (send two logins from two browsers); a slow Shop Again (about 35 s) completes through polling; the visitor address shows up as the trusted `x-forwarded-for` (rate limits per address).
+- `POST /auth/start` through the portfolio sets the cookie (`Secure`, `Path=/api/shop`) and a following call is authenticated; the cookie does not appear on other portfolio paths.
+- Responses are not cached (start two visits from two browsers); a slow Shop Again (about 35 s) completes through polling; the visitor address shows up as the trusted `x-forwarded-for` (rate limits per address).
+
+## First-use checklist (after `fly deploy`)
+
+1. `curl https://<app-name>.fly.dev/healthz` prints `{"ok": true}`.
+2. `fly ssh console -C "python -m app.shop.admin migrate"` prints `database is at schema version 2` (twice is fine).
+3. `fly ssh console -C "python -m app.shop.admin caps show"` shows $0.50 / $1.00 / $2.00, 8 searches, 25 Shop Agains, `visitors started today: 0 of 200`.
+4. From the portfolio (or a request carrying the origin secret and an allowed `Origin`): `POST /api/shop/auth/start` answers `{"ok": true}` and a cookie; a search then finishes through polling.
+5. `fly logs` shows no `shop error` line. `caps show` now shows today's spend and one visitor.
+6. In the Anthropic Console set a spend limit; note the Serper balance.

@@ -2,7 +2,8 @@
 docs/api-contract.md are all held to it by tests.
 
 Paths are relative to the API prefix (`/api` locally, `APP_API_PREFIX` in deployment mode).
-`auth` is "none" (open: the page asks `/auth/session` whether to show a login form) or "login".
+`auth` is "none" (open: the page asks `/auth/session` whether it has a visit, and calls
+`/auth/start` when it has not) or "login" (needs the visitor cookie).
 `body` says whether the route takes a JSON body (and so needs Content-Type application/json).
 `{id}` is the job id.
 """
@@ -36,7 +37,7 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/preference/pin", "login", True, "preference_pin"),
     Route("POST", "/context/remove", "login", True, "context_remove"),
     Route("POST", "/reset", "login", True, "reset"),
-    Route("POST", "/auth/login", "none", True, "auth_login", True),
+    Route("POST", "/auth/start", "none", False, "auth_start", True),
     Route("POST", "/auth/logout", "none", True, "auth_logout", True),
     Route("GET", "/auth/session", "none", False, "auth_session"),
 )

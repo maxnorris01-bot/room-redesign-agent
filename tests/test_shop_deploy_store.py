@@ -135,9 +135,74 @@ def test_the_migration_is_idempotent_and_creates_every_table(tmp_path: Path) -> 
             lambda tx: tx.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         )
     }
-    assert {"shop_sessions", "invites", "login_sessions", "usage", "schema_version"} <= tables
+    assert {"shop_sessions", "visitors", "login_sessions", "usage", "schema_version"} <= tables
+    assert "invites" not in tables  # dropped by migration 2 (ADR 0014)
     versions = db.transaction(lambda tx: tx.execute("SELECT version FROM schema_version"))
-    assert len(versions) == 1  # applied once, not twice
+    assert len(versions) == dbstore.SCHEMA_VERSION == 2  # each applied once, not twice
+
+
+def test_migration_2_upgrades_a_version_1_database_with_test_data(tmp_path: Path) -> None:
+    """Stage D1.2: invite codes are dropped. A database that already holds version 1 and rows keeps
+    what is not invite-owned, loses the invite data, and ends at version 2 with the new shape."""
+    db = SqliteDatabase(str(tmp_path / "v1.db"))
+
+    def build_v1(tx: Any) -> None:
+        tx.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        for sql in dbstore.MIGRATIONS[0][1]:
+            tx.execute(sql)
+        tx.execute("INSERT INTO schema_version (version) VALUES (1)")
+        tx.execute(
+            "INSERT INTO invites (id, label, code_hash, created_at) VALUES ('i1', 'Max', 'h', 'now')"
+        )
+        tx.execute(
+            "INSERT INTO login_sessions (id_hash, invite_id, created_at, last_seen, expires_at) "
+            "VALUES ('l1', 'i1', 'a', 'a', 'z')"
+        )
+        for sid, owner in (("owned-session-1", "i1"), ("loose-session-01", None)):
+            tx.execute(
+                "INSERT INTO shop_sessions (session_id, invite_id, data, created_at, updated_at) "
+                "VALUES (?, ?, '{}', 'a', 'a')",
+                (sid, owner),
+            )
+        for scope, key, day in (
+            ("invite_day", "i1", "2026-10-30"),
+            ("session", "owned-session-1", ""),
+            ("session", "loose-session-01", ""),
+            ("global_day", "*", "2026-10-30"),
+        ):
+            tx.execute(
+                "INSERT INTO usage (scope, key, day, usd) VALUES (?, ?, ?, 0.25)", (scope, key, day)
+            )
+
+    db.transaction(build_v1)
+    assert migrate(db) == 2 and migrate(db) == 2  # and again: nothing changes
+
+    def look(tx: Any) -> dict[str, Any]:
+        tables = {r[0] for r in tx.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        cols = lambda t: [r[1] for r in tx.execute(f"PRAGMA table_info({t})")]  # noqa: E731
+        return {
+            "tables": tables,
+            "shop_cols": cols("shop_sessions"),
+            "login_cols": cols("login_sessions"),
+            "visitor_cols": cols("visitors"),
+            "sessions": [r[0] for r in tx.execute("SELECT session_id FROM shop_sessions")],
+            "logins": tx.execute("SELECT * FROM login_sessions"),
+            "usage": sorted(tx.execute("SELECT scope, key FROM usage")),
+            "versions": [r[0] for r in tx.execute("SELECT version FROM schema_version")],
+        }
+
+    seen = db.transaction(look)
+    assert "invites" not in seen["tables"] and "visitors" in seen["tables"]
+    assert "visitor_id" in seen["shop_cols"] and "invite_id" not in seen["shop_cols"]
+    assert "visitor_id" in seen["login_cols"] and "invite_id" not in seen["login_cols"]
+    assert seen["visitor_cols"] == ["id", "created_at", "last_seen", "ip_hmac"]
+    assert seen["sessions"] == ["loose-session-01"]  # the invite-owned session went
+    assert seen["logins"] == []  # every login session went
+    assert seen["usage"] == [("global_day", "*"), ("session", "loose-session-01")]
+    assert seen["versions"] == [1, 2]
+    store = SqlSessionStore(db)  # and the store works over the upgraded database
+    new = store.create(owner="v1")
+    assert store.owner_of(new.session_id) == "v1" and store.exists("loose-session-01")
 
 
 def test_the_store_comes_from_the_settings(tmp_path: Path) -> None:

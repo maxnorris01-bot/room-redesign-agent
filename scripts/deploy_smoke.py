@@ -3,8 +3,8 @@ temporary SQLite database, no network beyond 127.0.0.1, no docker).
 
     make deploy-smoke
 
-It prints what it sees: /healthz, a 401 without a login, the login, an authenticated call, a
-search through the job model, a cap_reached answer and the maintenance answer. Exit status 1 when
+It prints what it sees: /healthz, a 401 without a visit, `POST /auth/start`, an authenticated call, a
+search through the job model, a cap_reached answer, the start limit and the maintenance answer. Exit status 1 when
 something is not as expected.
 """
 
@@ -42,8 +42,9 @@ def check(ok: bool, what: str) -> None:
 
 
 class Client:
-    def __init__(self, port: int, secret: bool = True) -> None:
+    def __init__(self, port: int, secret: bool = True, ip: str = "203.0.113.7") -> None:
         self.port = port
+        self.ip = ip
         self.cookie = ""
         self.secret = secret
 
@@ -52,7 +53,7 @@ class Client:
             "Host": HOST,
             "Content-Type": "application/json",
             "Origin": ORIGIN,
-            "X-Forwarded-For": "203.0.113.7",
+            "X-Forwarded-For": self.ip,
         }
         if self.secret:
             headers["X-Origin-Secret"] = SECRET
@@ -114,28 +115,27 @@ def main() -> int:
         )
         status, _, body = c.call("GET", f"{api}/session")
         check(
-            status == 401 and body["error"]["code"] == "login_required",
-            f"unauthenticated: {status} {body['error']['code']}",
+            status == 401 and body["error"]["code"] == "session_required",
+            f"no visit yet: {status} {body['error']['code']}",
         )
         status, _, body = c.call("GET", f"{api}/auth/session")
         check(
             status == 200
             and body == {"authenticated": False, "contact_email": "owner@example.org"},
-            f"auth/session before login: {body}",
+            f"auth/session before a visit: {body}",
         )
-        status, _, body = c.call("POST", f"{api}/auth/login", {"code": "wrong"})
-        check(status == 401, "a wrong code: 401")
-        _, code = auth.create_invite("Smoke test")
-        status, headers, body = c.call("POST", f"{api}/auth/login", {"code": code})
+        status, headers, body = c.call("POST", f"{api}/auth/start")
         check(
             status == 200 and body == {"ok": True} and "httponly" in headers["set-cookie"].lower(),
-            "login sets an HttpOnly cookie",
+            "POST /auth/start sets an HttpOnly cookie",
         )
         c.cookie = headers["set-cookie"].split(";")[0]
         status, _, body = c.call("GET", f"{api}/auth/session")
         check(
-            body["authenticated"] and body["label"] == "Smoke test" and "usage" in body,
-            f"auth/session after login: label {body.get('label')}, usage keys {sorted(body.get('usage', {}))}",
+            body["authenticated"]
+            and "label" not in body
+            and set(body["usage"]) == {"ip_day", "session", "resets_at"},
+            f"auth/session after a visit: usage keys {sorted(body.get('usage', {}))}",
         )
         status, headers, body = c.call("GET", f"{api}/session")
         check(
@@ -178,11 +178,25 @@ def main() -> int:
             status == 200 and body["search"]["results"],
             "shown results are still readable after the cap",
         )
+        crowd = Client(port, ip="198.51.100.8")
+        answers = [crowd.call("POST", f"{api}/auth/start") for _ in range(11)]
+        check(
+            [a[0] for a in answers[:10]] == [200] * 10
+            and answers[10][0] == 429
+            and answers[10][2]["error"]["code"] == "rate_limited"
+            and int(answers[10][1]["retry-after"]) >= 1,
+            "the 11th start in a minute from one address: 429 rate_limited with Retry-After",
+        )
         app.settings = replace(settings, disabled=True)
         status, _, body = c.call("GET", f"{api}/session")
         check(
             status == 503 and body["error"]["code"] == "maintenance",
             f"kill switch: {status} {body['error']['code']}",
+        )
+        status, headers, body = Client(port, ip="198.51.100.9").call("POST", f"{api}/auth/start")
+        check(
+            status == 503 and body["error"]["code"] == "maintenance",
+            "no new visit under the kill switch",
         )
         status, _, body = c.call("GET", f"{api}/auth/session")
         check(body.get("maintenance") is True, "auth/session still answers, with maintenance: true")

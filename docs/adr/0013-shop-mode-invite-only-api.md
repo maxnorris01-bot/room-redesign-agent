@@ -1,6 +1,6 @@
 # 0013. Shop Mode as an invite-only JSON API on Fly
 
-- **Status:** proposed
+- **Status:** proposed; points 3 and 5 amended by ADR 0014 (invite codes removed)
 - **Date:** 2026-10-30
 
 ## Context

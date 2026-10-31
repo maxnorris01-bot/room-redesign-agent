@@ -1,4 +1,4 @@
-"""A database store for Shop Mode sessions, invites, logins and spend (ADR 0013).
+"""A database store for Shop Mode sessions, visitors, logins and spend (ADR 0013, 0014).
 
 The service stores sessions in JSON files by default (`app.shop.store.SessionStore`). With
 `DATABASE_URL` set, `open_store` returns a `SqlSessionStore` over Postgres (psycopg 3, hand-written
@@ -77,6 +77,36 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
                 PRIMARY KEY (scope, key, day)
             )""",
             "CREATE INDEX IF NOT EXISTS login_sessions_invite ON login_sessions (invite_id)",
+        ],
+    ),
+    (
+        2,
+        [
+            # Stage D1.2 (ADR 0014): invite codes are gone, every visitor is anonymous. The invite
+            # data and what hung from it was TEST DATA ONLY (the owner confirmed it), so it
+            # is dropped: the invites table, every login session, the shop sessions an invite owned
+            # (and their usage rows) and the per-invite usage counters. Today's global counter is
+            # kept so the daily cap still counts what was already spent. Renaming a column is
+            # `ALTER TABLE ... RENAME COLUMN`, safe on SQLite (3.25+) and PostgreSQL.
+            "DELETE FROM usage WHERE scope = 'invite_day'",
+            "DELETE FROM usage WHERE scope = 'session' AND key IN "
+            "(SELECT session_id FROM shop_sessions WHERE invite_id IS NOT NULL)",
+            "DELETE FROM shop_sessions WHERE invite_id IS NOT NULL",
+            "DELETE FROM login_sessions",
+            "DROP INDEX IF EXISTS login_sessions_invite",
+            "DROP TABLE IF EXISTS invites",
+            "ALTER TABLE shop_sessions RENAME COLUMN invite_id TO visitor_id",
+            "ALTER TABLE login_sessions RENAME COLUMN invite_id TO visitor_id",
+            """CREATE TABLE IF NOT EXISTS visitors (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                ip_hmac TEXT NOT NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS login_sessions_visitor ON login_sessions (visitor_id)",
+            "CREATE INDEX IF NOT EXISTS shop_sessions_visitor ON shop_sessions (visitor_id)",
+            "CREATE INDEX IF NOT EXISTS shop_sessions_updated ON shop_sessions (updated_at)",
+            "CREATE INDEX IF NOT EXISTS visitors_last_seen ON visitors (last_seen)",
         ],
     ),
 ]
@@ -291,7 +321,7 @@ class SqlSessionStore:
 
         def run(tx: Tx) -> None:
             tx.execute(
-                "INSERT INTO shop_sessions (session_id, invite_id, data, created_at, updated_at) "
+                "INSERT INTO shop_sessions (session_id, visitor_id, data, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?) ON CONFLICT (session_id) DO UPDATE SET "
                 "data = excluded.data, updated_at = excluded.updated_at",
                 (session.session_id, owner, data, session.created_at, session.updated_at),
@@ -319,16 +349,16 @@ class SqlSessionStore:
             return None
         rows = self.db.transaction(
             lambda tx: tx.execute(
-                "SELECT invite_id FROM shop_sessions WHERE session_id = ?", (session_id,)
+                "SELECT visitor_id FROM shop_sessions WHERE session_id = ?", (session_id,)
             )
         )
         return str(rows[0][0]) if rows and rows[0][0] is not None else None
 
-    def claim(self, session_id: str, invite_id: str) -> None:
+    def claim(self, session_id: str, visitor_id: str) -> None:
         self.db.transaction(
             lambda tx: tx.execute(
-                "UPDATE shop_sessions SET invite_id = ? WHERE session_id = ? AND invite_id IS NULL",
-                (invite_id, session_id),
+                "UPDATE shop_sessions SET visitor_id = ? WHERE session_id = ? AND visitor_id IS NULL",
+                (visitor_id, session_id),
             )
         )
 

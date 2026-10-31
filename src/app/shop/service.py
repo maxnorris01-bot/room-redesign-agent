@@ -16,7 +16,7 @@ from app.shop import store as store_mod
 from app.shop.again import run_shop_again
 from app.shop.ahead import LookAhead
 from app.shop.clock import Clock
-from app.shop.context import current_invite
+from app.shop.context import current_visitor
 from app.shop.jobs import JobError, JobManager
 from app.shop.models import (
     MAX_COMMENT_CHARS,
@@ -460,12 +460,12 @@ class ShopService:
 
     def search(self, session_id: Any, request: Any) -> dict[str, Any]:
         cleaned, sid = self._prepare_search(session_id, request)
-        return self._do_search(cleaned, sid, owner=current_invite.get())
+        return self._do_search(cleaned, sid, owner=current_visitor.get())
 
     def start_search(self, session_id: Any, request: Any) -> dict[str, Any]:
         """Start a search as a background job: `{"job_id": ...}` (poll `job_status`)."""
         cleaned, sid = self._prepare_search(session_id, request)
-        owner = current_invite.get()  # the job runs in another thread: capture it here
+        owner = current_visitor.get()  # the job runs in another thread: capture it here
         return {
             "job_id": self._start(
                 "search", sid, lambda say: self._do_search(cleaned, sid, say, owner)

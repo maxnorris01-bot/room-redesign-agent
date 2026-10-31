@@ -174,15 +174,25 @@ SELLER_REVOKE_MAX_RATE = 0.35  # revoked below this like rate, or below the sess
 SELLER_REDISMISS_RATED = 8  # a revoked seller can return only after this many further ratings
 
 
-# stage D1: deployment spend caps (ADR 0013). Judgment: an invite is a friend looking around, not a
-# customer. A search or Shop Again costs about $0.03 (Anthropic plus Serper), so $0.50 a session is
-# about 15 actions, $1.00 an invite a day about 30, and $3.00 a day for everyone bounds the worst
-# day at the price of a coffee. All can be changed by environment (`APP_CAP_*`).
+# stages D1 and D1.2: deployment limits (ADR 0013, 0014). Judgment: a visitor to a portfolio demo
+# is a person looking around, not a customer, and there is no invite to revoke, so limits are the
+# only protection. A search or Shop Again costs about $0.03 (Anthropic plus Serper): $0.50 a shop
+# session is about 15 actions, $1.00 a visitor address a day about 30, and $2.00 a day for everyone
+# bounds the worst day at the price of a coffee. Visitors are anonymous, so a new cookie must not
+# reset anything: one address may start 20 visitors a day (an office or a phone network shares an
+# address), everyone 200, and one address 10 starts a minute. Visitor data is deleted after 30 days
+# of no use (usage counters after 40). All can be changed by environment (`APP_CAP_*`,
+# `APP_MAX_VISITORS_*`).
 CAP_SESSION_USD = 0.50
-CAP_INVITE_DAY_USD = 1.00
-CAP_GLOBAL_DAY_USD = 3.00
+CAP_IP_DAY_USD = 1.00
+CAP_GLOBAL_DAY_USD = 2.00
 CAP_SESSION_SEARCHES = 8
 CAP_SESSION_AGAINS = 25
+MAX_VISITORS_PER_IP_DAY = 20
+MAX_VISITORS_DAY = 200
+STARTS_PER_IP_MINUTE = 10
+VISITOR_RETENTION_DAYS = 30
+USAGE_RETENTION_DAYS = 40
 
 
 def seller_slots(share: float, batch_size: int = RESULT_COUNT) -> int:

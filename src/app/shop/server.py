@@ -16,8 +16,8 @@ Two modes (ADR 0013):
 * Deployment (`APP_DEPLOY_MODE=1`): API only. `GET /healthz` and the JSON API under
   `APP_API_PREFIX`; no HTML, no static files. A request must carry the origin secret the portfolio
   site's rewrite adds, the Host and (for writes) the Origin must be the configured ones, there are
-  no CORS headers, every API route but the login routes needs a login cookie, a session belongs to
-  the invite that made it, and every response is `no-store`.
+  no CORS headers, every API route but the auth routes needs a visitor cookie (`POST /auth/start`
+  makes one), a session belongs to the visitor that made it, and every response is `no-store`.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
-from app.shop.context import current_invite
+from app.shop.context import current_visitor
 from app.shop.deploy import CODES, LOCAL_HOST, DeploySettings
 from app.shop.redact import log_failure
 from app.shop.routes import ROUTES, STATE_CHANGING, Route, match
@@ -53,7 +53,7 @@ API_PATHS = {
 POST_PATHS = {f"{LOCAL_PREFIX}{r.path}" for r in ROUTES if r.method == "POST" and not r.deploy_only}
 JOB_PREFIX = "/api/job/"  # GET /api/job/<id>?session=<session id>
 COOKIE_NAME = "shop_login"
-COOKIE_MAX_AGE_S = 14 * 24 * 3600
+COOKIE_MAX_AGE_S = 30 * 24 * 3600
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src https:; "
     "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -71,16 +71,23 @@ MAINTENANCE_MESSAGE = "Shop Mode is paused for maintenance. Please try again lat
 
 @dataclass(frozen=True)
 class Identity:
-    """Who is calling (deployment mode): the invite, its label and the login session."""
+    """Who is calling (deployment mode): the anonymous visitor and the login session."""
 
-    invite_id: str
-    label: str
+    visitor_id: str
     login_id: str = ""
 
 
+class StartRefused(Exception):
+    """`POST /auth/start` was refused: a limit (429 with Retry-After seconds) or a bot check."""
+
+    def __init__(self, wait: int, message: str, status: int = 429) -> None:
+        super().__init__(message)
+        self.wait, self.message, self.status = wait, message, status
+
+
 class AuthBackend(Protocol):
-    def login(self, code: str, ip: str) -> tuple[str | None, int]:
-        """(a new login cookie value, 0) or (None, seconds to wait; 0 for a plain refusal)."""
+    def start(self, ip: str, headers: Mapping[str, str]) -> str:
+        """A new visitor's cookie value; raises `StartRefused` past a limit."""
         ...
 
     def logout(self, cookie: str | None) -> None: ...
@@ -93,7 +100,7 @@ class AuthBackend(Protocol):
 class SessionAccess(Protocol):
     def owner_of(self, session_id: str) -> str | None: ...
 
-    def claim(self, session_id: str, invite_id: str) -> None: ...
+    def claim(self, session_id: str, visitor_id: str) -> None: ...
 
 
 @dataclass
@@ -121,7 +128,7 @@ def error_response(status: int, message: str) -> Response:
 
 def default_code(status: int) -> str:
     if status == 401:
-        return "login_required"
+        return "session_required"
     if status == 403:
         return "forbidden"
     if status == 404:
@@ -296,7 +303,9 @@ class ShopApp:
                 identity = self._identify(headers)
                 if identity is None:
                     return self._error(
-                        401, "Please log in with your invite code.", "login_required"
+                        401,
+                        "Please start a visit first: call POST /auth/start, then try again.",
+                        "session_required",
                     )
         data: dict[str, Any] = {}
         if route.body and deploy is None:
@@ -312,19 +321,19 @@ class ShopApp:
         try:
             if route.name == "auth_session":
                 return self._auth_session(headers, deploy)
-            if route.name == "auth_login":
-                return self._auth_login(data, headers)
+            if route.name == "auth_start":
+                return self._auth_start(headers)
             if route.name == "auth_logout":
                 return self._auth_logout(headers)
             if identity is not None:
                 denied = self._ownership(route, data, q, job_id, identity)
                 if denied is not None:
                     return denied
-            token = current_invite.set(identity.invite_id if identity else None)
+            token = current_visitor.set(identity.visitor_id if identity else None)
             try:
                 result = self._call(route, data, q, job_id, identity)
             finally:
-                current_invite.reset(token)
+                current_visitor.reset(token)
         except ApiError as exc:
             return self._api_error(exc)
         except Exception as exc:
@@ -337,7 +346,7 @@ class ShopApp:
                 result = {**result, "error": "Something went wrong on our side. Please try again."}
         status = 202 if route.name in ("search", "shop_again") else 200
         if identity is not None and route.name in ("search", "shop_again") and "job_id" in result:
-            self._remember_job(result["job_id"], identity.invite_id)
+            self._remember_job(result["job_id"], identity.visitor_id)
         if identity is not None and route.name == "job":
             self._claim_new_session(result, identity)
         if deploy is not None:
@@ -409,7 +418,7 @@ class ShopApp:
             return s.pin_preference(data.get("session_id"), data.get("phrase"))
         return s.resolve(data.get("session_id"), data.get("result_id"))
 
-    # ---- sessions belong to the invite that made them -------------------------------------
+    # ---- sessions belong to the visitor that made them -------------------------------------
 
     def _ownership(
         self,
@@ -421,23 +430,23 @@ class ShopApp:
     ) -> Response | None:
         gone = self._error(404, "That was not found.", "not_found")
         if route.name == "job":
-            return None if self._job_owner.get(job_id) == identity.invite_id else gone
+            return None if self._job_owner.get(job_id) == identity.visitor_id else gone
         sid = q.get("id", [""])[0] if route.name == "session" else data.get("session_id")
         if not isinstance(sid, str) or not sid or self.access is None:
             return None
-        return None if self.access.owner_of(sid) == identity.invite_id else gone
+        return None if self.access.owner_of(sid) == identity.visitor_id else gone
 
-    def _remember_job(self, job_id: str, invite_id: str) -> None:
+    def _remember_job(self, job_id: str, visitor_id: str) -> None:
         if len(self._job_owner) > 2000:  # jobs are forgotten by the manager after ten minutes
             for key in list(self._job_owner)[:1000]:
                 del self._job_owner[key]
-        self._job_owner[job_id] = invite_id
+        self._job_owner[job_id] = visitor_id
 
     def _claim_new_session(self, status: dict[str, Any], identity: Identity) -> None:
         result = status.get("result")
         sid = result.get("session_id") if isinstance(result, dict) else None
         if isinstance(sid, str) and self.access is not None and self.access.owner_of(sid) is None:
-            self.access.claim(sid, identity.invite_id)
+            self.access.claim(sid, identity.visitor_id)
 
     # ---- login ----------------------------------------------------------------------------
 
@@ -484,26 +493,21 @@ class ShopApp:
         return json_response(
             200,
             {
-                "authenticated": True, "label": identity.label, "contact_email": contact,
+                "authenticated": True, "contact_email": contact,
                 "usage": self.auth.usage(identity), **extra,
             },
             {"Vary": "Cookie"},
         )  # fmt: skip
 
-    def _auth_login(self, data: dict[str, Any], headers: Mapping[str, str]) -> Response:
-        code = data.get("code")
-        if self.auth is None or not isinstance(code, str) or not code or len(code) > 200:
-            return self._error(400, "Enter your invite code.", "bad_request")
-        cookie, wait = self.auth.login(code, self.client_ip(headers))
-        if cookie is None and wait > 0:
-            return self._error(
-                429, "Too many attempts. Please wait a little and try again.", "rate_limited",
-                None, {"Retry-After": str(wait), "Vary": "Cookie"},
-            )  # fmt: skip
-        if cookie is None:
-            return self._error(
-                401, "That invite code did not work.", "login_required", None, {"Vary": "Cookie"}
-            )
+    def _auth_start(self, headers: Mapping[str, str]) -> Response:
+        if self.auth is None:
+            return self._error(503, "unavailable", "maintenance")
+        try:
+            cookie = self.auth.start(self.client_ip(headers), headers)
+        except StartRefused as refused:
+            extra = {"Retry-After": str(refused.wait), "Vary": "Cookie"} if refused.wait else {}
+            code = "rate_limited" if refused.status == 429 else "forbidden"
+            return self._error(refused.status, refused.message, code, None, extra)
         return json_response(
             200,
             {"ok": True},
