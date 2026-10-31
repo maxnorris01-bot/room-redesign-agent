@@ -10,6 +10,12 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- The most important items, in the order you'd actually tackle them. -->
 
+- [x] **Stage D1.2: invite codes removed, anonymous visitors, address-based limits, retention** (ADR 0014; `docs/sessions/2026-10-31-deploy-d1-2.md`). Done in the tree; real Postgres has not run migration 2.
+- [ ] **Max: redeploy, run `migrate` (version 2) and the first-use checklist in `docs/deploy.md`**, then watch `caps show` after a few real visits.
+- [ ] **Bot check: add Cloudflare Turnstile** at `auth.bot_check_allowed` (the page sends the widget token with `POST /auth/start`; verify it with Cloudflare; no third-party call exists yet).
+- [ ] **React `/shop` page must call `POST /auth/start`** when `GET /auth/session` says `authenticated: false`, and again on `401 session_required` (`docs/api-contract.md`, "What the page needs for a visit").
+- [ ] **Retention: check it in real use** (visitors, logins and sessions unused 30 days; usage 40 days; `admin purge`); decide whether 30 days is right once there is traffic.
+- [ ] **Tune the limits** ($1.00 per address, $2.00 for everyone, 20 visitors per address a day) after real use; consider whether an office sharing one address hits the per-address cap.
 - [x] **Stage D1.1: first real-deployment bug** (trace file not writable by the container user; ADR 0013 note; `docs/sessions/2026-10-31-deploy-d1-1.md`). Done in the tree, untested live.
 - [ ] **Max: redeploy, then `fly secrets unset APP_TRACING_DISABLED`** (the image now sets it), run a search through the portfolio and read `fly logs` for any `shop error` line.
 - [x] **Stage D1: Shop Mode deployable as an invite-only JSON API** (ADR 0013): deployment mode, hosted store, invites, caps, outbound safety, container, runbook, contract. Nothing run against real Fly, Neon or Vercel.
@@ -18,7 +24,7 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 - [ ] **Portfolio repo: a preview-deployment test of a slow (about 35 s) Shop Again** through the rewrite (polling should make it safe; unverified).
 - [ ] **Portfolio repo: the React `/shop` page in three steps** (login by `GET /auth/session`; search and results; ratings, Shop Again, Saved) from `docs/api-contract.md`, plus a nav entry; CSP `img-src https:`.
 - [ ] **Terms review** of the providers' terms for showing results to invited visitors; **scrub fixture URLs** that name real retailers if the page is ever public.
-- [ ] **Tune the caps** ($0.50 / $1.00 / $3.00, 8 searches, 25 Shop Agains) after real use; set Anthropic Console and Serper limits.
+- [ ] **Set Anthropic Console and Serper limits** (the app's limits are not a billing guarantee).
 - [x] **Case-06 gives 14 results because of the shape diversity guard, not the seller cap** (done in stage 2r: the guard is off when fewer than 6 unseen candidates carry another value; trace `guards_off` and a message). Original note:  (re-run: pool of 44, 100% rectangular, `guarded 20`; the guard allows int(0.6 x 24) = 14 of one shape). When the pool has no alternative value the guard shrinks the batch and the "Could not keep shape mixed" warning is misleading. A ranking decision for Max: relax a guard when the pool holds nothing else, or leave it. Not changed in stage 2q (`docs/evals/shop-eval-rerun-2026-10-28.md`, finding 3).
 - [ ] **Re-run the 12 cases after stages 2r and 2s** (also read the new "seller bets" lines in How I decided: first-try allowances, growth, revocations; the tier chip still gives up to half a batch and is not checked by a bet) (`make eval-shop-plan`, then `make eval-shop-live EVAL_SHOP_CONFIRM=yes`: it records the Serper responses by default, so `make eval-shop-replay` and `EVAL_SHOP_SERPER_CACHE=use` are free afterwards): read the fill loop stop reasons, `make eval-shop-lint RESULTS=...`, the lift diagnosis, the case-02 credits (was 38), case-09 attributes (was 0.54) and the focus check. Save each shown item's tags in the results file so the lift diagnosis can match per item.
 - [ ] **Make a decided chip shape more of the batch** (lift diagnosis: cases 02, 03, 07 and 12 learned a chip and showed 0 to 2 items that carry it; case-04's "wood" covers 83% of the pool and teaches nothing). Not changed in 2r.

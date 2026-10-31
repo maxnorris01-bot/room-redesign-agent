@@ -1,13 +1,12 @@
 """Admin commands for the deployed Shop Mode API: `python -m app.shop.admin <command>`.
 
-    migrate                         create or update the database tables (safe to repeat)
-    invite create --label NAME [--days N]
-                                    make an invite; the code is printed once and never stored
-    invite list                     label, created, last seen, spend today, revoked (never the code)
-    invite revoke ID                end an invite and its logins at once
-    caps show                       the spend caps in force and today's spend
+    migrate       create or update the database tables (safe to repeat)
+    caps show     the limits in force, today's spend and the visitors started today
+    purge         delete visitors, logins and sessions unused for APP_VISITOR_RETENTION_DAYS (30)
+                  and usage counters older than 40 days (also runs at start and every 6 hours)
 
-It reads DATABASE_URL (and the cap settings) from the environment and never prints a secret.
+It reads DATABASE_URL (and the limit settings) from the environment and never prints a secret or
+a client address.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from app.shop.auth import SqlAuth, utc_day
+from app.shop.auth import SqlAuth, purge, utc_day
 from app.shop.dbstore import DatabaseError, Tx, migrate, open_database
 from app.shop.deploy import from_env
 
@@ -34,17 +33,10 @@ def run(
     parser = argparse.ArgumentParser(prog="python -m app.shop.admin", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate")
-    invite = sub.add_parser("invite")
-    isub = invite.add_subparsers(dest="action", required=True)
-    create = isub.add_parser("create")
-    create.add_argument("--label", required=True)
-    create.add_argument("--days", type=int, default=None)
-    isub.add_parser("list")
-    revoke = isub.add_parser("revoke")
-    revoke.add_argument("id")
     caps = sub.add_parser("caps")
     csub = caps.add_subparsers(dest="action", required=True)
     csub.add_parser("show")
+    sub.add_parser("purge")
     args = parser.parse_args(argv)
 
     settings = from_env(env)
@@ -58,33 +50,10 @@ def run(
             print(f"database is at schema version {migrate(db)}", file=write)
             return 0
         auth = SqlAuth(db, settings)
-        if args.command == "invite" and args.action == "create":
-            if args.days is not None and args.days < 1:
-                print("--days must be at least 1", file=sys.stderr)
-                return EXIT_USAGE
-            invite_id, code = auth.create_invite(args.label, args.days)
-            print(f"invite {invite_id} created for {args.label!r}", file=write)
-            print("code (shown once, not stored):", file=write)
-            print(code, file=write)
+        if args.command == "purge":
+            gone = purge(db, datetime.now(UTC), settings.retention_days)
+            print("purged: " + ", ".join(f"{k} {v}" for k, v in gone.items()), file=write)
             return 0
-        if args.command == "invite" and args.action == "list":
-            rows = auth.list_invites()
-            if not rows:
-                print("no invites", file=write)
-            for r in rows:
-                state = "revoked" if r["revoked"] else "active"
-                print(
-                    f"{r['id']}  {r['label']}  created {r['created']}  last seen {r['last_seen'] or 'never'}"
-                    f"  spend today ${r['spend_today_usd']:.4f}  {state}",
-                    file=write,
-                )
-            return 0
-        if args.command == "invite" and args.action == "revoke":
-            if auth.revoke_invite(args.id):
-                print(f"invite {args.id} revoked", file=write)
-                return 0
-            print("no such invite", file=sys.stderr)
-            return EXIT_USAGE
         if args.command == "caps":
             today = utc_day(datetime.now(UTC))
 
@@ -98,11 +67,18 @@ def run(
             spent = db.transaction(read)
             print(f"per session: ${settings.cap_session_usd:.2f}, {settings.cap_searches} searches, "
                   f"{settings.cap_shop_agains} Shop Agains", file=write)  # fmt: skip
-            print(f"per invite per day: ${settings.cap_invite_day_usd:.2f}", file=write)
+            print(f"per visitor address per day: ${settings.cap_ip_day_usd:.2f}", file=write)
             print(
                 f"everyone per day: ${settings.cap_global_day_usd:.2f} (spent today ${spent:.4f})",
                 file=write,
             )
+            print(
+                f"visitors started today: {auth.visitors_today()} of {settings.max_visitors_day} "
+                f"(one address: {settings.max_visitors_per_ip_day} a day, "
+                f"{settings.starts_per_ip_minute} a minute)",
+                file=write,
+            )
+            print(f"visitor data kept {settings.retention_days} days", file=write)
             print(
                 f"kill switch (APP_SHOP_DISABLED): {'ON' if settings.disabled else 'off'}",
                 file=write,

@@ -4,4 +4,4 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 
-current_invite: ContextVar[str | None] = ContextVar("shop_invite", default=None)
+current_visitor: ContextVar[str | None] = ContextVar("shop_visitor", default=None)

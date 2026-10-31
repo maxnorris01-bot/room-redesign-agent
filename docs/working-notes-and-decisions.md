@@ -228,6 +228,10 @@ this choice over the alternatives. Note what's still open or deferred within it,
 - **2026-10-31, stage D1.1: the first real deployment failed because tracing wrote to a root-owned `/app`.** Decisions: a trace write must never fail a request (warn once, carry on); the deployed
   image writes no traces at all; failures are made visible with one redacted stderr line (class and repository location) instead of a traceback; the smoke now reproduces the container's conditions
   (read-only working directory, tracing on). See ADR 0013 (note) and `docs/sessions/2026-10-31-deploy-d1-1.md`.
+- **2026-10-31, stage D1.2 (ADR 0014): no invite codes; every visitor is anonymous and limits protect the spend.** Decisions: a portfolio demo should not need hand-out codes; protection moves to
+  limits that clearing cookies cannot reset (daily spend follows the address stored as an HMAC keyed from the origin secret, so rotating the secret resets it); $1.00 per address, $2.00 per day for everyone
+  (down from $3.00), at most 20 visitors per address and 200 a day, 10 starts a minute; 30 day retention, run lazily because the machine auto-stops; a bot check is only a hook (Turnstile later).
+  Migration 2 drops the invite test data. See `docs/sessions/2026-10-31-deploy-d1-2.md`.
 
 ## See also
 

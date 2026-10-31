@@ -32,12 +32,12 @@ def test_the_server_constants_come_from_the_table() -> None:
         and "/api/job/{id}" not in API_PATHS
         and JOB_PREFIX == "/api/job/"
     )
-    assert not any("/auth/login" in p for p in API_PATHS)
+    assert not any("/auth/start" in p for p in API_PATHS)  # deployment only
 
 
 def test_the_contract_names_the_conventions_a_react_page_needs() -> None:
     for needle in (
-        "login_required", "cap_reached", "maintenance", "rate_limited", "resets_at", "Retry-After", "no-store",
+        "session_required", "/auth/start", "cap_reached", "ip_day", "maintenance", "rate_limited", "resets_at", "Retry-After", "no-store",
         "Vary: Cookie", "shop_login", "/healthz", "poll", "202", "Origin", "no thumbnail route", "usage",
     ):  # fmt: skip
         assert needle in DOC, needle

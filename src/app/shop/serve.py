@@ -68,6 +68,8 @@ def main(environ: Mapping[str, str] | None = None) -> int:
     app, store = build_app(settings, config)
     if settings.deploy:
         migrate(store.db)  # idempotent: the machine can start on a fresh database
+        assert isinstance(app.auth, SqlAuth)
+        app.auth.tick()  # the retention purge at start; a request repeats it every six hours
     server = make_server(app, settings.port, settings.host)
     print(f"Shop Mode API listening on {settings.host}:{server.server_address[1]}", flush=True)
     try:

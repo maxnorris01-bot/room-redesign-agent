@@ -173,6 +173,9 @@ less than 8 s; the eval can record and replay Serper responses and lint a saved 
 Stage 2s (seller affinity that checks its own bet): a learned seller gets one allowance (chip, named search and pin alike) that starts at 4 slots of 24, grows by 2 only when
 its boosted items were liked, and is revoked at once when at least 3 of them are rated and mostly disliked; the seller can return after 8 further ratings. See ADR 0012, stage 2s.
 
-## Deployment (Shop Mode, stage D1, ADR 0013)
-Shop Mode can run as an invite-only JSON API (`python -m app.shop.serve`, `APP_DEPLOY_MODE=1`) behind the portfolio site's `/api/shop/*` rewrite. Contract: `docs/api-contract.md`; runbook: `docs/deploy.md`.
-Local use is unchanged. Caps ($0.50 session, $1.00 invite/day, $3.00 day, 8 searches, 25 Shop Agains) are proposed defaults, not locked. Out of scope: the React page, accounts, payments, Redesign Mode hosting.
+## Deployment (Shop Mode, stages D1 and D1.2, ADR 0013 and 0014)
+Shop Mode can run as a JSON API (`python -m app.shop.serve`, `APP_DEPLOY_MODE=1`) behind the portfolio site's `/api/shop/*` rewrite. Every visitor gets an automatic anonymous session
+(`POST /auth/start`); there are no invite codes. Contract: `docs/api-contract.md`; runbook: `docs/deploy.md`.
+Local use is unchanged. Limits ($0.50 per shop session, $1.00 per visitor address per UTC day, $2.00 per UTC day for everyone, 8 searches and 25 Shop Agains per session, 20 visitors per
+address and 200 in all per day, 10 starts per address per minute, 30 days retention) are proposed defaults set by environment (`APP_CAP_*`, `APP_MAX_VISITORS_*`, `APP_STARTS_PER_IP_MINUTE`,
+`APP_VISITOR_RETENTION_DAYS`), not locked. Out of scope: the React page, accounts, payments, a bot check (a hook exists), Redesign Mode hosting.

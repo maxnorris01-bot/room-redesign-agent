@@ -1,9 +1,9 @@
-"""Spend caps for the deployed Shop Mode API (ADR 0013, stage D1).
+"""Spend caps for the deployed Shop Mode API (ADR 0013, 0014).
 
 Spend is counted from the same numbers the page already shows (`session_usd`: Anthropic plus Serper
 credits at their configured price, SerpApi lookups, background preparation, refine calls). Every time
 the database store saves a session, `Meter` adds the growth of that session's cost to three
-counters in the same transaction: per session, per invite per UTC day, and for everyone per UTC day,
+counters in the same transaction: per session, per visitor address per UTC day, and for everyone per UTC day,
 so counts survive restarts and two sessions near a cap cannot both slip past it. `CapGuard` is asked
 before a search, a Shop Again or a lookup starts; past a cap it raises a 429 `cap_reached` error that
 names the limit and when it resets. Work already running finishes and is counted; results already
@@ -16,13 +16,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.shop.context import current_invite
+from app.shop.context import current_visitor
 from app.shop.dbstore import Database, Tx
 from app.shop.deploy import DeploySettings
 from app.shop.service import ApiError
 from app.shop.store import Session
 
-LIMITS = ("session", "invite_day", "global_day", "searches", "shop_agains")
+LIMITS = ("session", "ip_day", "global_day", "searches", "shop_agains")
 
 
 def session_cost(session: Session) -> float:
@@ -68,10 +68,14 @@ class Meter:
         if delta <= 0:
             return
         day = _day(self._now())
-        owner = tx.execute("SELECT invite_id FROM shop_sessions WHERE session_id = ?", (sid,))
+        owner = tx.execute(
+            "SELECT v.ip_hmac FROM shop_sessions s JOIN visitors v ON v.id = s.visitor_id "
+            "WHERE s.session_id = ?",
+            (sid,),
+        )
         targets = [("global_day", "*")]
-        if owner and owner[0][0] is not None:
-            targets.append(("invite_day", str(owner[0][0])))
+        if owner:
+            targets.append(("ip_day", str(owner[0][0])))
         for scope, key in targets:
             tx.execute(
                 "INSERT INTO usage (scope, key, day, usd, searches, agains) VALUES (?, ?, ?, ?, 0, 0) "
@@ -91,7 +95,7 @@ class CapGuard:
         self.settings = settings
         self._now = now
 
-    def _read(self, session_id: str | None, invite: str | None) -> dict[str, Any]:
+    def _read(self, session_id: str | None, visitor: str | None) -> dict[str, Any]:
         now = self._now()
         day = _day(now)
 
@@ -105,15 +109,19 @@ class CapGuard:
                     (float(rows[0][0]), int(rows[0][1]), int(rows[0][2])) if rows else (0.0, 0, 0)
                 )
 
-            owner = invite
+            owner = visitor
             if owner is None and session_id:
                 rows = tx.execute(
-                    "SELECT invite_id FROM shop_sessions WHERE session_id = ?", (session_id,)
+                    "SELECT visitor_id FROM shop_sessions WHERE session_id = ?", (session_id,)
                 )
                 owner = str(rows[0][0]) if rows and rows[0][0] is not None else None
+            address = None
+            if owner:
+                rows = tx.execute("SELECT ip_hmac FROM visitors WHERE id = ?", (owner,))
+                address = str(rows[0][0]) if rows else None
             return {
                 "global": one("global_day", "*", day),
-                "invite": one("invite_day", owner, day) if owner else (0.0, 0, 0),
+                "ip": one("ip_day", address, day) if address else (0.0, 0, 0),
                 "session": one("session", session_id, "") if session_id else (0.0, 0, 0),
             }
 
@@ -125,18 +133,19 @@ class CapGuard:
 
     def check(self, kind: str, session_id: str | None = None) -> None:
         """Raise `cap_reached` when a `search`, `again` or `spend` (a lookup, photos, a refine) may
-        not start. The invite is the request's (`current_invite`) or the session's owner."""
+        not start. The visitor is the request's (`current_visitor`) or the session's owner; the daily allowance
+        is counted per visitor address."""
         s = self.settings
-        used = self._read(session_id, current_invite.get())
+        used = self._read(session_id, current_visitor.get())
         if used["global"][0] >= s.cap_global_day_usd:
             raise self._error(
                 "global_day",
                 "Shop Mode has reached its limit for today. It resets at midnight UTC.", True,
             )  # fmt: skip
-        if used["invite"][0] >= s.cap_invite_day_usd:
+        if used["ip"][0] >= s.cap_ip_day_usd:
             raise self._error(
-                "invite_day",
-                "You have used today's allowance for this invite. It resets at midnight UTC.", True,
+                "ip_day",
+                "This address has used today's allowance. It resets at midnight UTC.", True,
             )  # fmt: skip
         if used["session"][0] >= s.cap_session_usd:
             raise self._error(

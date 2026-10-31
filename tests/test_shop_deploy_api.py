@@ -25,20 +25,20 @@ GOOD = {"Host": HOSTS, "X-Origin-Secret": SECRET}
 
 
 class FakeAuth:
-    """Accepts the cookie value "ok" for invite i1."""
+    """Accepts the cookie value "ok" for visitor v1; a start makes that cookie."""
 
     def __init__(self) -> None:
-        self.logins: list[tuple[str, str]] = []
+        self.starts: list[str] = []
 
-    def login(self, code: str, ip: str) -> tuple[str | None, int]:
-        self.logins.append((code, ip))
-        return ("ok", 0) if code == "right" else (None, 0)
+    def start(self, ip: str, headers: Any = None) -> str:
+        self.starts.append(ip)
+        return "ok"
 
     def logout(self, cookie: str | None) -> None:
         return None
 
     def identify(self, cookie: str | None) -> Identity | None:
-        return Identity("i1", "Friend", "l1") if cookie == "ok" else None
+        return Identity("v1", "l1") if cookie == "ok" else None
 
     def usage(self, identity: Identity) -> dict[str, Any]:
         return {"session_usd_cap": 0.5}
@@ -155,7 +155,7 @@ def test_locally_the_page_and_the_static_files_are_still_served(tmp_path: Path) 
     }  # fmt: skip
     assert (
         app.handle(
-            "POST", "/api/auth/login", {**hdr, "Content-Type": "application/json"}, b"{}"
+            "POST", "/api/auth/start", {**hdr, "Content-Type": "application/json"}, b""
         ).status
         == 404
     )
@@ -295,7 +295,7 @@ def test_every_api_response_is_no_store_and_varies_by_cookie(tmp_path: Path) -> 
 def test_errors_have_one_shape_and_no_internals(tmp_path: Path) -> None:
     app = make_app(tmp_path)
     cases = [
-        (call(app, "GET", "/api/shop/session", login=False), 401, "login_required"),
+        (call(app, "GET", "/api/shop/session", login=False), 401, "session_required"),
         (call(app, "GET", "/api/shop/nothing"), 404, "not_found"),
         (call(app, "GET", "/api/shop/auth/session", {"Host": "evil.example"}), 403, "forbidden"),
         (call(app, "POST", "/api/shop/search", body={"request": ""}), 400, "bad_request"),
@@ -332,20 +332,16 @@ def test_server_errors_hide_their_detail(tmp_path: Path) -> None:
 
 def test_the_cookie_is_httponly_lax_secure_and_scoped_to_the_prefix(tmp_path: Path) -> None:
     app = make_app(tmp_path)
-    resp = call(app, "POST", "/api/shop/auth/login", body={"code": "right"}, login=False)
+    resp = call(app, "POST", "/api/shop/auth/start", login=False)
     cookie = resp.headers["Set-Cookie"]
     assert resp.status == 200 and json.loads(resp.body) == {"ok": True}
-    for flag in ("HttpOnly", "SameSite=Lax", "Secure", "Path=/api/shop", "Max-Age=1209600"):
+    for flag in ("HttpOnly", "SameSite=Lax", "Secure", "Path=/api/shop", "Max-Age=2592000"):
         assert flag in cookie, flag
     plain = make_app(tmp_path, public_url="http://localhost:3000")
     assert (
         "Secure"
-        not in call(
-            plain, "POST", "/api/shop/auth/login", body={"code": "right"}, login=False
-        ).headers["Set-Cookie"]
+        not in call(plain, "POST", "/api/shop/auth/start", login=False).headers["Set-Cookie"]
     )
-    wrong = call(app, "POST", "/api/shop/auth/login", body={"code": "nope"}, login=False)
-    assert wrong.status == 401 and "Set-Cookie" not in wrong.headers
 
 
 def test_the_request_size_limit_still_holds(tmp_path: Path) -> None:
@@ -373,7 +369,7 @@ def test_the_request_size_limit_still_holds(tmp_path: Path) -> None:
     )
 
 
-def test_the_session_and_job_routes_answer_to_a_login(tmp_path: Path) -> None:
+def test_the_session_and_job_routes_answer_to_a_visit(tmp_path: Path) -> None:
     app = make_app(tmp_path)
     ok = call(app, "GET", "/api/shop/session")
     assert ok.status == 200 and json.loads(ok.body)["session_id"] is None
@@ -386,7 +382,7 @@ def test_the_session_and_job_routes_answer_to_a_login(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("method", ["GET", "POST"])
-def test_login_routes_are_open_to_the_unauthenticated(tmp_path: Path, method: str) -> None:
+def test_auth_routes_are_open_to_the_unauthenticated(tmp_path: Path, method: str) -> None:
     app = make_app(tmp_path)
     path = "/api/shop/auth/session" if method == "GET" else "/api/shop/auth/logout"
     resp = call(app, method, path, login=False, body={} if method == "POST" else None)
@@ -405,8 +401,8 @@ def test_a_failed_job_hides_provider_detail_in_deployment_mode(tmp_path: Path) -
 
     job = app.service._start("search", None, boom)
     app.service.jobs.wait(job)
-    assert call(app, "GET", f"/api/shop/job/{job}").status == 404  # not this invite's job
-    app._job_owner[job] = "i1"
+    assert call(app, "GET", f"/api/shop/job/{job}").status == 404  # not this visitor's job
+    app._job_owner[job] = "v1"
     body = json.loads(call(app, "GET", f"/api/shop/job/{job}").body)
     text = json.dumps(body)
     assert body["state"] == "error" and "abc123" not in text and "serper" not in text

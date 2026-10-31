@@ -141,6 +141,6 @@ deploy-check:
 	uv run python -m app.shop.deploycheck
 
 # The deployment-mode server on a temporary SQLite database and mock providers: /healthz, a 401, a
-# login, an authenticated call, a cap_reached and the maintenance answer. No network, no docker.
+# visit start, an authenticated call, a cap_reached, the start limit and the maintenance answer. No network, no docker.
 deploy-smoke:
 	APP_LLM_MODE=mock uv run python scripts/deploy_smoke.py
