@@ -10,6 +10,8 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- The most important items, in the order you'd actually tackle them. -->
 
+- [x] **Stage D1.1: first real-deployment bug** (trace file not writable by the container user; ADR 0013 note; `docs/sessions/2026-10-31-deploy-d1-1.md`). Done in the tree, untested live.
+- [ ] **Max: redeploy, then `fly secrets unset APP_TRACING_DISABLED`** (the image now sets it), run a search through the portfolio and read `fly logs` for any `shop error` line.
 - [x] **Stage D1: Shop Mode deployable as an invite-only JSON API** (ADR 0013): deployment mode, hosted store, invites, caps, outbound safety, container, runbook, contract. Nothing run against real Fly, Neon or Vercel.
 - [ ] **Max: real-service smoke test** from `docs/deploy.md` ("Smoke test": Neon, Fly, Vercel), then create the first invite.
 - [ ] **Portfolio repo: the `/api/shop/:path*` rewrite with the `x-origin-secret` header** (before the SPA catch-all; the header setup differs between `routes` and `rewrites`; test on a preview).

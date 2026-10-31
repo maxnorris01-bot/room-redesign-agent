@@ -27,6 +27,7 @@ Settings (not secret, set with `fly secrets set` too, or in `fly.toml [env]`; `f
 |---|---|
 | `APP_DEPLOY_MODE` | `1` (the container sets it; locally it is unset and everything works as before) |
 | `APP_LLM_MODE` | `live` (set in `fly.toml`) |
+| `APP_TRACING_DISABLED` | `1`, part of the image and `fly.toml`: the service writes no trace file on Fly. If you set it as a Fly secret during the first deployment, it is no longer needed: `fly secrets unset APP_TRACING_DISABLED` |
 | `APP_HOST`, `APP_PORT` | `0.0.0.0` and `8080` (set in `fly.toml` and the Dockerfile; the port must match `internal_port`) |
 | `APP_API_PREFIX` | `/api/shop` |
 | `APP_ALLOWED_HOSTS` | the Fly host name, for example `room-redesign-shop.fly.dev` (comma separated) |
@@ -60,7 +61,7 @@ Run these yourself, in this order. Replace the names in angle brackets.
 
 ### Operating it
 
-- **Logs.** `fly logs`. The service logs no request lines (paths carry session ids) and never a code, cookie or secret.
+- **Logs.** `fly logs`. The service logs no request lines (paths carry session ids) and never a code, cookie or secret. A failed job or an unexpected server error prints one line, `shop error [search] PermissionError: ... at src/app/...:NN` (class, redacted message, repository location); the visitor only sees the generic sentence.
 - **Revoke an invite.** `fly ssh console -C "python -m app.shop.admin invite revoke <id>"`; its logins end at once.
 - **Rotate the origin secret.** `fly secrets set APP_ORIGIN_SECRET=<new>` and change the Vercel environment variable to the same value, then redeploy the portfolio. Between the two steps shop calls
   get 403: do it quickly, or turn the kill switch on first.

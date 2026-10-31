@@ -52,6 +52,8 @@ def test_the_files_say_what_the_brief_asks() -> None:
         (lambda d: d.replace("USER app", "USER root"), "non-root"),
         (lambda d: d.replace("USER app\n", ""), "non-root"),
         (lambda d: d.replace("APP_DEPLOY_MODE=1", "APP_DEPLOY_MODE=0"), "APP_DEPLOY_MODE"),
+        (lambda d: d.replace("APP_TRACING_DISABLED=1", "APP_X=1"), "APP_TRACING_DISABLED"),
+        (lambda d: d.replace("chown app:app /app", "true"), "own /app itself"),
         (lambda d: d.replace("--frozen", ""), "--frozen"),
         (lambda d: d.replace(" --no-dev", ""), "dev dependencies"),
         (lambda d: d.replace("app.shop.serve", "app.shop.server"), "app.shop.serve"),
@@ -70,6 +72,7 @@ def test_dockerfile_mistakes_are_found(edit: object, expect: str) -> None:
     ("old", "new", "expect"),
     [
         ("internal_port = 8080", "internal_port = 9090", "does not match"),
+        ('APP_TRACING_DISABLED = "1"', 'APP_TRACING_DISABLED = "0"', "APP_TRACING_DISABLED"),
         ("force_https = true", "force_https = false", "force https"),
         ('auto_stop_machines = "stop"', 'auto_stop_machines = "off"', "auto-stop"),
         ("auto_start_machines = true", "auto_start_machines = false", "auto-start"),

@@ -225,6 +225,9 @@ this choice over the alternatives. Note what's still open or deferred within it,
 - **2026-10-30, stage D1 (ADR 0013): deployable as an invite-only JSON API.** Decisions: API only in deployment (the portfolio owns the UI) behind an origin secret, so the browser never talks to Fly;
   invite codes stored as hashes, cookie scoped to the API path; sessions in Postgres via hand-written SQL, the same SQL tested on SQLite; caps checked before work and metered in the save transaction;
   jobs stay in memory and are polled (one machine); thumbnails are not served, so no cache exception. Defaults ($0.50 / $1.00 / $3.00) are guesses. See `docs/sessions/2026-10-30-deploy-d1.md` and `docs/deploy.md`.
+- **2026-10-31, stage D1.1: the first real deployment failed because tracing wrote to a root-owned `/app`.** Decisions: a trace write must never fail a request (warn once, carry on); the deployed
+  image writes no traces at all; failures are made visible with one redacted stderr line (class and repository location) instead of a traceback; the smoke now reproduces the container's conditions
+  (read-only working directory, tracing on). See ADR 0013 (note) and `docs/sessions/2026-10-31-deploy-d1-1.md`.
 
 ## See also
 

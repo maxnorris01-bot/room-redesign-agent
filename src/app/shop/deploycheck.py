@@ -44,6 +44,12 @@ def check(dockerfile: str, dockerignore: str, fly: str, pyproject: str = "") -> 
         problems.append("Dockerfile does not switch to a non-root USER")
     if "APP_DEPLOY_MODE=1" not in joined.replace(" ", ""):
         problems.append("Dockerfile does not set APP_DEPLOY_MODE=1")
+    if "APP_TRACING_DISABLED=1" not in joined.replace(" ", ""):
+        problems.append("Dockerfile does not set APP_TRACING_DISABLED=1 (a trace file is written)")
+    if not re.search(r"^RUN\b.*\bchown\b.*\bapp:app\b.*\s/app\b", joined, flags=re.MULTILINE):
+        problems.append(
+            "Dockerfile does not make the app user own /app itself (chown app:app /app)"
+        )
     if not re.search(r"app\.shop\.serve\b", joined):
         problems.append("Dockerfile does not start app.shop.serve")
     if "--frozen" not in joined:
@@ -84,6 +90,8 @@ def check(dockerfile: str, dockerignore: str, fly: str, pyproject: str = "") -> 
             problems.append(
                 f"{source} ({value}) does not match fly.toml internal_port ({internal})"
             )
+    if str(env.get("APP_TRACING_DISABLED")) != "1":
+        problems.append("fly.toml [env] does not set APP_TRACING_DISABLED to 1")
     if not service.get("force_https"):
         problems.append("fly.toml does not force https")
     if service.get("auto_stop_machines") in (None, False, "off"):

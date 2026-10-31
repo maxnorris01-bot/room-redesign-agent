@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -81,7 +82,16 @@ def main() -> int:
     )  # fmt: skip
     store = SqlSessionStore(db)
     store.after_save = Meter()
-    cfg = Config(tracing_disabled=True)
+    # The container runs as a user that cannot write to its working directory, with tracing as the
+    # code default (on): a search must still finish. (The first real deployment failed this way.)
+    workdir = tmp / "readonly-cwd"
+    workdir.mkdir()
+    workdir.chmod(0o500)
+    previous = Path.cwd()
+    os.chdir(workdir)
+    writable = os.access(workdir, os.W_OK)  # false for root, which ignores permissions
+    print(f"working directory read-only for this process: {not writable}")
+    cfg = Config(tracing_disabled=False)
     search, _ = build_shop_providers(cfg)
     service = ShopService(cfg, store, search, ShopFixtureLookup())
     service.guard = CapGuard(db, settings)
@@ -140,13 +150,20 @@ def main() -> int:
         for _ in range(600):
             status, _, state = c.call("GET", f"{api}/job/{job}")
             if state["state"] != "running":
-                sid = state["result"]["session_id"]
+                sid = (state.get("result") or {}).get("session_id", "")
                 break
             service.jobs.wait(job, 0.2)
         check(
-            status == 200 and bool(sid),
-            f"a search ran as a job and finished (session {sid[:4]}...)",
+            status == 200 and state.get("state") == "done" and bool(sid),
+            f"a search ran as a job and finished (session {sid[:4]}...), state {state.get('state')}",
         )
+        check(
+            not writable and not (workdir / "runs").exists(),
+            "nothing was written to the working directory",
+        )
+        if not sid:  # no session to carry on with; the checks above already say why
+            print(f"the search job did not finish: {state}")
+            return 1
         status, _, body = c.call(
             "POST", f"{api}/search", {"session_id": sid, "request": "more tables"}
         )
@@ -174,6 +191,8 @@ def main() -> int:
     finally:
         server.shutdown()
         server.server_close()
+        os.chdir(previous)
+        workdir.chmod(0o700)
     print("all checks passed" if not FAILS else f"{len(FAILS)} check(s) failed")
     return 1 if FAILS else 0
 
