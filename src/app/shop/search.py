@@ -1243,8 +1243,15 @@ def run_query(
     progress: Callable[[str], None] | None = None,
     near: NearContext | None = None,
     photos: ThumbCache | None = None,
+    rank_gate: Callable[[], Any] | None = None,
 ) -> SearchOutcome:
     """Search, filter, de-duplicate, rank, (tag), cap and return the results for a parsed `query`.
+
+    `rank_gate` (stage Q1, a typed search only) is called once when the searches are done, right
+    before the pool is cut and ranked: it may block (the clarifying questions' apply point) and
+    returns an object with `query` (a replacement `ShopQuery` or None) and `waited` (seconds spent
+    waiting, which do not count against the hard stop). A replacement whose search text differs
+    gets one more page-1 search, merged into the pool.
 
     A typed search fetches page 2 only when fewer than `RESULT_COUNT` results could be shown. A Shop
     Again runs page 1 of each of its phrasings (the adjusted query, then up to two built from the
@@ -1642,6 +1649,27 @@ def run_query(
     if again is not None:  # a search made while the preference call ran but never used still billed
         calls += sum(1 for key in again.prefetched if key not in consumed)
     t_search = clock.now()
+
+    # ---- stage Q1: the apply point of the clarifying questions ----
+    gate_info: dict[str, Any] = {}
+    if rank_gate is not None and again is None:
+        say("Choosing what to rank")
+        gate = rank_gate()
+        hard_stop_at += gate.waited  # time the shopper took is not the pipeline's
+        gate_info = {"waited_s": gate.waited, "applied": gate.query is not None}
+        if gate.query is not None:
+            old_text = query.search_text
+            query = gate.query  # the closures above (`filtered`, ...) read the new query
+            pool, counts = filtered(raw)  # the answers' filters, over what was fetched
+            if query_key(query.search_text) != query_key(old_text) and not expired("answers"):
+                calls += 1
+                got = fetch(query.search_text, 1)
+                if isinstance(got, Exception):
+                    warnings.append(f"Search for your answers unavailable ({got}).")
+                else:
+                    added = absorb(query.search_text, 1, got, "answers")
+                    supplied.update(c.product_id for c in added)
+                    gate_info["extra_search"] = {"found": len(got), "new_candidates": len(added)}
 
     # ---- cut the pool, rank it once ----
     limit = MAX_POOL_AGAIN if again is not None else MAX_POOL
@@ -2337,6 +2365,7 @@ def run_query(
         seller_share=seller_share,
         composition=composition_info,
         trace={
+            **({"clarify_gate": gate_info} if gate_info else {}),
             **({"thin": thin_info} if thin_info else {}),
             **({"fill": fill_info} if fill_info and again is None else {}),
             **({"typed": typed_info} if typed_info and again is None else {}),

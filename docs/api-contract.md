@@ -75,6 +75,7 @@ Response `200`: the page's whole state. Fields (the current page reads all of th
 - `profile` object | null (what Shop Again learned: chips in `inferred`, stated likes and dislikes, `trace`), `profile_summary` string, `can_shop_again` boolean, `shop_agains_used`, `shop_agains_cap` integers
 - `topic` `{id, label, request, counted, excluded, topics}` | null, `refine` array of chips (below), `refine_usd`, `session_usd`, `prep_usd` numbers
 - `photos_cached`, `photos_none` arrays of result ids, `lookup_trace` array, `lookups_used` integer, `prep` object
+- `clarify_answers` (only with `APP_SHOP_CLARIFY` on): array of `{id: "answer:<question id>", question, label, dimension}`, the answers that apply to the next Shop Again, shown as chips; delete one with `POST /refine/remove`
 - `search` has: `index`, `topic`, `topic_notice`, `request`, `query` (the parsed request: `search_text`, `category`, `price_min`, `price_max`, `style_terms`, `material_terms`, `must_have`, `avoid`, `color_terms`, `shape_terms`, `context`, ...), `created_at`, `results` (array of results), `seconds`, `kind` ("search" | "shop_again"), `note`, `headline` (the one sentence above the grid), `warnings` array of strings, `queries`, `trace`, `tagging`, `serper_calls`, `serper_credits`, `anthropic_usd`, `provider_usd`, `total_usd`, `counts`, `ranked`, `alignment`, `diversity`, `seller_share`
 - a result: `id`, `title`, `price` number | null, `currency`, `seller`, `thumbnail_url` (an https URL on the provider's CDN, or ""), `link` (a Google product link until resolved), `link_kind` ("google_panel" | "retailer" | "none"), `size_hint` string | null, `product_id`, `rank`, `pool_position`, `rank_reason`, `rating` number | null, `rating_count` integer | null, `also_at` array of `{seller, price}`, `source` `{kind, query}` | null
 
@@ -89,6 +90,61 @@ Query: `session` (the session id the job belongs to; "" for a first search). Res
 - failed: `{"state": "error", "status": integer, "error": string, ...}` (the job's own HTTP status and a safe sentence; it is `200` for the poll itself)
 
 An unknown, expired or another visitor's job is `404`. Example: `GET /api/shop/job/Qm4c...?session=Xq3kP9...`.
+
+**`clarify` (optional, stage Q1).** A search job started while `APP_SHOP_CLARIFY` is on carries one more field, `clarify`, in every state
+(running, done, failed); with the flag off the field is absent and the response is exactly what it was. A Shop Again job never has it.
+It is the same object `POST /job/{id}/answers` returns under `clarify`:
+
+```ts
+type ClarifyState = "pending" | "ready" | "skipped" | "failed";
+interface ClarifyOption { label: string; value: string; picture_url: string | null } // https thumbnail, or null
+interface ClarifyQuestion {
+  id: string; text: string;
+  kind: "choice" | "size_range";
+  dimension: "color" | "material" | "shape" | "style" | "size" | "feature";
+  options: ClarifyOption[];                  // 2 to 4; the page adds its own "No preference"
+}
+interface Clarify {
+  state: ClarifyState;                       // pending: being written; skipped/failed: nothing to ask
+  questions: ClarifyQuestion[];              // [] unless state is "ready" (1 to 5 questions)
+  pictures_state: "pending" | "done";        // text comes first; picture_url fills in on a later poll
+  no_preference_value: "no_preference";      // the option_value that means "no preference"
+  answers: { question_id: string; option_value: string }[];   // what the server holds so far
+  submitted: boolean;                        // a submit was received
+  applied: boolean;                          // the apply point passed: answers are final, no more posts
+  deadline: {
+    idle_grace_s: number;                    // 6: with no interaction the search ranks this long after it is ready
+    max_wait_s: number;                      // 40: with >= 1 answer, the most it waits (from when the questions appeared)
+    waiting: boolean;                        // the search is ready to rank and is holding for the answers now
+    seconds_left: number | null;             // until the current deadline, only while waiting
+    shown_s_ago: number | null;              // since the questions appeared (null before)
+  };
+}
+// GET /job/{id} response: ... existing fields ... & { clarify?: Clarify }
+```
+
+How the page should use it: poll as it does now. When `clarify.state` is `"ready"`, show `questions` (text first; swap `picture_url` in as `pictures_state`
+moves to `"done"`; a `null` picture means show the option as text). Post answers as they are chosen, and `submit: true` when the shopper presses the
+button. The search keeps working meanwhile; the results arrive in `result` as always. Once `applied` is true stop posting. `skipped` and `failed`
+mean show nothing (the search is not held up). Picture URLs are the providers' own https thumbnails: use them as the result cards do (no proxy).
+
+### POST /job/{id}/answers
+
+Auth: visit cookie; the job must be the visitor's (another visitor's or an unknown job is `404`). Request:
+
+```ts
+{ answers: { question_id: string; option_value: string /* an option's value, or "no_preference" */ }[];  // at most 20
+  submit?: boolean;                          // default false; true ends the wait: rank now
+  session_id?: string }                      // only to match a job started with a session id (local server)
+```
+
+Response `200 { clarify: Clarify }` (the object above, after the change). Rules: a later answer to the same question replaces the earlier; a
+`question_id` that is not one of this job's questions is ignored; an `option_value` that is not one of that question's options (and not
+`"no_preference"`) is `400 bad_request` and nothing in the request is recorded; the same request twice changes nothing (idempotent); `409` when the job
+has no open questions (`state` is not `"ready"`, a Shop Again job, or the flag is off) and when the apply point has passed (`applied` true), except that
+repeating what was applied answers `200`; `429 rate_limited` after 60 answer posts to one job. Answering is not a search: it does not count toward the
+8-search limit and costs nothing.
+Example: `POST /api/shop/job/Qm4c.../answers` with `{"answers": [{"question_id": "q_color", "option_value": "walnut"}], "submit": true}`.
 
 ### POST /search
 
@@ -124,7 +180,9 @@ Request `{"session_id": string, "text": string (at most 200 characters)}`: one p
 
 ### POST /refine/remove
 
-Request `{"session_id": string, "id": string}`. Response `200 {"refine": [chip, ...]}`. `404` for an unknown chip.
+Request `{"session_id": string, "id": string}`. Response `200 {"refine": [chip, ...]}`. `404` for an unknown chip. An answer to a clarifying question
+(stage Q1) is deleted the same way with `id` `"answer:<question id>"`: its constraint is gone from the next Shop Again, and the response also holds
+`"clarify_answers": [...]`.
 
 ### POST /preference/remove
 

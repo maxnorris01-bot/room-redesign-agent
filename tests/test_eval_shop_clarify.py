@@ -178,17 +178,15 @@ def test_the_hidden_persona_never_reaches_the_pipeline_or_the_question_writer(
     assert not any(w in text for text in seen for w in persona_words)
 
 
-def test_the_mock_run_leaves_the_live_thresholds_and_shop_files_alone() -> None:
+def test_the_mock_run_leaves_the_live_thresholds_and_the_locked_shop_eval_alone() -> None:
     assert thresholds_sha256() == LOCKED_HASH
     tracked = subprocess.run(
-        ["git", "diff", "--name-only", "main", "--", "evals/shop", "src/app/shop"],
+        ["git", "diff", "--name-only", "main", "--", "evals/shop"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     ).stdout.split()
-    assert [
-        t for t in tracked if t not in ("src/app/shop/clarify.py", "src/app/shop/clarify_verify.py")
-    ] == []
+    assert tracked == []
 
 
 # ---- the timing wrapper -----------------------------------------------------------------------

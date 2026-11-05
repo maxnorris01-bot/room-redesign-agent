@@ -18,6 +18,12 @@ SEARCH_PROVIDERS = ("serper", "serpapi")
 PRICE_TIERS = ("value", "mid", "premium")
 
 
+def _clarify_number(name: str, default: float) -> float:
+    """A clarify setting: `APP_CLARIFY_<NAME>`, else the bare `CLARIFY_<NAME>`, else the default."""
+    raw = os.environ.get(f"APP_CLARIFY_{name}") or os.environ.get(f"CLARIFY_{name}")
+    return float(raw) if raw and raw.strip() else float(default)
+
+
 @dataclass(frozen=True)
 class Config:
     max_steps: int = 12
@@ -141,6 +147,14 @@ class Config:
     shop_thin_variants: bool = False  # stage 2p, 2r: the fill loop (variant searches, short batch)
     shop_seller_bets: bool = False  # stage 2s: graduated seller allowance with revocation
     shop_early_stop: bool = False  # stage 2r: skip optional searches when the pool is plentiful
+    # stage Q1: clarifying questions on a first typed search (ADR 0017). Off by default: with the
+    # flag off nothing changes and the job status has no `clarify` object.
+    shop_clarify: bool = False  # APP_SHOP_CLARIFY
+    clarify_idle_grace_s: float = 6.0  # past ready-to-rank with no interaction, then rank anyway
+    clarify_max_wait_s: float = (
+        40.0  # after the questions were shown, with >= 1 answer, until submit
+    )
+    clarify_candidates: int = 25  # listings the question call reads
     shop_gallery: bool = False  # stage 2o: "More photos" (dormant: the lookup takes seconds)
     shop_auto_lookups: bool = (
         False  # stage 2o: resolve loved and liked items ahead (off bare; env on)
@@ -218,6 +232,15 @@ class Config:
             or self.shop_tag_workers < 1
         ):
             raise ValueError("preparation concurrency, chunk and tag workers must be >= 1")
+        if (
+            self.clarify_idle_grace_s < 0
+            or self.clarify_max_wait_s < self.clarify_idle_grace_s
+            or not 1 <= self.clarify_candidates <= 60
+        ):
+            raise ValueError(
+                "CLARIFY_IDLE_GRACE_S must be >= 0, CLARIFY_MAX_WAIT_S at least the grace, "
+                "CLARIFY_CANDIDATES 1 to 60"
+            )
         if not 0 < self.shop_target_s <= self.shop_hard_stop_s:
             raise ValueError("APP_SHOP_TARGET_S must be positive and at most the hard stop")
         if self.shop_tag_top_n < 0 or not 1 <= self.shop_search_workers <= 8:
@@ -318,6 +341,11 @@ class Config:
             not in ("0", "false", "no"),
             shop_early_stop=os.environ.get("APP_SHOP_EARLY_STOP", "1").strip()
             not in ("0", "false", "no"),
+            shop_clarify=os.environ.get("APP_SHOP_CLARIFY", "0").strip().lower()
+            in ("1", "true", "yes"),
+            clarify_idle_grace_s=_clarify_number("IDLE_GRACE_S", cls.clarify_idle_grace_s),
+            clarify_max_wait_s=_clarify_number("MAX_WAIT_S", cls.clarify_max_wait_s),
+            clarify_candidates=int(_clarify_number("CANDIDATES", cls.clarify_candidates)),
             shop_seller_bets=os.environ.get("APP_SHOP_SELLER_BETS", "1").strip()
             not in ("0", "false", "no"),
             shop_gallery=os.environ.get("APP_SHOP_GALLERY", "0").strip().lower()

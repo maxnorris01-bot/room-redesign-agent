@@ -427,8 +427,10 @@ def test_a_clean_set_has_no_flags() -> None:
 # ---- isolation --------------------------------------------------------------------------------
 
 
-def test_nothing_in_the_api_or_the_pipeline_imports_the_spike() -> None:
-    importers = []
+def test_only_the_clarify_flow_and_its_callers_import_the_spike() -> None:
+    """Stage Q1 wired the spike modules in behind a flag: the flow module (and the two modules
+    that call it) import them; the pipeline, the parse, the store and the server do not."""
+    importers = set()
     for path in (ROOT / "src").rglob("*.py"):
         if path.name in ("clarify.py", "clarify_verify.py"):
             continue
@@ -440,5 +442,6 @@ def test_nothing_in_the_api_or_the_pipeline_imports_the_spike() -> None:
             elif isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
             if any("clarify" in n for n in names):
-                importers.append(str(path))
-    assert importers == []
+                importers.add(path.name)
+    assert importers <= {"clarify_flow.py", "clarify_mock.py", "service.py", "again.py"}
+    assert not importers & {"search.py", "parse.py", "store.py", "server.py", "jobs.py"}

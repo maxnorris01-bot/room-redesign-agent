@@ -25,7 +25,9 @@ def test_every_route_in_the_table_is_in_the_contract_and_vice_versa() -> None:
 
 def test_the_server_constants_come_from_the_table() -> None:
     assert POST_PATHS == {
-        f"/api{r.path}" for r in ROUTES if r.method == "POST" and not r.deploy_only
+        f"/api{r.path}"
+        for r in ROUTES
+        if r.method == "POST" and not r.deploy_only and "{id}" not in r.path
     }
     assert (
         "/api/session" in API_PATHS
