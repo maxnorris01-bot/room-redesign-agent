@@ -10,6 +10,8 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- The most important items, in the order you'd actually tackle them. -->
 
+- [ ] **Max: run clarifying-questions spike round 2 live** (`make clarify-plan`, then `EVAL_CLARIFY_CONFIRM=yes make clarify-live`: Anthropic only, $0.15 stop, saved Serper responses only; then `make clarify-report` and open the contact sheet; ADR 0016). Round 1 was run (coverage 91%, but two wrong pictures: round 2 verifies them).
+- [x] ~~Max: run the clarifying-questions spike live~~ (round 1, done) (`make clarify-plan` first; then `EVAL_CLARIFY_CONFIRM=yes make clarify-live`, then `make clarify-report` and open `evals/shop_clarify/results/contact-sheet.html`). Offline harness only, ADR 0015, `docs/sessions/2026-11-04-clarify-spike.md`; decide from the four targets in `report.md` whether to build the route and page.
 - [x] **Stage D1.2: invite codes removed, anonymous visitors, address-based limits, retention** (ADR 0014; `docs/sessions/2026-10-31-deploy-d1-2.md`). Done in the tree; real Postgres has not run migration 2.
 - [ ] **Max: redeploy, run `migrate` (version 2) and the first-use checklist in `docs/deploy.md`**, then watch `caps show` after a few real visits.
 - [ ] **Bot check: add Cloudflare Turnstile** at `auth.bot_check_allowed` (the page sends the widget token with `POST /auth/start`; verify it with Cloudflare; no third-party call exists yet).

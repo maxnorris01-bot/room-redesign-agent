@@ -1,6 +1,7 @@
 .PHONY: install lint format typecheck test eval-fast eval-fast-live eval-standard eval-standard-live \
 	eval-nightly eval-nightly-live spike spike-live report reports render render-live shop shop-live shop-check shop-diagnose \
-	eval-shop-plan eval-shop-mock eval-shop-live eval-shop-report eval-shop-rejudge deploy-check deploy-smoke
+	eval-shop-plan eval-shop-mock eval-shop-live eval-shop-report eval-shop-rejudge deploy-check deploy-smoke \
+	clarify-plan clarify-mock clarify-live clarify-report
  
 install:
 	uv sync
@@ -144,3 +145,25 @@ deploy-check:
 # visit start, an authenticated call, a cap_reached, the start limit and the maintenance answer. No network, no docker.
 deploy-smoke:
 	APP_LLM_MODE=mock uv run python scripts/deploy_smoke.py
+
+# Clarifying-questions spike (docs/adr/0015-clarifying-questions-spike.md, evals/shop_clarify/README.md): an offline
+# harness. Nothing here touches the live shop pipeline or its thresholds.
+# Free: the requests, the expected calls and the expected and worst-case cost. Spends nothing.
+clarify-plan:
+	APP_LLM_MODE=mock uv run python -m evals.shop_clarify plan $(if $(CASES),--case $(CASES),) $(ARGS)
+
+# The whole harness on canned candidates and canned model output. Free, no key; safe for CI.
+clarify-mock:
+	APP_LLM_MODE=mock uv run python -m evals.shop_clarify mock $(if $(CASES),--case $(CASES),) $(ARGS)
+
+# Costs real money. Round 2 (the default; verified pictures, ADR 0016): Anthropic only, hard stop $0.15, Serper from saved
+# responses ONLY (0 new credits). Round 1: ARGS="--round 1" (hard stops $0.30 and 150 credits). Refuses to start unless the
+# command line says EVAL_CLARIFY_CONFIRM=yes, and never runs under CI or tests:
+#   make clarify-live EVAL_CLARIFY_CONFIRM=yes
+# Optional: CLARIFY_VERIFY_MODE=single (one picture a call) to compare costs, CASES=cl-01 for one request.
+clarify-live:
+	EVAL_CLARIFY_CONFIRM=$(EVAL_CLARIFY_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop_clarify live $(if $(CASES),--case $(CASES),) $(ARGS)
+
+# report.md and contact-sheet.html (in evals/shop_clarify/results/, gitignored) from a results file (default: the newest).
+clarify-report:
+	APP_LLM_MODE=mock uv run python -m evals.shop_clarify report $(RESULTS) $(if $(OUT),--out $(OUT),)

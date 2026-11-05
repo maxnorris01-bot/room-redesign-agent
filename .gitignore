@@ -22,3 +22,5 @@ shop-data/
 evals/shop/results/
 # real Google Shopping responses recorded for the eval (public repo: never commit them)
 evals/shop/cache/
+# clarifying-questions spike: results, report, contact sheet (third-party titles and thumbnail URLs)
+evals/shop_clarify/results/
