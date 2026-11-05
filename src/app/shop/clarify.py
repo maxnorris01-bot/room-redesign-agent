@@ -330,6 +330,111 @@ def sanitize(out: QuestionsOut, ids: dict[str, str]) -> tuple[list[Question], li
 
 # ---- 2. pick_option_images --------------------------------------------------------------------
 
+# Round 2: a picture must show the product's MAIN body in the option's value, so the title match is
+# strict. A value word does not count where the title says it describes something secondary: after a
+# lead word ("with Metal Handle", "and Gold"), next to hardware ("Black Metal Legs"), or, for a
+# colour question, a top ("Oak Dresser, Black Top"). All the word lists are here.
+SECONDARY_LEADS = ("with", "and", "w/", "&", "plus", "including", "featuring")
+HARDWARE_WORDS = (
+    "handle", "handles", "pull", "pulls", "knob", "knobs", "hardware", "leg", "legs", "base",
+    "trim", "accent", "accents", "feet", "foot", "hinge", "hinges",
+)  # fmt: skip
+TOP_WORDS = ("top",)  # secondary only when the question is about the body's colour
+LEAD_WINDOW = 4  # a lead word this many tokens or fewer before the value makes it secondary
+AFTER_WINDOW = 2  # a hardware (or top) word this many tokens or fewer after it does too
+EARLY_WORDS = 6  # a match in the first six words of the title is preferred
+NOUN_WINDOW = 3  # so is one directly before the product noun ("black dresser")
+MAX_PICTURE_CANDIDATES = 3  # per option: the verifier looks at up to this many
+_TOKEN = re.compile(r"w/|&|[a-z0-9]+")
+_HARDWARE_STEMS = frozenset(_stem(w) for w in HARDWARE_WORDS)
+_TOP_STEMS = frozenset(_stem(w) for w in TOP_WORDS)
+_VARIANT_SPLIT = re.compile(r"\s+or\s+|\s+and\s+|/|,")
+
+
+def title_tokens(title: str) -> list[str]:
+    """A title as lowercase tokens: a hyphen is a space, `w/` and `&` are tokens of their own."""
+    return _TOKEN.findall(title.lower().replace("-", " "))
+
+
+def option_variants(option: Option) -> list[str]:
+    """The value words an option can be shown by: its `value`, and each part of its label split on
+    "or", "and", "/" or a comma ("Black or gray" gives black and gray). A part longer than three
+    words, or only small words, is left out."""
+    out = [" ".join(words(option.value))]
+    for part in _VARIANT_SPLIT.split(option.label.lower()):
+        ws = words(part)
+        if 1 <= len(ws) <= 3 and not all(w in _STOP for w in ws):
+            text = " ".join(ws)
+            if text not in out:
+                out.append(text)
+    return [v for v in out if v]
+
+
+def _spans(tokens: list[str], value_words: list[str]) -> list[tuple[int, int]]:
+    """Where the value's words sit in the tokens: each word in order, within a window as wide as the
+    value (plus one), so "6 drawer" is "6-Drawer" and "light wood" is "Light Oak Wood" but not a
+    "light" at the start and a "wood" at the end."""
+    want = [_stem(w) for w in value_words if w not in _STOP]
+    if not want:
+        return []
+    stemmed = [_stem(t) for t in tokens]
+    found: list[tuple[int, int]] = []
+    for i, tok in enumerate(stemmed):
+        if tok != want[0]:
+            continue
+        end, ok = i, True
+        for w in want[1:]:
+            nxt = next(
+                (j for j in range(end + 1, min(len(tokens), end + 3)) if stemmed[j] == w), None
+            )
+            if nxt is None:
+                ok = False
+                break
+            end = nxt
+        if ok:
+            found.append((i, end))
+    return found
+
+
+def is_secondary(tokens: list[str], span: tuple[int, int], dimension: str = "") -> bool:
+    """Whether a match describes a secondary part of the product: a lead word shortly before it,
+    hardware shortly after it, or (for a colour question) a top."""
+    a, b = span
+    if any(t in SECONDARY_LEADS for t in tokens[max(0, a - LEAD_WINDOW) : a]):
+        return True
+    after = [_stem(t) for t in tokens[b + 1 : b + 1 + AFTER_WINDOW]]
+    if any(t in _HARDWARE_STEMS for t in after):
+        return True
+    return dimension == "color" and any(t in _TOP_STEMS for t in after)
+
+
+def match_rank(
+    title: str, option: Option, dimension: str = "", category: str = ""
+) -> tuple[int, int] | None:
+    """How well a title shows an option's value as the product's main body: None when it does not
+    (no match, or only a secondary one), else `(0, position)` for a preferred match (in the first
+    six words or directly before the product noun) and `(1, position)` for an acceptable one. Lower
+    is better."""
+    tokens = title_tokens(title)
+    nouns = {_stem(w) for w in words(category)}
+    best: tuple[int, int] | None = None
+    for variant in option_variants(option):
+        for span in _spans(tokens, words(variant)):
+            if is_secondary(tokens, span, dimension):
+                continue
+            a, b = span
+            before_noun = any(_stem(t) in nouns for t in tokens[b + 1 : b + 1 + NOUN_WINDOW])
+            rank = (0 if a < EARLY_WORDS or before_noun else 1, a)
+            if best is None or rank < best:
+                best = rank
+    return best
+
+
+def title_has_value(title: str, value: str, dimension: str = "", category: str = "") -> bool:
+    """Whether a title shows `value` as the product's main body (the strict match above; the value
+    is the whole option, so a label of "A or B" is not split here)."""
+    return match_rank(title, Option(label=value, value=value), dimension, category) is not None
+
 
 @dataclass(frozen=True)
 class Pick:
@@ -338,12 +443,17 @@ class Pick:
     product_id: str
     title: str
     thumbnail_url: str
-    how: str  # "evidence" (the model's own pointer, confirmed by the title) or "scan"
+    how: str  # "evidence" (the model's own pointer, confirmed by the strict match) or "scan"
 
 
 @dataclass
 class ImagePicks:
     by_option: dict[tuple[str, int], Pick | None] = field(default_factory=dict)
+    # up to three title-matching listings with a picture per option, best first (what the
+    # verifier tries)
+    candidates: dict[tuple[str, int], list[Pick]] = field(default_factory=dict)
+    # listings whose title strictly shows the value, with or without a picture
+    title_evidence: dict[tuple[str, int], int] = field(default_factory=dict)
     total: int = 0
     with_image: int = 0
 
@@ -356,14 +466,6 @@ class ImagePicks:
 
 
 _RANGE = re.compile(r"(\d+(?:\.\d+)?)")
-
-
-def title_has_value(title: str, value: str) -> bool:
-    """Whether a title carries an option's value: every word of the value (a plural counts, a hyphen
-    is a space, small words like "to" and "in" are ignored) is in the title. "6 drawer" matches
-    "6-Drawer Dresser" and "6 drawers"; "mid-century" matches "Mid Century"."""
-    wanted = {_stem(w) for w in words(value) if w not in _STOP}
-    return bool(wanted) and wanted <= stems(title)
 
 
 def size_in_range(title: str, value: str, category: str = "") -> bool:
@@ -387,23 +489,17 @@ def size_in_range(title: str, value: str, category: str = "") -> bool:
     return False
 
 
-def _fits(
-    c: SearchCandidate,
-    option: Option,
-    kind: Literal["choice", "size_range"],
-    taken: set[str],
-    category: str,
-) -> bool:
-    """Whether listing `c` can picture `option`: an https thumbnail, not already used for another
-    option of the question, and a title that carries the option's value (or, for a size range, a
-    stated size inside it)."""
-    if not c.thumbnail_url or not c.thumbnail_url.startswith("https://"):
-        return False
-    if c.product_id in taken:
-        return False
-    if kind == "size_range" and size_in_range(c.title, option.value, category):
-        return True
-    return title_has_value(c.title, option.value)
+def _rank_for(
+    c: SearchCandidate, option: Option, q: Question, category: str
+) -> tuple[int, int] | None:
+    """The title match rank of listing `c` for option `option` of question `q` (None: no match)."""
+    if q.kind == "size_range" and size_in_range(c.title, option.value, category):
+        return (0, 0)
+    return match_rank(c.title, option, q.dimension, category)
+
+
+def has_picture(c: SearchCandidate) -> bool:
+    return bool(c.thumbnail_url) and (c.thumbnail_url or "").startswith("https://")
 
 
 def pick_option_images(
@@ -412,32 +508,46 @@ def pick_option_images(
     *,
     category: str = "",
 ) -> ImagePicks:
-    """For each option, at most one listing whose TITLE carries the option's value and that has an
-    https thumbnail: the model's evidence listings first (only if the title confirms the value),
-    then the first listing in search order. No two options of one question share a listing. No
-    model call.
+    """For each option, the listing whose TITLE best shows the value as the product's MAIN body
+    (`match_rank`) and that has an https thumbnail; the model's evidence listings rank first, but
+    only when the strict match confirms them. Up to three such listings per option are kept for the
+    verifier (`candidates`). No two options of one question get the same first pick. No model call.
 
     Coverage is options with a picture over all options. A "no preference" choice is not an option
-    here (the page adds it) and needs no picture."""
+    here (the page adds it) and needs no picture. These are title-matched pictures: whether they are
+    RIGHT is `clarify_verify`'s job."""
     items = questions.questions if isinstance(questions, Questions) else list(questions)
-    by_id = {c.product_id: c for c in candidates}
     picks = ImagePicks()
     for q in items:
         taken: set[str] = set()
         for i, option in enumerate(q.options):
             picks.total += 1
-            chosen: Pick | None = None
-
-            for pid in option.evidence_product_ids:
-                c = by_id.get(pid)
-                if c is not None and _fits(c, option, q.kind, taken, category):
-                    chosen = Pick(c.product_id, c.title, c.thumbnail_url or "", "evidence")
-                    break
-            if chosen is None:
-                for c in candidates:
-                    if _fits(c, option, q.kind, taken, category):
-                        chosen = Pick(c.product_id, c.title, c.thumbnail_url or "", "scan")
-                        break
+            evidence = set(option.evidence_product_ids)
+            ranked: list[tuple[tuple[int, int, int, int], SearchCandidate]] = []
+            matched = 0
+            for pos, c in enumerate(candidates):
+                rank = _rank_for(c, option, q, category)
+                if rank is None:
+                    continue
+                matched += 1
+                if has_picture(c):
+                    ranked.append(
+                        ((0 if c.product_id in evidence else 1, rank[0], rank[1], pos), c)
+                    )
+            ranked.sort(key=lambda r: r[0])
+            picks.title_evidence[(q.id, i)] = matched
+            free = [c for _k, c in ranked if c.product_id not in taken]
+            top = [
+                Pick(
+                    c.product_id,
+                    c.title,
+                    c.thumbnail_url or "",
+                    "evidence" if c.product_id in evidence else "scan",
+                )
+                for c in (free or [c for _k, c in ranked])[:MAX_PICTURE_CANDIDATES]
+            ]
+            picks.candidates[(q.id, i)] = top
+            chosen = top[0] if top else None
             if chosen is not None:
                 taken.add(chosen.product_id)
                 picks.with_image += 1

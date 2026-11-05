@@ -186,7 +186,9 @@ def test_the_mock_run_leaves_the_live_thresholds_and_shop_files_alone() -> None:
         capture_output=True,
         text=True,
     ).stdout.split()
-    assert [t for t in tracked if t != "src/app/shop/clarify.py"] == []
+    assert [
+        t for t in tracked if t not in ("src/app/shop/clarify.py", "src/app/shop/clarify_verify.py")
+    ] == []
 
 
 # ---- the timing wrapper -----------------------------------------------------------------------
@@ -423,8 +425,13 @@ def test_results_and_reports_are_gitignored_and_nothing_under_results_is_tracked
 
 def test_no_thumbnail_url_is_in_any_committed_file() -> None:
     for path in [
-        *(ROOT / "evals" / "shop_clarify").glob("*"),
+        *(ROOT / "evals" / "shop_clarify").glob("*.py"),
+        *(ROOT / "evals" / "shop_clarify").glob("*.json"),
+        *(ROOT / "evals" / "shop_clarify").glob("*.md"),
         ROOT / "src" / "app" / "shop" / "clarify.py",
+        ROOT / "src" / "app" / "shop" / "clarify_verify.py",
+        ROOT / "prompts" / "shop_clarify_verify.md",
+        ROOT / "prompts" / "shop_clarify_audit.md",
         ROOT / "prompts" / "shop_clarify.md",
     ]:
         if path.is_file():

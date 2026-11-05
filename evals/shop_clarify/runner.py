@@ -28,6 +28,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,18 +40,22 @@ from app.prompts import load_prompt
 from app.shop.clarify import (
     Caller,
     ImagePicks,
+    Option,
+    Question,
     Questions,
     analyze_facets,
     apply_answers,
     map_answers,
     pick_option_images,
     quality_flags,
+    stems,
 )
+from app.shop.clarify_verify import Audit, Verified, audit_pictures, verify_and_prune
 from app.shop.clock import Clock
 from app.shop.models import ShopQuery, clean_request
-from app.shop.parse import parse_request
+from app.shop.parse import parse_request, strip_price_words
 from app.shop.search import SearchOutcome, run_query
-from app.shopping import SearchCandidate
+from app.shopping import ProviderError, SearchCandidate
 from evals.shop import scorers as sc
 from evals.shop.cache import CacheStats, request_key
 from evals.shop.judges import JudgeItem
@@ -59,8 +64,12 @@ from evals.shop.spec import thresholds_sha256
 from evals.shop_clarify.persona import answer_questions
 from evals.shop_clarify.spec import RESULTS_DIR, ClarifyCase
 
-ANTHROPIC_STOP_USD = 0.30
+ANTHROPIC_STOP_USD = 0.30  # round 1
 SERPER_STOP_CREDITS = 150
+ROUND2_STOP_USD = 0.15  # round 2: the verified pictures; no new Serper credits (replay only)
+ROUND2_STOP_CREDITS = 0
+SMALL_LISTINGS = 25  # the question call's smaller input (a timing variant)
+MATERIALLY_DIFFERENT = 0.7  # word overlap below which the parsed query is searched again
 SHOWN = 24  # results judged per arm
 GOOD_PERSONA = {"love", "like"}
 LATENCY_FILE = "fetch-latency.json"
@@ -224,12 +233,116 @@ def _points(a: float | None, b: float | None) -> float | None:
     return None if a is None or b is None else round((b - a) * 100, 2)
 
 
-def picks_json(questions: Questions, picks: ImagePicks) -> list[dict[str, Any]]:
+# ---- options ----------------------------------------------------------------------------------
+
+
+@dataclass
+class Options:
+    """What a run does beyond round 1. `verify` is round 2: every chosen picture is looked at by a vision
+    model, options and questions that cannot be shown are pruned, and an independent audit measures
+    picture accuracy. `variants` measures the timing variants (parse and fetch overlapped; a smaller
+    question call). `arms_questions` (case id -> the questions) are the ones the persona answers for
+    the with-answers arm: the saved round-1 questions, so the pipeline's Serper calls are the ones
+    already in the cache."""
+
+    verify: bool = False
+    mode: str = "batched"
+    variants: bool = False
+    vision_caller: Caller | None = None
+    audit_caller: Caller | None = None
+    arms_questions: dict[str, list[Question]] | None = None
+    skip_arms: bool = False
+
+
+def load_saved_questions(path: Path) -> dict[str, list[Question]]:
+    """The questions of an earlier results file, by case id (labels and values; no pictures)."""
+    data = json.loads(path.read_text())
+    out: dict[str, list[Question]] = {}
+    for c in data["cases"]:
+        out[c["id"]] = [
+            Question(
+                id=q["id"], text=q["text"], kind=q["kind"], dimension=q["dimension"],
+                options=[Option(label=o["label"], value=o["value"]) for o in q["options"]],
+            )
+            for q in c.get("questions", [])
+        ]  # fmt: skip
+    return out
+
+
+def overlap(words_a: str, words_b: str) -> float:
+    a, b = stems(words_a), stems(words_b)
+    return len(a & b) / len(a | b) if a | b else 1.0
+
+
+def measure_variants(
+    case: ClarifyCase, env: Env, spend: Spend, caller: Caller, timed: TimedSearch,
+    query: ShopQuery, parsed_fetch_s: float, model_s: float, candidates: list[SearchCandidate],
+) -> dict[str, Any]:  # fmt: skip
+    """The timing variants. OVERLAP: the fetch starts with the raw request (price words stripped) at the
+    same moment as the parse, instead of after it; the parsed query is searched again only if it differs
+    materially from the raw text (word overlap under 0.7). Real threads, a real second parse (the
+    first parse's query stays the one used everywhere else); the totals use the latencies the calls
+    would have live (a cached fetch's recorded latency), parse and fetch at the same time.
+    OVERLAP + 25: the same, with the question call shown only the first 25 listings."""
+    config = env.config
+    raw_text = strip_price_words(clean_request(case.request)) or clean_request(case.request)
+    parse_budget = Budget(config)
+    out: dict[str, Any] = {"raw_text": raw_text}
+
+    def do_parse() -> tuple[float, ShopQuery]:
+        t = time.monotonic()
+        q, _c, _w = parse_request(clean_request(case.request), parse_budget)
+        return time.monotonic() - t, q
+
+    def do_fetch() -> tuple[list[SearchCandidate], FetchInfo]:
+        got = timed.search(raw_text)
+        return got, timed.last
+
+    started = time.monotonic()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pf, ff = pool.submit(do_parse), pool.submit(do_fetch)
+            parse2_s, _ = pf.result()
+            raw_candidates, raw_fetch = ff.result()
+    except ProviderError as exc:
+        spend.add(parse_budget.cost_usd)
+        out["error"] = f"the raw request is not in the saved Serper responses ({str(exc)[:60]})"
+        return out
+    wall = time.monotonic() - started
+    spend.add(parse_budget.cost_usd)
+    differs = overlap(raw_text, query.search_text) < MATERIALLY_DIFFERENT
+    extra = parsed_fetch_s if differs else 0.0  # the parsed query is searched again
+    used = candidates if differs else raw_candidates
+    base = max(parse2_s, raw_fetch.seconds) + extra
+    out.update(
+        materially_different=differs, parse_s=round(parse2_s, 3), raw_fetch_s=round(raw_fetch.seconds, 3),
+        wall_s=round(wall, 3), overlap_s=round(base + model_s, 3),
+    )  # fmt: skip
+    q25 = analyze_facets(
+        case.request, query, used, budget=Budget(config), caller=caller, limit=SMALL_LISTINGS
+    )
+    spend.add(q25.cost_usd)
+    out.update(
+        model25_s=round(q25.seconds, 3), overlap25_s=round(base + q25.seconds, 3),
+        questions25=len(q25.questions), shown25=q25.shown,
+    )  # fmt: skip
+    return out
+
+
+def picks_json(
+    questions: Questions, picks: ImagePicks, verified: Verified | None = None
+) -> list[dict[str, Any]]:
+    """The questions for the results file: each option with its picture (title, thumbnail URL, how it
+    was chosen) and, in round 2, what the verifier said about each candidate tried."""
+    records: dict[tuple[str, str], Any] = {}
+    if verified is not None:
+        records = {(r.question_id, r.value): r for r in verified.options}
     out = []
     for q in questions.questions:
         options = []
         for i, o in enumerate(q.options):
             p = picks.for_option(q.id, i)
+            rec = records.get((q.id, o.value))
             options.append(
                 {
                     "label": o.label,
@@ -241,8 +354,11 @@ def picks_json(questions: Questions, picks: ImagePicks) -> list[dict[str, Any]]:
                         "title": p.title,
                         "thumbnail_url": p.thumbnail_url,
                         "how": p.how,
-                    },
-                }  # fmt: skip
+                    },  # fmt: skip
+                    "status": rec.status if rec else ("picture" if p else "title_only"),
+                    "reason": rec.reason if rec else "",
+                    "tried": [dataclasses.asdict(t) for t in rec.tried] if rec else [],
+                }
             )
         out.append(
             {
@@ -256,6 +372,15 @@ def picks_json(questions: Questions, picks: ImagePicks) -> list[dict[str, Any]]:
     return out
 
 
+def audit_json(audit: Audit) -> dict[str, Any]:
+    return {
+        "auditable": audit.auditable, "agreed": audit.agreed,
+        "accuracy": None if audit.accuracy is None else round(audit.accuracy, 3),
+        "calls": audit.calls, "cost_usd": audit.cost_usd, "seconds": audit.seconds,
+        "rows": [dataclasses.asdict(r) for r in audit.rows],
+    }  # fmt: skip
+
+
 # ---- one case ---------------------------------------------------------------------------------
 
 
@@ -266,11 +391,14 @@ def run_case(
     caller: Caller,
     store: LatencyStore,
     skip_pipeline: bool = False,
+    options: Options | None = None,
 ) -> dict[str, Any]:
+    opts = options or Options()
     result: dict[str, Any] = {
         "id": case.id, "request": case.request, "vagueness": case.vagueness, "status": "ok", "error": None,
         "timing": {}, "questions": [], "notes": [], "flags": [], "images": {}, "persona": [],
-        "arms": {}, "lift": {}, "cost": {}, "applied": [],
+        "arms": {}, "lift": {}, "cost": {}, "applied": [], "removed": {"options": [], "questions": []},
+        "variants": None,
     }  # fmt: skip
     started = time.monotonic()
     spent0, credits0 = spend.anthropic_usd, spend.serper_credits
@@ -283,7 +411,8 @@ def run_case(
         t = time.monotonic()
         query, _completion, warning = parse_request(clean_request(case.request), budget)
         parse_s = time.monotonic() - t
-        spend.add(budget.cost_usd)
+        parse_usd = budget.cost_usd
+        spend.add(parse_usd)
         result["parse_warning"] = warning
         result["search_text"] = query.search_text
 
@@ -297,29 +426,70 @@ def run_case(
         )
         spend.add(0.0, 0 if mock else live_credits)
 
-        clarify_budget = Budget(config)
         questions = analyze_facets(
-            case.request, query, candidates, budget=clarify_budget, caller=caller
+            case.request, query, candidates, budget=Budget(config), caller=caller
         )
         spend.add(questions.cost_usd)
         model_s = questions.seconds
         total = parse_s + fetch.seconds + model_s
         result["timing"] = {
             "parse_s": round(parse_s, 3), "fetch_s": round(fetch.seconds, 3), "model_s": round(model_s, 3),
-            "total_s": round(total, 3), "overlapped_s": round(max(parse_s, fetch.seconds) + model_s, 3),
+            "total_s": round(total, 3), "text_s": round(total, 3),
+            "overlapped_s": round(max(parse_s, fetch.seconds) + model_s, 3),
             "fetch_cached": fetch.cached, "fetch_latency_known": fetch.latency_known,
             "candidates": len(candidates), "shown_to_model": questions.shown,
         }  # fmt: skip
         result["notes"] = list(questions.notes)
+        if opts.variants:
+            result["variants"] = measure_variants(
+                case, env, spend, caller, timed, query, fetch.seconds, model_s, candidates
+            )
 
-        picks = pick_option_images(questions, candidates, category=query.category)
-        flags = quality_flags(case.request, query, questions)
-        answers, persona_picks = answer_questions(questions.questions, case.answers)
-        options = sum(len(q.options) for q in questions.questions)
-        result["questions"] = picks_json(questions, picks)
+        before = pick_option_images(questions, candidates, category=query.category)
+        n_before = sum(len(q.options) for q in questions.questions)
+        verified: Verified | None = None
+        shown_q, picks = questions, before
+        if opts.verify:
+            vbudget = Budget(config)
+            verified = verify_and_prune(
+                questions, candidates, category=query.category, thumbnailer=env.thumbnailer,
+                budget=vbudget, caller=opts.vision_caller or caller, mode=opts.mode,
+            )  # fmt: skip
+            spend.add(verified.cost_usd)
+            shown_q, picks = verified.questions, verified.picks
+            abudget = Budget(config)
+            audit = audit_pictures(
+                shown_q, picks, verified.images, budget=abudget, caller=opts.audit_caller or caller
+            )
+            spend.add(audit.cost_usd)
+            result["timing"].update(
+                verify_s=verified.seconds, pictures_s=round(total + verified.seconds, 3),
+                verify_call_s=verified.call_seconds, verify_rounds=verified.rounds,
+            )  # fmt: skip
+            result["removed"] = {
+                "options": [
+                    {"question": r.question_id, "label": r.label, "status": r.status, "reason": r.reason}
+                    for r in verified.options if r.status != "picture"
+                ],
+                "questions": verified.dropped_questions,
+            }  # fmt: skip
+            result["verify"] = {
+                "calls": verified.calls, "cost_usd": verified.cost_usd, "seconds": verified.seconds,
+                "rounds": verified.rounds, "mode": verified.mode, "images_offered": verified.images_offered,
+                "images_failed": verified.images_failed,
+            }  # fmt: skip
+            result["audit"] = audit_json(audit)
+        flags = quality_flags(case.request, query, shown_q)
+        arm_questions = (opts.arms_questions or {}).get(case.id) or shown_q.questions
+        answers, persona_picks = answer_questions(arm_questions, case.answers)
+        n_after = sum(len(q.options) for q in shown_q.questions)
+        result["questions"] = picks_json(shown_q, picks, verified)
         result["images"] = {
-            "options": options, "with_image": picks.with_image,
-            "coverage": round(picks.coverage, 3) if options else None,
+            "options": n_after, "with_image": picks.with_image,
+            "coverage": round(picks.coverage, 3) if n_after else None,
+            "options_before": n_before, "title_matched_before": before.with_image,
+            "coverage_before": round(before.coverage, 3) if n_before else None,
+            "questions_before": len(questions.questions), "questions_after": len(shown_q.questions),
         }  # fmt: skip
         result["flags"] = [dataclasses.asdict(f) for f in flags]
         result["persona"] = [
@@ -328,11 +498,13 @@ def run_case(
             for p in persona_picks
         ]  # fmt: skip
         result["cost"] = {
-            "parse_usd": round(parse_s and budget.cost_usd, 6), "model_usd": questions.cost_usd,
+            "parse_usd": round(parse_usd, 6), "model_usd": questions.cost_usd,
             "fetch_credits": 0 if mock else live_credits,
+            "verify_usd": verified.cost_usd if verified else 0.0,
+            "audit_usd": result.get("audit", {}).get("cost_usd", 0.0),
         }  # fmt: skip
 
-        if not skip_pipeline:
+        if not skip_pipeline and not opts.skip_arms:
             applied = map_answers(query, answers)
             result["applied"] = applied.mapped
             answered_words = [p.wanted for p in persona_picks if p.option is not None]
@@ -343,9 +515,15 @@ def run_case(
                     continue
                 m0 = env.cache.misses if env.cache is not None else 0
                 arm_budget = Budget(config)
-                outcome = run_query(
-                    arm_query, timed, config, arm_budget, [], clock.now(), None, clock
-                )
+                try:
+                    outcome = run_query(
+                        arm_query, timed, config, arm_budget, [], clock.now(), None, clock
+                    )
+                except ProviderError as exc:  # round 2 replays only: a call that was never saved
+                    result["arms"][arm] = {
+                        "error": f"not in the saved Serper responses ({str(exc)[:60]})"
+                    }
+                    continue
                 credits = (
                     (env.cache.misses - m0) * config.serper_credits_per_call
                     if env.cache is not None
@@ -357,8 +535,8 @@ def run_case(
                 scored["live_credits"] = 0 if mock else credits
                 scored["anthropic_usd"] = outcome.anthropic_usd
                 result["arms"][arm] = scored
-            base, ans = result["arms"]["baseline"], result["arms"].get("answers")
-            if ans is not None:
+            base, ans = result["arms"].get("baseline"), result["arms"].get("answers")
+            if base and ans and "persona" in base and "persona" in ans:
                 result["lift"] = {
                     "persona_points": _points(base["persona"]["rate"], ans["persona"]["rate"]),
                     "attribute_points": _points(
@@ -395,6 +573,7 @@ def run_all(
     store: LatencyStore | None = None,
     spend: Spend | None = None,
     skip_pipeline: bool = False,
+    options: Options | None = None,
 ) -> dict[str, Any]:
     spend = spend or Spend()
     store = store or LatencyStore(None)
@@ -403,7 +582,7 @@ def run_all(
     stopped = ""
     for case in cases:
         progress(f"{case.id}: {case.request}")
-        results.append(run_case(case, env, spend, caller, store, skip_pipeline))
+        results.append(run_case(case, env, spend, caller, store, skip_pipeline, options))
         if spend.stopped:
             stopped = spend.stopped
             break
@@ -421,6 +600,12 @@ def run_all(
         "run_id": run_id, "mode": env.mode, "started_at": started,
         "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "prompt_version": load_prompt("shop_clarify").version,
+        "round": 2 if options is not None and options.verify else 1,
+        "verify_mode": options.mode if options is not None and options.verify else None,
+        "prompt_versions": {
+            name: load_prompt(name).version
+            for name in ("shop_clarify", "shop_clarify_verify", "shop_clarify_audit")
+        },
         "models": {"clarify": env.config.model_retrieval, "judge": env.config.model_retrieval},
         "limits": {"anthropic_usd": spend.limit_usd, "serper_credits": spend.limit_credits},
         "totals": {"anthropic_usd": spend.anthropic_usd, "serper_credits": spend.serper_credits},
@@ -438,12 +623,16 @@ def write_results(payload: dict[str, Any], directory: Path = RESULTS_DIR) -> Pat
     return path
 
 
-def make_env(mode: str, directory: Path = RESULTS_DIR) -> tuple[Env, LatencyStore]:
+def make_env(
+    mode: str, directory: Path = RESULTS_DIR, cache: str | None = None
+) -> tuple[Env, LatencyStore]:
     """The Shop eval's environment (config, judges, providers with the Serper record/replay cache). A
     live run defaults to cache mode `use` (a saved response under 14 days old is free; a miss goes
     live and is saved), so reruns cost nothing."""
-    cache = os.environ.get("EVAL_SHOP_SERPER_CACHE") or ("use" if mode == "live" else "off")
-    env = build_env(mode, serper_cache=cache)
+    chosen = (
+        cache or os.environ.get("EVAL_SHOP_SERPER_CACHE") or ("use" if mode == "live" else "off")
+    )
+    env = build_env(mode, serper_cache=chosen)
     return env, LatencyStore(directory / LATENCY_FILE)
 
 

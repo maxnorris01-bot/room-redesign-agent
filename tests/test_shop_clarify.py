@@ -430,7 +430,7 @@ def test_a_clean_set_has_no_flags() -> None:
 def test_nothing_in_the_api_or_the_pipeline_imports_the_spike() -> None:
     importers = []
     for path in (ROOT / "src").rglob("*.py"):
-        if path.name == "clarify.py":
+        if path.name in ("clarify.py", "clarify_verify.py"):
             continue
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):

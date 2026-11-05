@@ -150,17 +150,19 @@ deploy-smoke:
 # harness. Nothing here touches the live shop pipeline or its thresholds.
 # Free: the requests, the expected calls and the expected and worst-case cost. Spends nothing.
 clarify-plan:
-	APP_LLM_MODE=mock uv run python -m evals.shop_clarify plan $(if $(CASES),--case $(CASES),)
+	APP_LLM_MODE=mock uv run python -m evals.shop_clarify plan $(if $(CASES),--case $(CASES),) $(ARGS)
 
 # The whole harness on canned candidates and canned model output. Free, no key; safe for CI.
 clarify-mock:
-	APP_LLM_MODE=mock uv run python -m evals.shop_clarify mock $(if $(CASES),--case $(CASES),)
+	APP_LLM_MODE=mock uv run python -m evals.shop_clarify mock $(if $(CASES),--case $(CASES),) $(ARGS)
 
-# Costs real money (Anthropic and Serper; hard stops $0.30 and 150 credits). Refuses to start unless the command line says
-# EVAL_CLARIFY_CONFIRM=yes, and never runs under CI or tests. Saved Serper responses (gitignored) are reused, so a re-run is free:
+# Costs real money. Round 2 (the default; verified pictures, ADR 0016): Anthropic only, hard stop $0.15, Serper from saved
+# responses ONLY (0 new credits). Round 1: ARGS="--round 1" (hard stops $0.30 and 150 credits). Refuses to start unless the
+# command line says EVAL_CLARIFY_CONFIRM=yes, and never runs under CI or tests:
 #   make clarify-live EVAL_CLARIFY_CONFIRM=yes
+# Optional: CLARIFY_VERIFY_MODE=single (one picture a call) to compare costs, CASES=cl-01 for one request.
 clarify-live:
-	EVAL_CLARIFY_CONFIRM=$(EVAL_CLARIFY_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop_clarify live $(if $(CASES),--case $(CASES),)
+	EVAL_CLARIFY_CONFIRM=$(EVAL_CLARIFY_CONFIRM) APP_LLM_MODE=live uv run python -m evals.shop_clarify live $(if $(CASES),--case $(CASES),) $(ARGS)
 
 # report.md and contact-sheet.html (in evals/shop_clarify/results/, gitignored) from a results file (default: the newest).
 clarify-report:

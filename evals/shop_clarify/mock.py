@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import zlib
 from typing import Any
 
 from app.llm import Completion
@@ -125,4 +126,54 @@ def mock_caller(**kwargs: Any) -> Completion:
     return Completion(
         text=json.dumps(payload), model=kwargs.get("model", "mock"), tool_input=payload,
         input_tokens=1500, output_tokens=300, cost_usd=0.0, steps=1, stop_reason="tool_use",
+    )  # fmt: skip
+
+
+# ---- the canned vision calls (round 2) ----------------------------------------------------------
+# The mock thumbnailer gives every URL the same generated image, so these cannot look at a picture:
+# they answer from the user text with a fixed pseudo-random rule, so that every branch of the
+# verification flow (yes, no, unclear, a second candidate, a dropped option, an audit disagreement)
+# runs in CI. They show that the flow works, not that a picture is right.
+
+IMAGE_LINE = re.compile(r"^Image (\d+)\.(?: Question: (.*?) Option: (.*?) \((.*?)\)\.)?$")
+
+
+def _bucket(text: str, n: int) -> int:
+    return zlib.crc32(text.encode()) % n
+
+
+def mock_verify_caller(**kwargs: Any) -> Completion:
+    items = []
+    for line in kwargs["user_text"].splitlines():
+        m = IMAGE_LINE.match(line)
+        if not m:
+            continue
+        n = int(m.group(1))
+        key = f"{m.group(3)}|{m.group(4)}|{len(kwargs.get('images') or [])}|{n}"
+        b = _bucket(key, 10)
+        items.append({"index": n, "answer": "no" if b < 2 else "unclear" if b == 2 else "yes"})
+    payload = {"items": items}
+    return Completion(
+        text=json.dumps(payload), model=kwargs.get("model", "mock"), tool_input=payload,
+        input_tokens=800, output_tokens=60, cost_usd=0.0, steps=1, stop_reason="tool_use",
+    )  # fmt: skip
+
+
+def mock_audit_caller(**kwargs: Any) -> Completion:
+    n_images = len(kwargs.get("images") or [])
+    colors = ("black", "walnut", "white", "cream", "gray", "oak")
+    materials = ("wood", "metal", "fabric", "glass")
+    shapes = ("rectangular", "round", "square", "arched")
+    items = [
+        {
+            "index": n, "main_color": colors[_bucket(f"c{n}{n_images}", len(colors))],
+            "main_material": materials[_bucket(f"m{n}", len(materials))],
+            "shape": shapes[_bucket(f"s{n}", len(shapes))],
+        }
+        for n in range(1, n_images + 1)
+    ]  # fmt: skip
+    payload = {"items": items}
+    return Completion(
+        text=json.dumps(payload), model=kwargs.get("model", "mock"), tool_input=payload,
+        input_tokens=800, output_tokens=120, cost_usd=0.0, steps=1, stop_reason="tool_use",
     )  # fmt: skip

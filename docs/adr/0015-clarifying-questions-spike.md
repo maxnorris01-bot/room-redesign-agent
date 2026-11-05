@@ -1,6 +1,6 @@
 # 0015. Clarifying questions: an offline spike
 
-- **Status:** proposed (a spike; nothing here is wired into the shop)
+- **Status:** proposed (a spike; nothing here is wired into the shop). Round 2 (strict picture matching, vision verification, pruning) is ADR 0016.
 - **Date:** 2026-11-04
 
 ## Context

@@ -37,3 +37,16 @@ works. Tests: 1784 passed (1747 before, +37 new). `ruff check`, `ruff format --c
 ## Next command
 
 `make clarify-plan`, then (Max's call) `EVAL_CLARIFY_CONFIRM=yes make clarify-live`, then `make clarify-report` and open `evals/shop_clarify/results/contact-sheet.html`.
+
+## Round 2 (2026-11-05): option pictures that are correct
+
+Max's read of the round 1 contact sheet: coverage was 91% but two pictures were wrong (see ADR 0016). What changed, all offline and free until Max runs the live step:
+
+- `src/app/shop/clarify.py`: strict title matching (`match_rank`, with the word lists `SECONDARY_LEADS`, `HARDWARE_WORDS`, `TOP_WORDS` as module constants), used by `pick_option_images` and for the model's evidence pointers; up to three ranked candidates per option.
+- `src/app/shop/clarify_verify.py`: vision verification of every chosen picture (batched up to 12 a call, or one a call), up to three candidates, text-only fallback, pruning of options and questions, and the independent audit. Prompts `shop_clarify_verify` v1 and `shop_clarify_audit` v1.
+- `evals/shop_clarify`: round 2 flow in the runner (time to text, verification latency, time to pictures; the overlap and 25-listing timing variants; the arms re-run on the saved round 1 questions; replay-only Serper; $0.15 stop), the report (accuracy, coverage after verification, cost, added latency, pruning, variants) and the contact sheet (text-only cards, a slim "No preference" chip, verifier and audit verdicts inside "checks"), the round 2 plan, canned vision calls for mock mode. `clarify-live` now runs round 2 by default (`ARGS="--round 1"` for the first round).
+- Tests: the strict matcher (both of Max's cases, written with the real titles of the live run), the verification flow with a fake vision client, the drop rules, the audit, the report fields, the variants, the plan and the guard.
+
+Choices the brief left open: a clear `no` on every picture drops the option, but `unclear`, no image or a failed call only makes it text-only (a `no` is evidence against; the others are not); an option is kept as text only when its title evidence is untouched by a `no`; the independent audit covers colour, material and shape options only; the overlap variant re-runs the parse in a real thread beside the raw-request fetch (an extra parse, about $0.0003) and uses the first parse everywhere else; `shop_clarify_audit` is the same model family as the verifier, so it is a second opinion.
+
+Mock numbers say only that the flow works (the canned vision answers cannot look at a picture). Next: `make clarify-plan`, then (Max's call) `EVAL_CLARIFY_CONFIRM=yes make clarify-live`, then `make clarify-report`.
