@@ -236,6 +236,10 @@ this choice over the alternatives. Note what's still open or deferred within it,
   limits that clearing cookies cannot reset (daily spend follows the address stored as an HMAC keyed from the origin secret, so rotating the secret resets it); $1.00 per address, $2.00 per day for everyone
   (down from $3.00), at most 20 visitors per address and 200 a day, 10 starts a minute; 30 day retention, run lazily because the machine auto-stops; a bot check is only a hook (Turnstile later).
   Migration 2 drops the invite test data. See `docs/sessions/2026-10-31-deploy-d1-2.md`.
+- **2026-11-04, stage Q1 (ADR 0017): clarifying questions in the search job, flag off by default.** Decisions: the questions are written beside the pipeline (a side thread on the first 25 listings of
+  a fetch made while the request is parsed), shown as text first and with verified pictures on a later poll; the apply point is a `rank_gate` hook in `run_query` right before the pool is cut, with
+  a 6 s idle grace and a 40 s max wait after an answer (no wait on a failure, and the wait never counts against the hard stop); answers use `POST /job/{id}/answers`, are stored in the session JSON
+  (no migration) and are reused by Shop Again through `apply_answers`; spend is folded into the first search record so the existing caps count it. See `docs/sessions/2026-11-04-clarify-q1.md`.
 
 ## See also
 

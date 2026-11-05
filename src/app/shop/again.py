@@ -30,6 +30,7 @@ from app.shop.bets import (
     update_bets,
 )
 from app.shop.candidates import TagBook, Taggable, note_key, tag_results
+from app.shop.clarify_flow import apply_stored
 from app.shop.clock import Clock
 from app.shop.decide import Exposure, build_exposure, typed_dimensions
 from app.shop.evidence import baseline_of, seller_entries
@@ -77,7 +78,13 @@ from app.shop.search import (
     seen_listing,
     setting_lines,
 )
-from app.shop.store import Session, current_topic, rated_results, sellers_to_deprioritize
+from app.shop.store import (
+    Session,
+    current_topic,
+    rated_results,
+    sellers_to_deprioritize,
+    topic_key,
+)
 from app.shop.thresholds import (
     BASE_PAGE_MAX,
     CONVERGED_MAX_SHARE,
@@ -93,11 +100,20 @@ from app.shopping import ProviderError, SearchCandidate, SearchProvider
 from app.thumbnails import Thumbnailer
 
 
-def base_query(session: Session) -> ShopQuery | None:
+def base_query(session: Session, config: Config | None = None) -> ShopQuery | None:
     """The last typed search's query: Shop Again always adjusts that, never an earlier Shop Again's,
-    so adjustments do not stack on themselves (the profile is already cumulative)."""
+    so adjustments do not stack on themselves (the profile is already cumulative). With the
+    clarifying questions on (`config.shop_clarify`, stage Q1) the answers the session holds for
+    this category are applied to it (`apply_answers`); the stored query stays the plain parse."""
     typed = [s for s in session.searches if s.kind == "search"]
-    return typed[-1].query if typed else None
+    if not typed:
+        return None
+    query = typed[-1].query
+    held = session.clarify
+    if config is not None and config.shop_clarify and held is not None:
+        if held.topic_key and held.topic_key == topic_key(query):
+            return apply_stored(query, held)
+    return query
 
 
 def used_queries(session: Session) -> list[str]:
@@ -325,7 +341,7 @@ def again_context(
         dim: {v for v in dim_trace.get(dim, {}).get("loved", []) if v in vals}
         for dim, vals in open_dims.items()
     }
-    base = base_query(session)
+    base = base_query(session, config)
     typed_dims = typed_dimensions(base) if base is not None else set()
     # shape is always guarded (60%); an open dimension too; a converged one is capped at 80%
     caps: dict[str, float] = {dim: DIVERSITY_MAX_SHARE for dim in open_dims}
@@ -523,7 +539,7 @@ def run_shop_again(
     steps = progress if isinstance(progress, Progress) else None
     started = clock.now()
     timeline = Timeline(clock)
-    base = base_query(session)
+    base = base_query(session, config)
     if base is None:
         raise LookupError("no typed search in this session")
     # a Shop Again makes many small model calls (tagging batches, retries): its own step cap

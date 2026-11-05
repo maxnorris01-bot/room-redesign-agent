@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from app.categories import canonical_category, known_category
 from app.shop.models import (
@@ -131,6 +131,23 @@ class Topic(_Model):
     refinements: list[RefineChip] = []  # stage 2l: what the visitor asked for; ends with the topic
 
 
+class ClarifyAnswer(_Model):
+    """One answered question: the option value, or "no_preference"."""
+
+    question_id: str
+    option_value: str
+
+
+class ClarifyRecord(_Model):
+    """The questions a topic's first search asked (as shown: `app.shop.clarify.Question` dumps) and
+    the answers applied to it, with the canonical category they belong to (`topic_key`). A different
+    category clears the record; a deleted answer chip removes its answer."""
+
+    topic_key: str
+    questions: list[dict[str, Any]] = Field(default_factory=list)
+    answers: list[ClarifyAnswer] = Field(default_factory=list)
+
+
 class Session(_Model):
     schema_version: int = SESSION_SCHEMA_VERSION
     session_id: str
@@ -174,6 +191,17 @@ class Session(_Model):
     # stage 2i: a compact copy of each round's candidate pool (at most 100 items: title, price,
     # seller, thumbnail, tags, tag source), for replay fixtures (`scripts/shop_export_replay.py`)
     pool_snapshots: list[dict[str, Any]] = Field(default_factory=list)
+    # stage Q1: the clarifying questions asked in the current topic and the answers given. Left out
+    # of the saved file while empty, so a session saved with the flag off is readable by the code
+    # from before this field (the model forbids unknown fields).
+    clarify: ClarifyRecord | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_clarify(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if data.get("clarify") is None:
+            data.pop("clarify", None)
+        return data
 
 
 def valid_session_id(session_id: str) -> bool:

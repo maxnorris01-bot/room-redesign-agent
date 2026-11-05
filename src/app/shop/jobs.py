@@ -116,6 +116,9 @@ class JobManager:
                 "state": job.state, "phase": job.progress.phase, "kind": job.kind,
                 **job.progress.snapshot(),
             }  # fmt: skip
+            clarify = getattr(job.progress, "clarify", None)
+            if clarify is not None:  # stage Q1: only a search run with the flag on has it
+                out["clarify"] = clarify.snapshot()
             if job.finished is not None:
                 out["elapsed_s"] = round(job.finished - job.started, 1)
             if job.state == "done":
@@ -123,6 +126,19 @@ class JobManager:
             elif job.state == "error" and job.error is not None:
                 out["status"], out["error"] = job.error
             return out
+
+    def clarify_run(self, job_id: str, session_id: str | None) -> Any:
+        """The job's `ClarifyRun` (stage Q1). 404 as `status` does for an unknown job or another
+        session's; 409 for a job that has no questions (a Shop Again, or the flag is off)."""
+        with self._lock:
+            self._purge()
+            job = self._jobs.get(job_id) if JOB_ID_OK.match(job_id or "") else None
+            if job is None or (job.session_id is not None and job.session_id != session_id):
+                raise JobError(404, "unknown job")
+            run = getattr(job.progress, "clarify", None)
+        if run is None:
+            raise JobError(409, "This job has no questions to answer")
+        return run
 
     def wait(self, job_id: str, timeout: float | None = None) -> None:
         """Block until the job has finished (tests and scripts; the page polls instead)."""

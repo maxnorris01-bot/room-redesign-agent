@@ -5,7 +5,7 @@ Paths are relative to the API prefix (`/api` locally, `APP_API_PREFIX` in deploy
 `auth` is "none" (open: the page asks `/auth/session` whether it has a visit, and calls
 `/auth/start` when it has not) or "login" (needs the visitor cookie).
 `body` says whether the route takes a JSON body (and so needs Content-Type application/json).
-`{id}` is the job id.
+`{id}` is the job id (`/job/{id}` and `/job/{id}/answers`).
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ class Route:
 ROUTES: tuple[Route, ...] = (
     Route("GET", "/session", "login", False, "session"),
     Route("GET", "/job/{id}", "login", False, "job"),
+    Route("POST", "/job/{id}/answers", "login", True, "job_answers"),
     Route("POST", "/search", "login", True, "search"),
     Route("POST", "/shop-again", "login", True, "shop_again"),
     Route("POST", "/rate", "login", True, "rate"),
@@ -42,6 +43,7 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/auth/session", "none", False, "auth_session"),
 )
 JOB_PREFIX = "/job/"
+ANSWERS_SUFFIX = "/answers"
 STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
 
 
@@ -51,6 +53,15 @@ def match(method: str, rel_path: str, deploy: bool = True) -> tuple[Route | None
     job_id = ""
     for route in ROUTES:
         if route.deploy_only and not deploy:
+            continue
+        if route.path == "/job/{id}/answers":
+            tail = rel_path[len(JOB_PREFIX) :]
+            if rel_path.startswith(JOB_PREFIX) and tail.endswith(ANSWERS_SUFFIX):
+                jid = tail[: -len(ANSWERS_SUFFIX)]
+                if jid and "/" not in jid:
+                    if route.method == method:
+                        return route, False, jid
+                    other = True
             continue
         if route.path == "/job/{id}":
             if rel_path.startswith(JOB_PREFIX) and len(rel_path) > len(JOB_PREFIX):

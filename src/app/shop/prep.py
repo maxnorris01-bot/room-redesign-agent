@@ -264,7 +264,7 @@ class PrepManager:
             return
         session = self.store.load(sid)
         rec = session.ratings.get(rid)
-        base = base_query(session)
+        base = base_query(session, self.config)
         if rec is None or rec.comment.strip() != comment or base is None:
             return  # the comment changed or went away while this waited
         topic = session.current_topic

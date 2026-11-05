@@ -15,6 +15,14 @@ from app.llm import Budget
 from app.shop import store as store_mod
 from app.shop.again import run_shop_again
 from app.shop.ahead import LookAhead
+from app.shop.clarify_flow import (
+    ClarifyConflict,
+    ClarifyInvalid,
+    ClarifyRateLimited,
+    ClarifyRun,
+    clarify_record,
+    run_search_clarify,
+)
 from app.shop.clock import Clock
 from app.shop.context import current_visitor
 from app.shop.jobs import JobError, JobManager
@@ -52,6 +60,7 @@ from app.shop.resolve import (
 from app.shop.search import EXHAUSTED_MESSAGE, SearchOutcome, near_context, run_search
 from app.shop.store import (
     MAX_SEARCHES_PER_SESSION,
+    ClarifyRecord,
     RatingRecord,
     SearchRecord,
     Session,
@@ -66,6 +75,7 @@ from app.shop.store import (
     now_iso_ms,
     rated_count,
     saved_ids,
+    topic_key,
 )
 from app.shop.textutil import normalize_phrase
 from app.shop.thresholds import OPEN_UI_TIMEOUT_S
@@ -258,6 +268,8 @@ class ShopService:
             lookups_used=session.lookups_used,
             search_count=len(session.searches),
         )
+        if self.config.shop_clarify:  # stage Q1: absent with the flag off
+            base["clarify_answers"] = self._answer_chips(session)
         if session.searches:
             last = session.searches[-1]
             results = []
@@ -354,6 +366,35 @@ class ShopService:
                 "median_s": median}  # fmt: skip
 
     @staticmethod
+    def _answer_chips(session: Session | None) -> list[dict[str, str]]:
+        """The answers to clarifying questions that apply to the next Shop Again, as chips: delete
+        one with `POST /refine/remove` and `id` (`answer:<question id>`). "No preference" is not
+        a constraint and has no chip."""
+        rec = session.clarify if session is not None else None
+        if rec is None:
+            return []
+        questions = {str(q.get("id")): q for q in rec.questions}
+        out: list[dict[str, str]] = []
+        for a in rec.answers:
+            q = questions.get(a.question_id)
+            if q is None or a.option_value == "no_preference":
+                continue
+            option = next(
+                (o for o in q.get("options", []) if o.get("value") == a.option_value), None
+            )
+            if option is None:
+                continue
+            out.append(
+                {
+                    "id": f"answer:{a.question_id}",
+                    "question": str(q.get("text", "")),
+                    "label": str(option.get("label", a.option_value)),
+                    "dimension": str(q.get("dimension", "")),
+                }
+            )
+        return out
+
+    @staticmethod
     def _refinements(session: Session) -> list[RefineChip]:
         topic = current_topic(session)
         return list(topic.refinements) if topic is not None else []
@@ -432,16 +473,26 @@ class ShopService:
         progress: Callable[[str], None] | None = None,
         owner: str | None = None,
     ) -> dict[str, Any]:
-        near = near_context(
-            self.store.load(session_id) if session_id and self.store.exists(session_id) else None,
-            self.fingerprinter,
-            self.config,
-        )
+        prior = None
+        if session_id and self.store.exists(session_id):
+            prior = self.store.load(session_id)
+        near = near_context(prior, self.fingerprinter, self.config)
+        run: ClarifyRun | None = None
+        plain = None  # the parse without clarify answers (stage Q1)
         try:
-            outcome = run_search(
-                cleaned, self.search_provider, self.config, progress=progress, clock=self.clock,
-                near=near, photos=self.thumb_cache,
-            )  # fmt: skip
+            if self.config.shop_clarify and isinstance(progress, Progress):
+                run = ClarifyRun(self.config)
+                outcome, plain = run_search_clarify(
+                    cleaned, self.search_provider, self.config, run,
+                    stored=lambda parsed: self._stored_clarify(prior, parsed),
+                    progress=progress, clock=self.clock, near=near, photos=self.thumb_cache,
+                    thumbnailer=self.thumbnailer,
+                )  # fmt: skip
+            else:
+                outcome = run_search(
+                    cleaned, self.search_provider, self.config, progress=progress,
+                    clock=self.clock, near=near, photos=self.thumb_cache,
+                )  # fmt: skip
         except ProviderError as exc:
             raise ApiError(502, str(exc)) from None
         except BudgetExceededError as exc:
@@ -454,9 +505,53 @@ class ShopService:
         with self.store.transaction(session_id) as session:
             notice = advance_topic(session, outcome.display_query or outcome.query, cleaned)
             self._record(session, cleaned, outcome, topic_notice=notice)
+            if run is not None and plain is not None:
+                self._keep_clarify(session, run, plain)
             view = self._view(session)
         self.prep.submit_batch(session_id, outcome.results)  # tag it from photos while you browse
         return view
+
+    @staticmethod
+    def _stored_clarify(session: Session | None, parsed: Any) -> ClarifyRecord | None:
+        """The answers this session already holds for the parse's category (stage Q1)."""
+        rec = session.clarify if session is not None else None
+        if rec is not None and rec.topic_key and rec.topic_key == topic_key(parsed):
+            return rec
+        return None
+
+    @staticmethod
+    def _keep_clarify(session: Session, run: ClarifyRun, plain: Any) -> None:
+        """After a typed search: a different category clears the stored questions and answers; a
+        run that was answered stores its own."""
+        held = session.clarify
+        if held is not None and held.topic_key != topic_key(plain):
+            session.clarify = None
+        fresh = clarify_record(run, plain)
+        if fresh is not None:
+            session.clarify = fresh
+
+    def job_answers(
+        self, job_id: Any, session_id: Any, answers: Any, submit: Any
+    ) -> dict[str, Any]:
+        """`POST /job/<id>/answers` (stage Q1): record the answers to the job's clarifying questions
+        (and a submit, which ends the wait). Not a search: no search is counted. 404 for an unknown
+        job or another session's, 409 when the job has no open questions, 400 for answers that do
+        not fit the questions."""
+        if not isinstance(job_id, str):
+            raise ApiError(404, "unknown job")
+        sid = session_id if isinstance(session_id, str) and session_id else None
+        try:
+            run = self.jobs.clarify_run(job_id, sid)
+        except JobError as exc:
+            raise ApiError(exc.status, exc.message) from None
+        try:
+            return {"clarify": run.answer(answers, submit)}
+        except ClarifyInvalid as exc:
+            raise ApiError(400, str(exc)) from None
+        except ClarifyConflict as exc:
+            raise ApiError(409, str(exc)) from None
+        except ClarifyRateLimited as exc:
+            raise ApiError(429, str(exc)) from None
 
     def search(self, session_id: Any, request: Any) -> dict[str, Any]:
         cleaned, sid = self._prepare_search(session_id, request)
@@ -934,6 +1029,8 @@ class ShopService:
             raise ApiError(400, "chip id must be short text")
         self._load(session_id)
         assert isinstance(session_id, str)
+        if chip_id.startswith("answer:"):  # stage Q1: a clarifying answer's chip
+            return self._remove_answer(session_id, chip_id.removeprefix("answer:"))
         with self.store.transaction(session_id) as live:
             topic = self._topic_of(live)
             kept = [c for c in topic.refinements if c.id != chip_id]
@@ -941,6 +1038,19 @@ class ShopService:
                 raise ApiError(404, "no such refinement")
             topic.refinements = kept
             return {"refine": [c.model_dump(mode="json") for c in kept]}
+
+    def _remove_answer(self, session_id: str, question_id: str) -> dict[str, Any]:
+        """Delete one stored clarifying answer: its constraint is gone from the next Shop Again."""
+        with self.store.transaction(session_id) as live:
+            rec = live.clarify
+            kept = [a for a in rec.answers if a.question_id != question_id] if rec else []
+            if rec is None or len(kept) == len(rec.answers):
+                raise ApiError(404, "no such refinement")
+            rec.answers = kept
+            return {
+                "refine": [c.model_dump(mode="json") for c in self._refinements(live)],
+                "clarify_answers": self._answer_chips(live),
+            }
 
     def remove_context(self, session_id: Any, kind: Any, value: Any) -> dict[str, Any]:
         """Delete one chip of the request (stage 2k): a context item (its colour effect goes with it

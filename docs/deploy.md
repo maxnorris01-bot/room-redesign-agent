@@ -36,6 +36,10 @@ Settings (not secret, set with `fly secrets set` too, or in `fly.toml [env]`; `f
 | `APP_PUBLIC_URL` | the portfolio's public https URL (decides the `Secure` cookie flag) |
 | `APP_CONTACT_EMAIL` | shown by `GET /auth/session` (a contact line for the page, optional) |
 | `APP_SHOP_DISABLED` | `1` is the kill switch (every call but `/healthz` and `GET /auth/session` answers 503) |
+| `APP_SHOP_CLARIFY` | `1` turns on the clarifying questions on a first search (stage Q1, ADR 0017); **off by default**: unset or `0` and the service behaves exactly as before and the job status has no `clarify` field. The kill switch for the feature alone: `fly secrets unset APP_SHOP_CLARIFY` |
+| `APP_CLARIFY_IDLE_GRACE_S` (also read as `CLARIFY_IDLE_GRACE_S`) | seconds past ready-to-rank the search waits for the shopper when the questions are shown and nothing was touched, default `6` |
+| `APP_CLARIFY_MAX_WAIT_S` (also `CLARIFY_MAX_WAIT_S`) | the most a search waits for a submit once at least one answer was given, counted from when the questions appeared, default `40` |
+| `APP_CLARIFY_CANDIDATES` (also `CLARIFY_CANDIDATES`) | listings the question call reads, default `25` |
 | `APP_CAP_SESSION_USD` | spend cap per shop session, default `0.50` |
 | `APP_CAP_IP_DAY_USD` | spend cap per visitor address per UTC day, default `1.00` (replaces `APP_CAP_INVITE_DAY_USD`, which is no longer read) |
 | `APP_CAP_GLOBAL_DAY_USD` | spend cap for everyone per UTC day, default `2.00` |
@@ -75,6 +79,7 @@ Run these yourself, in this order. Replace the names in angle brackets.
   get 403: do it quickly, or turn the kill switch on first. **Rotating it also resets every address counter**: client addresses are stored only as an HMAC keyed from this secret, so after a rotation
   the daily per-address spend and visitor counts start from zero (the global daily cap is not reset).
 - **Kill switch.** `fly secrets set APP_SHOP_DISABLED=1` (the machine restarts; every call but `/healthz` and `GET /auth/session` answers 503 `maintenance`). `fly secrets unset APP_SHOP_DISABLED` to resume.
+- **Clarifying questions (stage Q1).** `APP_SHOP_CLARIFY=1` adds, per first search of a category, one question call and a few picture checks (about $0.0075 expected, counted in the session, per-address and global caps like any other spend) and up to 6 s of waiting (40 s when the shopper answers). Off: `fly secrets unset APP_SHOP_CLARIFY` (the machine restarts; sessions that hold answers keep them but nothing applies them). No migration: the questions and answers live inside the session JSON and the 30-day purge removes them with it. A failure in the feature never fails or slows a search; `fly logs` shows `clarify: ...` warning lines (class names only).
 - **Check spend.** `fly ssh console -C "python -m app.shop.admin caps show"`: the limits in force, today's global spend and the visitors created today. It never prints a client address.
 - **Provider-side limits (an outer layer, set them).** In the Anthropic Console set a monthly spend limit for the key this service uses. Watch the Serper balance
   (and the SerpApi plan). The app's own limits are per session, per visitor address and per day, and a visitor-start limit; these provider limits stop a bug or a leaked key.

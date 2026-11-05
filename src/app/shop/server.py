@@ -48,9 +48,13 @@ STATIC_FILES: dict[str, tuple[str, str]] = {
 }
 LOCAL_PREFIX = "/api"
 API_PATHS = {
-    f"{LOCAL_PREFIX}{r.path}" for r in ROUTES if not r.deploy_only and r.path != "/job/{id}"
+    f"{LOCAL_PREFIX}{r.path}" for r in ROUTES if not r.deploy_only and "{id}" not in r.path
 }
-POST_PATHS = {f"{LOCAL_PREFIX}{r.path}" for r in ROUTES if r.method == "POST" and not r.deploy_only}
+POST_PATHS = {
+    f"{LOCAL_PREFIX}{r.path}"
+    for r in ROUTES
+    if r.method == "POST" and not r.deploy_only and "{id}" not in r.path
+}
 JOB_PREFIX = "/api/job/"  # GET /api/job/<id>?session=<session id>
 COOKIE_NAME = "shop_login"
 COOKIE_MAX_AGE_S = 30 * 24 * 3600
@@ -391,6 +395,10 @@ class ShopApp:
             return s.session_view(ids[0] if ids else None)
         if name == "job":
             return s.job_status(job_id, q.get("session", [""])[0])
+        if name == "job_answers":
+            return s.job_answers(
+                job_id, data.get("session_id"), data.get("answers"), data.get("submit", False)
+            )
         if name == "search":
             return s.start_search(data.get("session_id"), data.get("request"))
         if name == "rate":
@@ -429,7 +437,7 @@ class ShopApp:
         identity: Identity,
     ) -> Response | None:
         gone = self._error(404, "That was not found.", "not_found")
-        if route.name == "job":
+        if route.name in ("job", "job_answers"):
             return None if self._job_owner.get(job_id) == identity.visitor_id else gone
         sid = q.get("id", [""])[0] if route.name == "session" else data.get("session_id")
         if not isinstance(sid, str) or not sid or self.access is None:

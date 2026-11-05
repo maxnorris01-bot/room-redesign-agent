@@ -50,6 +50,7 @@ class Progress:
         self.started = self.clock.now()
         self.phase = "Starting"
         self.steps = [Step(i, label) for i, label in steps]
+        self.clarify: Any = None  # stage Q1: the search's `ClarifyRun`, when the flag is on
         self._lock = threading.Lock()
 
     def __call__(self, text: str) -> None:
