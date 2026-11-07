@@ -150,9 +150,9 @@ class Config:
     # stage Q1: clarifying questions on a first typed search (ADR 0017). Off by default: with the
     # flag off nothing changes and the job status has no `clarify` object.
     shop_clarify: bool = False  # APP_SHOP_CLARIFY
-    clarify_idle_grace_s: float = 6.0  # past ready-to-rank with no interaction, then rank anyway
+    clarify_idle_grace_s: float = 30.0  # after question 1 shown, no interaction: rank anyway
     clarify_max_wait_s: float = (
-        40.0  # after the questions were shown, with >= 1 answer, until submit
+        60.0  # after question 1 was shown, once touched or answered, until submit
     )
     clarify_candidates: int = 25  # listings the question call reads
     shop_gallery: bool = False  # stage 2o: "More photos" (dormant: the lookup takes seconds)

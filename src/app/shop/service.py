@@ -487,6 +487,7 @@ class ShopService:
                     stored=lambda parsed: self._stored_clarify(prior, parsed),
                     progress=progress, clock=self.clock, near=near, photos=self.thumb_cache,
                     thumbnailer=self.thumbnailer,
+                    may_have_stored=bool(prior is not None and prior.clarify is not None),
                 )  # fmt: skip
             else:
                 outcome = run_search(
@@ -531,7 +532,7 @@ class ShopService:
             session.clarify = fresh
 
     def job_answers(
-        self, job_id: Any, session_id: Any, answers: Any, submit: Any
+        self, job_id: Any, session_id: Any, answers: Any, submit: Any, touched: Any = False
     ) -> dict[str, Any]:
         """`POST /job/<id>/answers` (stage Q1): record the answers to the job's clarifying questions
         (and a submit, which ends the wait). Not a search: no search is counted. 404 for an unknown
@@ -545,7 +546,7 @@ class ShopService:
         except JobError as exc:
             raise ApiError(exc.status, exc.message) from None
         try:
-            return {"clarify": run.answer(answers, submit)}
+            return {"clarify": run.answer(answers, submit, touched)}
         except ClarifyInvalid as exc:
             raise ApiError(400, str(exc)) from None
         except ClarifyConflict as exc:

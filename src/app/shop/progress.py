@@ -50,6 +50,7 @@ class Progress:
         self.started = self.clock.now()
         self.phase = "Starting"
         self.steps = [Step(i, label) for i, label in steps]
+        self.job_id = ""  # set by the job runner; the clarify timing log line names it
         self.clarify: Any = None  # stage Q1: the search's `ClarifyRun`, when the flag is on
         self._lock = threading.Lock()
 

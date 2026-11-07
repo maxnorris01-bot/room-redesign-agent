@@ -61,9 +61,14 @@ def _stated(user_text: str) -> str:
 def questions_for(user_text: str) -> dict[str, Any]:
     rows = _rows(user_text)
     stated = _stated(user_text)
+    asked_m = re.search(r"Already asked \(do not ask again\): (.*?)\. Ask at most (\d+)", user_text)
+    asked = {a.strip() for a in asked_m.group(1).split(",")} if asked_m else set()
+    cap = int(asked_m.group(2)) if asked_m else 5
     total = len(rows)
     scored: list[tuple[float, dict[str, Any]]] = []
     for dim, vocab in DIMENSION_WORDS.items():
+        if dim in asked:
+            continue
         counts: dict[str, list[str]] = {}
         for number, title, _size in rows:
             for word in vocab:
@@ -96,7 +101,7 @@ def questions_for(user_text: str) -> dict[str, Any]:
             )
         )
     sized = [(n, s) for n, _t, s in rows if s != "no size"]
-    if len(sized) >= 8:
+    if len(sized) >= 8 and "size" not in asked:
         scored.append(
             (
                 0.4,
@@ -122,7 +127,7 @@ def questions_for(user_text: str) -> dict[str, Any]:
             )
         )
     scored.sort(key=lambda s: -s[0])
-    return {"questions": [q for _, q in scored[:5]]}
+    return {"questions": [q for _, q in scored[:cap]]}
 
 
 def mock_caller(**kwargs: Any) -> Completion:
@@ -145,6 +150,20 @@ IMAGE_LINE = re.compile(r"^Image (\d+)\.(?: Question: (.*?) Option: (.*?) \((.*?
 
 def _bucket(text: str, n: int) -> int:
     return zlib.crc32(text.encode()) % n
+
+
+def mock_first_caller(**kwargs: Any) -> Completion:
+    """`complete`'s signature; the one-question call on the raw request text."""
+    text = re.search(r"<request>(.*?)</request>", kwargs["user_text"])
+    request = (text.group(1) if text else "").lower()
+    stated = any(w in request for w in ("wood", "metal", "velvet", "leather"))
+    dim = "style" if stated else "material"
+    options = ["Modern", "Rustic", "Vintage"] if dim == "style" else ["Wood", "Metal", "Fabric"]
+    payload = {"dimension": dim, "text": QUESTION_TEXT[dim], "options": options}
+    return Completion(
+        text=json.dumps(payload), model=kwargs.get("model", "mock"), tool_input=payload,
+        input_tokens=450, output_tokens=60, cost_usd=0.0, steps=1, stop_reason="tool_use",
+    )  # fmt: skip
 
 
 def mock_verify_caller(**kwargs: Any) -> Completion:
