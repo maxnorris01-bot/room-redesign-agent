@@ -397,7 +397,11 @@ class ShopApp:
             return s.job_status(job_id, q.get("session", [""])[0])
         if name == "job_answers":
             return s.job_answers(
-                job_id, data.get("session_id"), data.get("answers"), data.get("submit", False)
+                job_id,
+                data.get("session_id"),
+                data.get("answers"),
+                data.get("submit", False),
+                data.get("touched", False),
             )
         if name == "search":
             return s.start_search(data.get("session_id"), data.get("request"))

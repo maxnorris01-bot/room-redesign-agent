@@ -20,6 +20,7 @@ from app.llm import LLMOutputError
 from app.shop import clarify_flow
 from app.shop.auth import purge
 from app.shop.clarify import Option, Question
+from app.shop.clarify_first import FirstResult
 from app.shop.clarify_flow import (
     NO_PREFERENCE,
     ClarifyConflict,
@@ -89,7 +90,7 @@ def later(seconds: float, fn: Any, *args: Any) -> threading.Thread:
 def test_the_flag_is_off_by_default_and_the_numbers_have_the_documented_defaults() -> None:
     bare = Config()
     assert bare.shop_clarify is False
-    assert (bare.clarify_idle_grace_s, bare.clarify_max_wait_s) == (6.0, 40.0)
+    assert (bare.clarify_idle_grace_s, bare.clarify_max_wait_s) == (30.0, 60.0)
     assert Config.from_env().shop_clarify is False
 
 
@@ -292,20 +293,26 @@ def test_the_snapshot_shape() -> None:
     snap = run.snapshot()
     assert set(snap) == {
         "state", "questions", "pictures_state", "no_preference_value", "answers", "submitted",
-        "applied", "deadline",
+        "applied", "deadline", "more_coming", "timing",
     }  # fmt: skip
     assert snap["state"] == "ready" and snap["pictures_state"] == "pending"
-    assert set(snap["questions"][0]) == {"id", "text", "kind", "dimension", "options"}
-    assert snap["questions"][0]["options"][0] == {
-        "label": "Wood", "value": "wood", "picture_url": None,
+    assert set(snap["questions"][0]) == {
+        "id", "text", "kind", "dimension", "options", "picture_eligible",
     }  # fmt: skip
+    assert snap["questions"][0]["options"][0] == {
+        "label": "Wood", "value": "wood", "icon": "wood", "swatches": None, "picture_url": None,
+    }  # fmt: skip
+    assert snap["questions"][0]["picture_eligible"] is False  # every option is drawn
+    assert snap["more_coming"] is False
+    assert set(snap["timing"]) == {"q1_ms", "rest_ms", "first_pictures_ms", "source"}
     assert set(snap["deadline"]) == {
         "idle_grace_s", "max_wait_s", "waiting", "seconds_left", "shown_s_ago",
     }  # fmt: skip
     run.set_pictures({("q_material", "wood"): "https://img.example/a.jpg"})
     snap = run.snapshot()
     assert snap["pictures_state"] == "done"
-    assert snap["questions"][0]["options"][0]["picture_url"] == "https://img.example/a.jpg"
+    # an option with an icon never carries a picture, even if one was stored for it
+    assert snap["questions"][0]["options"][0]["picture_url"] is None
     json.dumps(snap)
 
 
@@ -521,6 +528,7 @@ def test_question_failures_never_slow_or_break_the_search(
         raise LLMOutputError("nope")
 
     monkeypatch.setattr(clarify_flow, "mock_caller", boom)
+    monkeypatch.setattr(clarify_flow, "first_question", lambda *a, **k: FirstResult())
     svc = make_service(tmp_path / "a", cfg(clarify_idle_grace_s=5.0, clarify_max_wait_s=30.0))
     t0 = time.monotonic()
     st = search(svc, "modern couch")
@@ -561,7 +569,7 @@ def test_the_spend_is_in_the_search_record_and_the_session_total(tmp_path: Path)
     rec_on, rec_off = sessions(on, st_on).searches[0], sessions(off, st_off).searches[0]
     trace = rec_on.trace["clarify"]
     extra = trace["question_usd"] + trace["verification_usd"]
-    assert extra > 0 and trace["verification_calls"] >= 1
+    assert extra > 0
     assert rec_on.anthropic_usd - rec_off.anthropic_usd == pytest.approx(extra, abs=1e-5)
     assert st_on["result"]["session_usd"] > st_off["result"]["session_usd"]
     assert rec_on.provider_usd >= rec_off.provider_usd
@@ -577,7 +585,8 @@ def test_the_trace_has_the_timing_and_counts(tmp_path: Path) -> None:
     ):  # fmt: skip
         assert key in trace
     assert trace["answers_applied"] == 1 and trace["applied_reason"] == "submit"
-    assert trace["seconds_to_text"] is not None and trace["seconds_to_pictures"] is not None
+    assert trace["seconds_to_text"] is not None
+    assert set(trace["timing"]) == {"q1_ms", "rest_ms", "first_pictures_ms", "source"}
 
 
 def test_the_first_page_is_fetched_once_when_the_parse_matches_the_request(tmp_path: Path) -> None:

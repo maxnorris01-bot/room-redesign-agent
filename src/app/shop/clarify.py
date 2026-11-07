@@ -204,11 +204,27 @@ def stated_attributes(parsed: ShopQuery) -> str:
     return "; ".join(parts)
 
 
-def user_text(request: str, parsed: ShopQuery, rows: list[str]) -> str:
+def user_text(
+    request: str,
+    parsed: ShopQuery,
+    rows: list[str],
+    asked: Sequence[str] = (),
+    max_questions: int = MAX_QUESTIONS,
+) -> str:
+    extra = (
+        [
+            f"Already asked (do not ask again): {', '.join(asked)}. Ask at most {max_questions}. "
+            "One dimension per question; never put a feature (washable, with drawers) inside "
+            "a material, colour, shape, style or size question."
+        ]
+        if asked
+        else []
+    )
     return "\n".join(
         [
             f"<request>{clean_text(request, 300)}</request>",
             f"Stated attributes: {stated_attributes(parsed)}",
+            *extra,
             "Listings (number | title | price | seller | size):",
             *rows,
         ]
@@ -229,6 +245,8 @@ def analyze_facets(
     caller: Caller = complete,
     limit: int = CANDIDATES_SHOWN,
     clock: Callable[[], float] = time.monotonic,
+    asked: Sequence[str] = (),
+    max_questions: int = MAX_QUESTIONS,
 ) -> Questions:
     """Up to five clarifying questions about `request`, from the first `limit` candidates.
 
@@ -250,7 +268,7 @@ def analyze_facets(
             span_name="llm.shop_clarify",
             prompt=load_prompt(CLARIFY_PROMPT),
             model=config.model_retrieval,
-            user_text=user_text(request, parsed, rows),
+            user_text=user_text(request, parsed, rows, asked, max_questions),
             budget=budget,
             max_tokens=CLARIFY_MAX_TOKENS,
             tools=[tool_definition()],

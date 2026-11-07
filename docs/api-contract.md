@@ -97,27 +97,35 @@ It is the same object `POST /job/{id}/answers` returns under `clarify`:
 
 ```ts
 type ClarifyState = "pending" | "ready" | "skipped" | "failed";
-interface ClarifyOption { label: string; value: string; picture_url: string | null } // https thumbnail, or null
+interface ClarifyOption {
+  label: string; value: string;
+  icon: string | null;                       // a key of clarify_vocab.json ("wool", "washable", "round" ...): draw it; null if none
+  swatches: string[] | null;                 // up to 3 hex colours (colour questions): draw them; null if none
+  picture_url: string | null;                // https thumbnail, only for an option with neither icon nor swatches
+}
 interface ClarifyQuestion {
   id: string; text: string;
   kind: "choice" | "size_range";
   dimension: "color" | "material" | "shape" | "style" | "size" | "feature";
   options: ClarifyOption[];                  // 2 to 4; the page adds its own "No preference"
+  picture_eligible: boolean;                 // some option has no icon/swatch and a picture may still arrive
 }
 interface Clarify {
   state: ClarifyState;                       // pending: being written; skipped/failed: nothing to ask
-  questions: ClarifyQuestion[];              // [] unless state is "ready" (1 to 5 questions)
+  questions: ClarifyQuestion[];              // [] unless state is "ready"; question 1 first (id q1), q2..q5 are appended later
+  more_coming: boolean;                      // true while questions 2..5 are still being written; keep polling
+  timing: { q1_ms: number | null; rest_ms: number | null; first_pictures_ms: number | null; source: "template" | "model" | "none" };
   pictures_state: "pending" | "done";        // text comes first; picture_url fills in on a later poll
   no_preference_value: "no_preference";      // the option_value that means "no preference"
   answers: { question_id: string; option_value: string }[];   // what the server holds so far
   submitted: boolean;                        // a submit was received
   applied: boolean;                          // the apply point passed: answers are final, no more posts
   deadline: {
-    idle_grace_s: number;                    // 6: with no interaction the search ranks this long after it is ready
-    max_wait_s: number;                      // 40: with >= 1 answer, the most it waits (from when the questions appeared)
+    idle_grace_s: number;                    // 30: with no interaction the search ranks this long after question 1 was shown
+    max_wait_s: number;                      // 60: once touched or answered, the most it waits (from when question 1 appeared)
     waiting: boolean;                        // the search is ready to rank and is holding for the answers now
     seconds_left: number | null;             // until the current deadline, only while waiting
-    shown_s_ago: number | null;              // since the questions appeared (null before)
+    shown_s_ago: number | null;              // since question 1 appeared (null before)
   };
 }
 // GET /job/{id} response: ... existing fields ... & { clarify?: Clarify }
@@ -133,8 +141,9 @@ mean show nothing (the search is not held up). Picture URLs are the providers' o
 Auth: visit cookie; the job must be the visitor's (another visitor's or an unknown job is `404`). Request:
 
 ```ts
-{ answers: { question_id: string; option_value: string /* an option's value, or "no_preference" */ }[];  // at most 20
+{ answers: { question_id: string; option_value: string /* an option's value, or "no_preference" */ }[];  // at most 20; may be []
   submit?: boolean;                          // default false; true ends the wait: rank now
+  touched?: boolean;                         // default false; true = the shopper is interacting: wait up to max_wait_s even with no answer yet
   session_id?: string }                      // only to match a job started with a session id (local server)
 ```
 
@@ -211,3 +220,5 @@ and should send `referrerpolicy="no-referrer"` on the images.
 On load: `GET /auth/session`. If `authenticated` is false, `POST /auth/start` (no body), then continue; use the `usage` block for a
 "remaining allowance" line. A `401 session_required` on any other route means the cookie expired or was cleared: call `/auth/start`
 once and retry the request. A `429 rate_limited` from `/auth/start` carries `Retry-After`: show its `message` and wait.
+
+**Question 1 fast (stage B2).** Question 1 is shown within about 2 s of the search starting (instantly for a common category: a template, no model call); questions 2..5 are appended to `questions` while the shopper answers question 1 (`more_coming` is true until they are in or the call fails). The page should render icons and swatches itself and never wait for `picture_url`. Answers apply to the listings already fetched and tagged: answering causes no new search. `clarify.timing` and the server log line `clarify_timing job=<id> q1_ms=.. rest_ms=.. source=.. questions=..` (`fly logs -a room-redesign-shop | grep clarify_timing`) give the timings.

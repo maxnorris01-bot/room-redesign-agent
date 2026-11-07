@@ -10,6 +10,7 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 <!-- The most important items, in the order you'd actually tackle them. -->
 
+- [ ] **Max: review the B2 PR (clarify fast backend, `shop-clarify-fast`), `fly deploy`, then time your own searches** (`fly logs -a room-redesign-shop | grep clarify_timing`); the page needs the new fields (`icon`, `swatches`, `more_coming`, `picture_eligible`, `touched`) per `docs/api-contract.md`. `docs/sessions/2026-11-06-clarify-fast.md`.
 - [ ] **Max: review the Q1 PR (clarifying questions backend, flag off), deploy with the flag off, then turn `APP_SHOP_CLARIFY=1` on for a test** (steps in the PR and `docs/deploy.md`); the front-end brief (stage Q2) comes next. ADR 0017, `docs/sessions/2026-11-04-clarify-q1.md`.
 - [ ] **Max: run clarifying-questions spike round 2 live** (`make clarify-plan`, then `EVAL_CLARIFY_CONFIRM=yes make clarify-live`: Anthropic only, $0.15 stop, saved Serper responses only; then `make clarify-report` and open the contact sheet; ADR 0016). Round 1 was run (coverage 91%, but two wrong pictures: round 2 verifies them).
 - [x] ~~Max: run the clarifying-questions spike live~~ (round 1, done) (`make clarify-plan` first; then `EVAL_CLARIFY_CONFIRM=yes make clarify-live`, then `make clarify-report` and open `evals/shop_clarify/results/contact-sheet.html`). Offline harness only, ADR 0015, `docs/sessions/2026-11-04-clarify-spike.md`; decide from the four targets in `report.md` whether to build the route and page.

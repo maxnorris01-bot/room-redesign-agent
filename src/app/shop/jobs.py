@@ -87,6 +87,7 @@ class JobManager:
             job = Job(secrets.token_urlsafe(16), session_id, kind, started=self.clock.now())
             chosen = steps or (SHOP_AGAIN_STEPS if kind == "shop_again" else SEARCH_STEPS)
             job.progress = Progress(chosen, self.clock)
+            job.progress.job_id = job.id
             self._jobs[job.id] = job
         progress = job.progress
 

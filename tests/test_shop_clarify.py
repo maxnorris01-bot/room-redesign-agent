@@ -443,5 +443,11 @@ def test_only_the_clarify_flow_and_its_callers_import_the_spike() -> None:
                 names = [a.name for a in node.names]
             if any("clarify" in n for n in names):
                 importers.add(path.name)
-    assert importers <= {"clarify_flow.py", "clarify_mock.py", "service.py", "again.py"}
+    assert importers <= {
+        "clarify_flow.py",
+        "clarify_mock.py",
+        "clarify_first.py",
+        "service.py",
+        "again.py",
+    }
     assert not importers & {"search.py", "parse.py", "store.py", "server.py", "jobs.py"}

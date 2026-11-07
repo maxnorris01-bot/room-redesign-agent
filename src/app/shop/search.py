@@ -1658,18 +1658,9 @@ def run_query(
         hard_stop_at += gate.waited  # time the shopper took is not the pipeline's
         gate_info = {"waited_s": gate.waited, "applied": gate.query is not None}
         if gate.query is not None:
-            old_text = query.search_text
             query = gate.query  # the closures above (`filtered`, ...) read the new query
-            pool, counts = filtered(raw)  # the answers' filters, over what was fetched
-            if query_key(query.search_text) != query_key(old_text) and not expired("answers"):
-                calls += 1
-                got = fetch(query.search_text, 1)
-                if isinstance(got, Exception):
-                    warnings.append(f"Search for your answers unavailable ({got}).")
-                else:
-                    added = absorb(query.search_text, 1, got, "answers")
-                    supplied.update(c.product_id for c in added)
-                    gate_info["extra_search"] = {"found": len(got), "new_candidates": len(added)}
+            # the answers reorder and filter what is already fetched and tagged: no new fetch
+            pool, counts = filtered(raw)
 
     # ---- cut the pool, rank it once ----
     limit = MAX_POOL_AGAIN if again is not None else MAX_POOL

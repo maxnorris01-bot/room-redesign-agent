@@ -1,0 +1,98 @@
+{
+  "_note": "Shared by room-redesign-agent (maps option labels to icon keys and swatches) and portfolio-site (draws one SVG per key). 2026-11-06. Keys are lowercase-hyphen. Add synonyms freely; never add brand names, characters or logos.",
+  "icons": {
+    "material": {
+      "wool": ["wool", "woolen", "merino"],
+      "cotton": ["cotton"],
+      "leather": ["leather", "genuine leather"],
+      "faux-leather": ["faux leather", "vegan leather", "pu leather"],
+      "wood": ["wood", "wooden", "solid wood"],
+      "metal": ["metal", "steel", "iron", "stainless steel", "aluminum"],
+      "brass": ["brass", "gold metal"],
+      "glass": ["glass", "tempered glass"],
+      "velvet": ["velvet"],
+      "linen": ["linen"],
+      "jute": ["jute", "natural fibre", "natural fiber", "sisal", "seagrass"],
+      "polyester": ["polyester", "synthetic"],
+      "nylon": ["nylon"],
+      "silk": ["silk", "viscose"],
+      "microfiber": ["microfiber", "microfibre"],
+      "boucle": ["boucle", "bouclé"],
+      "plastic": ["plastic", "acrylic", "resin"],
+      "rattan": ["rattan", "wicker", "cane"],
+      "bamboo": ["bamboo"],
+      "marble": ["marble", "stone", "granite"],
+      "ceramic": ["ceramic", "porcelain"],
+      "concrete": ["concrete", "cement"],
+      "fabric": ["fabric", "upholstered", "textile"]
+    },
+    "feature": {
+      "washable": ["washable", "machine washable", "machine-washable", "easy to clean"],
+      "waterproof": ["waterproof", "water resistant", "water-resistant"],
+      "stain-resistant": ["stain resistant", "stain-resistant", "spill proof"],
+      "non-slip": ["non slip", "non-slip", "rug pad", "grip"],
+      "reversible": ["reversible"],
+      "pet-friendly": ["pet friendly", "pet-friendly", "scratch resistant"],
+      "indoor-outdoor": ["indoor outdoor", "indoor/outdoor", "outdoor"],
+      "with-drawers": ["with drawers", "drawers"],
+      "with-mirror": ["with mirror", "mirror"],
+      "with-storage": ["with storage", "storage"],
+      "with-shelves": ["with shelves", "shelves", "open shelves"],
+      "with-wheels": ["with wheels", "casters", "wheels"],
+      "with-arms": ["with arms", "armrests"],
+      "extendable": ["extendable", "extending", "expandable"],
+      "adjustable": ["adjustable", "height adjustable"],
+      "foldable": ["foldable", "folding", "collapsible"],
+      "dimmable": ["dimmable", "dimmer"],
+      "rechargeable": ["rechargeable", "cordless", "battery"],
+      "no-assembly": ["no assembly", "fully assembled", "pre-assembled"]
+    },
+    "shape": {
+      "round": ["round", "circular", "circle"],
+      "square": ["square"],
+      "rectangular": ["rectangular", "rectangle"],
+      "oval": ["oval", "elliptical"],
+      "runner": ["runner", "hallway runner", "long and narrow"],
+      "curved": ["curved", "rounded", "organic"],
+      "l-shaped": ["l-shaped", "l shaped", "sectional"],
+      "half-round": ["half round", "half-moon", "semicircle"],
+      "hexagon": ["hexagon", "hexagonal", "geometric"]
+    },
+    "size": {
+      "tall": ["tall", "high"],
+      "short": ["short", "low", "low profile", "low-profile"],
+      "wide": ["wide", "long"],
+      "narrow": ["narrow", "slim", "skinny", "compact"],
+      "large": ["large", "big", "oversized", "extra large"],
+      "small": ["small", "mini", "petite"]
+    },
+    "style": {
+      "modern": ["modern", "contemporary"],
+      "mid-century": ["mid-century", "mid century", "midcentury"],
+      "rustic": ["rustic", "cabin", "reclaimed"],
+      "boho": ["boho", "bohemian"],
+      "farmhouse": ["farmhouse", "country"],
+      "industrial": ["industrial", "loft"],
+      "scandinavian": ["scandinavian", "scandi", "nordic"],
+      "traditional": ["traditional", "classic", "antique"],
+      "minimalist": ["minimalist", "minimal", "simple"],
+      "glam": ["glam", "luxe", "hollywood regency"],
+      "vintage": ["vintage", "retro"],
+      "coastal": ["coastal", "beach", "nautical"],
+      "art-deco": ["art deco", "art-deco", "deco"]
+    },
+    "color-extra": {
+      "multicolor": ["multicolor", "multicolour", "multi-color", "multi color", "patterned", "pattern", "multi"],
+      "striped": ["striped", "stripes"],
+      "floral": ["floral", "flowers"]
+    }
+  },
+  "colors": {
+    "black": "#1A1A1A", "white": "#FFFFFF", "gray": "#8C8C8C", "grey": "#8C8C8C", "charcoal": "#3D3D3D",
+    "silver": "#C0C0C0", "beige": "#D9C7A6", "cream": "#F2EAD3", "ivory": "#F5EFDD", "tan": "#C8A26B",
+    "brown": "#6B4A2F", "walnut": "#5A3D2B", "oak": "#C19A6B", "natural": "#D8BE94", "red": "#C0392B",
+    "orange": "#E67E22", "yellow": "#F1C40F", "green": "#3E8E5A", "sage": "#9CAF88", "blue": "#3C6EB4",
+    "navy": "#1F2F55", "teal": "#2A8C8C", "purple": "#7D4E9E", "pink": "#E8A0B4", "gold": "#C9A227",
+    "rust": "#B5532B", "terracotta": "#C4694A"
+  }
+}

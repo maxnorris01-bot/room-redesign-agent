@@ -240,6 +240,11 @@ this choice over the alternatives. Note what's still open or deferred within it,
   a fetch made while the request is parsed), shown as text first and with verified pictures on a later poll; the apply point is a `rank_gate` hook in `run_query` right before the pool is cut, with
   a 6 s idle grace and a 40 s max wait after an answer (no wait on a failure, and the wait never counts against the hard stop); answers use `POST /job/{id}/answers`, are stored in the session JSON
   (no migration) and are reused by Shop Again through `apply_answers`; spend is folded into the first search record so the existing caps count it. See `docs/sessions/2026-11-04-clarify-q1.md`.
+- **2026-11-06, stage B2: question 1 in about 2 s, the rest while the shopper answers.** Decisions: question 1 comes from the raw request text alone, in parallel with the parse and the fetch
+  (a category template table, else one tiny Haiku call), because the questions exist to hide the search wait and the old path showed them at 6-10 s; questions 2..5 come from the listings and are
+  appended (`more_coming`); the wait clock runs from question 1 being shown, so a pipeline that is ready first waits (defaults 30 s idle, 60 s max, matching Fly); a `touched` post counts as interaction;
+  answers filter and reorder what is already fetched (the extra fetch after answers is gone); options get an icon or swatch from the shared vocabulary instead of a picture search, and only an option with
+  neither may get a real thumbnail, later. See `docs/sessions/2026-11-06-clarify-fast.md`.
 
 ## See also
 
