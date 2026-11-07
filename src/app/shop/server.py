@@ -417,7 +417,11 @@ class ShopApp:
         if name == "photos":
             return s.photos(data.get("session_id"), data.get("result_id"))
         if name == "refine":
-            return s.refine(data.get("session_id"), data.get("text"))
+            return s.refine(
+                data.get("session_id"),
+                data.get("text"),
+                data["filters"] if "filters" in data else UNSET,
+            )
         if name == "refine_remove":
             return s.remove_refine(data.get("session_id"), data.get("id"))
         if name == "preference_remove":

@@ -191,7 +191,7 @@ Example: `{"session_id": null, "request": "modern couches under $1000"}`.
 ### POST /shop-again
 
 Request `{"session_id": string, "refine_text": string | null}`. A refine instruction typed with the click is applied first. Response `202 {"job_id": string}`.
-Needs at least one rated result (`400 "Rate a few results first"`); `429 cap_reached` with `shop_agains` after the per-session count.
+Needs a finished search, not a rating: with nothing rated the batch is simply new (everything already shown in the session is excluded, and the fetches reach past it: the next page and written variants of the search). `400 "Search first"` before any search; `429 cap_reached` with `shop_agains` after the per-session count. `can_shop_again` (in `GET /session`) is true whenever the session has a finished search, the visitor is under `shop_agains_cap`, and no job is running for the session. Refine filters (see `POST /refine`) apply to the batch: one extra targeted search, and the batch is ordered so results that satisfy the filters come first.
 Example: `{"session_id": "Xq3kP9...", "refine_text": "no Walmart"}`.
 
 ### POST /rate
@@ -211,7 +211,17 @@ Request `{"session_id": string, "result_id": string}`. More photos of one result
 
 ### POST /refine
 
-Request `{"session_id": string, "text": string (at most 200 characters)}`: one plain instruction ("focus on cream", "no Walmart", "under $400"). Response `200 {"refine": [chip, ...], "notices": [string], "refine_usd": number}`; a chip is `{"id","kind","target","strength","label","approximate": boolean,"text","note_mode"}`. `400` when nothing could be read.
+Request `{"session_id": string, "text": string (at most 200 characters)}` and/or `"filters"` (below): one plain instruction ("focus on cream", "no Walmart", "under $400"). Response `200 {"refine": [chip, ...], "notices": [string], "refine_usd": number}`; a chip is `{"id","kind","target","strength","label","approximate": boolean,"text","note_mode"}`. `400` when nothing could be read.
+
+**Refine filters (refine B1, additive).** Typed preferences for the NEXT Shop Again (not a switch that hides the current results). Send them on this endpoint:
+
+Request `{"session_id": string, "filters": [{"dimension": Dimension, "values": [string, ...]}, ...]}` (with or without `text`; with `filters` only, nothing is interpreted and no model is called). `dimension` and `values` are keys of the shared vocabulary, the same as `attrs` and `facets` (`grey` is accepted for `gray`; at most 6 values per dimension). The payload REPLACES the whole set: `[]` clears it, a dimension with no values is dropped. Response `200`, the same shape as above. `400` for an unknown dimension or value, or a non-list.
+
+Each filter is a chip in `refine` (kind `filter`, id `filter:<dimension>`), removable with `POST /refine/remove` and applied to every following Shop Again until removed. A new product category starts a new topic and clears them. Example chip: `{"id": "filter:color", "kind": "filter", "target": "color:gray,blue", "strength": "focus", "label": "Colour: gray or blue", "approximate": false, "text": "", "note_mode": ""}`.
+
+What a Shop Again does with filters: one targeted search (the typed search text plus at most 4 filter words, colour first; a second page only if the first added nothing new, never a third), merged with the normal candidates and de-duplicated; candidates are ordered by tier (satisfies every dimension, OR within a dimension and AND across; then a fitting colour before an unread one before a known wrong one; then the most dimensions, colour > style > material > the rest) and the batch fills from the best tier first, so the page still fills. The extra search counts in `serper_calls`, `serper_credits` and `total_usd`; it is still one Shop Again. A first search never uses filters.
+
+`search.filters_match` (always present): `null` unless the batch was made with filters, else `{"satisfied_all": integer, "shown": integer, "filters": [Dimension, ...]}`, computed from the shown results' `attrs`: "5 of 12 match all your filters".
 
 ### POST /refine/remove
 

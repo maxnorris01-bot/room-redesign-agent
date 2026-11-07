@@ -97,7 +97,7 @@ def test_a_different_product_starts_fresh_and_says_so(tmp_path: Path) -> None:
         "shape this search."
     )
     assert view["topic"]["id"] == 2 and view["topic"]["label"] == "couch"
-    assert view["profile"] is None and view["can_shop_again"] is False
+    assert view["profile"] is None and view["can_shop_again"] is True  # rated or not
     assert view["topic"]["counted"] == 0 and view["topic"]["excluded"] == 4
     session = svc.store.load(sid)
     assert session.searched_peers == {} and len(session.topics) == 2
@@ -141,9 +141,8 @@ def test_ratings_from_an_earlier_topic_do_not_count_but_stay_in_saved(tmp_path: 
     # the ratings are still there, stamped with topic 1
     assert {rec.topic for rec in session.ratings.values()} == {1}
     assert not any(in_topic(rec, session) for rec in session.ratings.values())
-    with pytest.raises(ApiError) as err:
-        svc.shop_again(sid)
-    assert err.value.status == 400  # nothing rated in this topic yet
+    again = svc.shop_again(sid)  # nothing rated in this topic: still allowed, nothing is learned
+    assert again["search"]["kind"] == "shop_again" and not again["profile"]["inferred"]
 
 
 def test_rating_in_the_new_topic_counts_and_re_rating_an_old_item_wins(tmp_path: Path) -> None:

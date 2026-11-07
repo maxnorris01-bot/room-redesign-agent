@@ -51,6 +51,7 @@ from app.shop.prep import PrepManager
 from app.shop.progress import SHOP_AGAIN_REFINE_STEPS, Progress
 from app.shop.redact import log_failure
 from app.shop.refine import REJECTED, add_chips, clean_instruction, interpret
+from app.shop.refine_filters import FilterError, parse_filters, with_filters
 from app.shop.resolve import (
     UnknownResult,
     auto_lookups_used,
@@ -227,8 +228,7 @@ class ShopService:
                 }  # fmt: skip
                 for rid, rec in session.ratings.items()
             },
-            can_shop_again=rated_count(session) > 0
-            and any(r.kind == "search" for r in session.searches),
+            can_shop_again=self._can_shop_again(session),
             topic=self._topic_view(session),
             profile=session.profile.model_dump(mode="json") if session.profile else None,
             profile_summary=profile_summary(session.profile),
@@ -286,6 +286,7 @@ class ShopService:
             facets, facets_unknown = compute_facets([r["attrs"] for r in results])
             base["search"] = {
                 "index": last.index,
+                "filters_match": last.filters_match,
                 "topic": last.topic,
                 "topic_notice": last.topic_notice,
                 "request": last.request,
@@ -332,6 +333,14 @@ class ShopService:
                 "warnings": last.warnings,
             }
         return base
+
+    def _can_shop_again(self, session: Session) -> bool:
+        """A finished search and the visitor under the Shop Again cap. Rated or not: with no
+        ratings the batch is simply new. (`session_view` also asks that no job is running.)"""
+        return (
+            any(r.kind == "search" for r in session.searches)
+            and session.shop_agains_used < self.config.shop_agains_per_session
+        )
 
     @staticmethod
     def _gallery_ok(row: dict[str, Any]) -> bool:
@@ -442,9 +451,12 @@ class ShopService:
         """The page's state. An absent, malformed or unknown id gives an empty view."""
         if session_id and self.store.exists(session_id):
             try:
-                return self._view(self.store.load(session_id))
+                view = self._view(self.store.load(session_id))
             except SessionError:
-                pass
+                return self._view(None)
+            if view["can_shop_again"] and self.jobs.busy(session_id):
+                view["can_shop_again"] = False  # a job is running for this session
+            return view
         return self._view(None)
 
     # ---- search ---------------------------------------------------------------------------
@@ -668,6 +680,7 @@ class ShopService:
                     **({"duplicates": outcome.duplicate_trace} if outcome.duplicate_trace else {}),
                 },
                 tagging=outcome.tagging,
+                filters_match=outcome.filters_match,
                 diversity={d: [v[0], v[1]] for d, v in outcome.diversity.items()},
                 seller_share=list(outcome.seller_share) if outcome.seller_share else None,
                 pages=outcome.pages,
@@ -826,8 +839,6 @@ class ShopService:
     def _prepare_again(self, session_id: Any) -> Session:
         """Validate a Shop Again request and return the session it will run on."""
         session = self._load(session_id)
-        if rated_count(session) == 0:
-            raise ApiError(400, "Rate a few results first")
         if not any(r.kind == "search" for r in session.searches):
             raise ApiError(400, "Search first")
         if session.shop_agains_used >= self.config.shop_agains_per_session:
@@ -1003,10 +1014,30 @@ class ShopService:
             raise ApiError(400, "Search first")
         return topic
 
-    def refine(self, session_id: Any, text: Any) -> dict[str, Any]:
+    def set_filters(self, session_id: Any, raw: Any) -> dict[str, Any]:
+        """Replace the refine filters of the current topic as a set (`[]` clears them). They are
+        chips (kind `filter`, id `filter:<dimension>`) that every following Shop Again applies
+        until removed with `/refine/remove`. See `app.shop.refine_filters`."""
+        try:
+            filters = parse_filters(raw)
+        except FilterError as exc:
+            raise ApiError(400, str(exc)) from None
+        self._load(session_id)
+        assert isinstance(session_id, str)
+        with self.store.transaction(session_id) as live:
+            topic = self._topic_of(live)
+            topic.refinements = with_filters(topic.refinements, filters)
+            chips = [c.model_dump(mode="json") for c in topic.refinements]
+            return {"refine": chips, "notices": [], "refine_usd": live.refine_usd}
+
+    def refine(self, session_id: Any, text: Any, filters: Any = UNSET) -> dict[str, Any]:
         """Interpret one plain instruction and add its chips to the current topic. Rejects empty or
         nonsense input with a short message. The instruction is untrusted text (see
-        `app.shop.refine`)."""
+        `app.shop.refine`). With `filters` (and no text) only the typed filters are replaced."""
+        if filters is not UNSET:
+            done = self.set_filters(session_id, filters)
+            if text in (None, ""):
+                return done
         if not isinstance(text, str):
             raise ApiError(400, "type an instruction first")
         cleaned = clean_instruction(text)

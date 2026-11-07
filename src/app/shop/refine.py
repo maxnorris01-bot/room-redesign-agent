@@ -31,6 +31,7 @@ from app.shop.models import (
     ShopQuery,
     StoredProfile,
 )
+from app.shop.refine_filters import filters_of
 from app.shop.retailers import TIER_LABELS, TIERS, canonical_name, retailer_of, seller_key
 from app.shop.thresholds import (
     FREE_NOTES_MAX,
@@ -153,6 +154,8 @@ def validate_item(item: RefineItem, text: str = "") -> RefineChip | None:
     label = _label(item.label, item.target)
     target: str | None = None
     kind = item.kind
+    if kind == "filter":  # only the typed filters make these; a model's one is a plain note
+        kind = "free_note"
     if kind in ("exclude_seller", "focus_seller"):
         found = retailer_of(item.target)
         target = found.name if found is not None else None
@@ -294,6 +297,8 @@ class RefineSet:
     focus_notes: dict[str, str] = field(default_factory=dict)
     exclude_notes: dict[str, str] = field(default_factory=dict)
     prefer_notes: dict[str, str] = field(default_factory=dict)
+    # refine filters: dimension -> accepted values (the typed filter chips, priority order)
+    filters: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def active(self) -> bool:
@@ -343,6 +348,8 @@ def build_set(chips: list[RefineChip]) -> RefineSet:
             rs.price_min = float(c.target)
         elif c.kind == "must_have":
             rs.must_have.append(c.target)
+        elif c.kind == "filter":
+            pass  # read below, once, by `filters_of`
         else:
             rs.notes.append(c.label + (" (approximate)" if c.approximate else ""))
             mode = c.note_mode or "prefer"
@@ -350,6 +357,7 @@ def build_set(chips: list[RefineChip]) -> RefineSet:
                 mode, rs.prefer_notes
             )
             bucket[c.id] = c.target
+    rs.filters = filters_of(chips)
     return rs
 
 
