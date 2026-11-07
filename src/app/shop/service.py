@@ -25,6 +25,7 @@ from app.shop.clarify_flow import (
 )
 from app.shop.clock import Clock
 from app.shop.context import current_visitor
+from app.shop.facets import clean_attrs, compute_facets, title_attrs
 from app.shop.jobs import JobError, JobManager
 from app.shop.models import (
     MAX_COMMENT_CHARS,
@@ -276,9 +277,13 @@ class ShopService:
             for position, rid in enumerate(last.result_ids, start=1):
                 shown = session.results.get(rid)
                 if shown is not None:
+                    attrs = clean_attrs(shown.attrs) if shown.attrs else title_attrs(shown.title)
                     results.append(
-                        shown.model_copy(update={"rank": position}).model_dump(mode="json")
+                        shown.model_copy(update={"rank": position, "attrs": attrs}).model_dump(
+                            mode="json"
+                        )
                     )
+            facets, facets_unknown = compute_facets([r["attrs"] for r in results])
             base["search"] = {
                 "index": last.index,
                 "topic": last.topic,
@@ -287,6 +292,8 @@ class ShopService:
                 "query": last.query.model_dump(mode="json"),
                 "created_at": last.created_at,
                 "results": results,
+                "facets": facets,
+                "facets_unknown": facets_unknown,
                 "seconds": last.seconds,
                 "kind": last.kind,
                 "note": last.note,

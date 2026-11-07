@@ -79,6 +79,32 @@ Response `200`: the page's whole state. Fields (the current page reads all of th
 - `search` has: `index`, `topic`, `topic_notice`, `request`, `query` (the parsed request: `search_text`, `category`, `price_min`, `price_max`, `style_terms`, `material_terms`, `must_have`, `avoid`, `color_terms`, `shape_terms`, `context`, ...), `created_at`, `results` (array of results), `seconds`, `kind` ("search" | "shop_again"), `note`, `headline` (the one sentence above the grid), `warnings` array of strings, `queries`, `trace`, `tagging`, `serper_calls`, `serper_credits`, `anthropic_usd`, `provider_usd`, `total_usd`, `counts`, `ranked`, `alignment`, `diversity`, `seller_share`
 - a result: `id`, `title`, `price` number | null, `currency`, `seller`, `thumbnail_url` (an https URL on the provider's CDN, or ""), `link` (a Google product link until resolved), `link_kind` ("google_panel" | "retailer" | "none"), `size_hint` string | null, `product_id`, `rank`, `pool_position`, `rank_reason`, `rating` number | null, `rating_count` integer | null, `also_at` array of `{seller, price}`, `source` `{kind, query}` | null
 
+**Filters (stage F1, additive).** Every result in `search.results` has `attrs`, and `search` has `facets` and `facets_unknown`. They are in `GET /session` and in a done job's `result`
+(the same body), for the latest search or Shop Again; a Shop Again batch has its own. Nothing about ranking or the order of `results` changed.
+
+```ts
+type Dimension = "color" | "material" | "shape" | "style" | "size" | "feature";
+// result.attrs: always all six keys; lowercase keys of clarify_vocab.json; [] = unknown for that dimension. Colour values are keys of its
+// `colors` table (grey is written "gray") plus "multicolor". No price words. Sessions saved before F1 get attrs read from the title.
+type Attrs = Record<Dimension, string[]>;
+interface FacetOption {
+  value: string;                 // an attrs value, e.g. "gray", "mid-century"
+  label: string;                 // "Gray", "Mid-century"
+  count: number;                 // shown results whose attrs include the value (>= 1)
+  icon: string | null;           // same icon key as ClarifyOption.icon (draw it), else null
+  swatches: string[] | null;     // hex colours for colour options, else null
+}
+interface Facet { dimension: Dimension; title: string; options: FacetOption[]; }   // title: "Colour" | "Material" | "Style" | "Shape" | "Size" | "Feature"
+// search.facets: Facet[]            most useful first (the dimension that covers the most shown results; ties colour, material, style, shape, size, feature)
+// search.facets_unknown: Record<Dimension, number>   shown results with no value for the dimension, all six keys always present ("3 have no colour info")
+```
+
+Facet rules: counts are over the shown results of this batch. An option needs `count >= 1`. A dimension is listed only with at least 2 options and only when some option tells results apart (not every
+result carrying every option). At most 10 options per dimension, by count, then vocabulary order. `icon` and `swatches` come from `option_visual` (`clarify_visual.py`). A filter is the page's job:
+`attrs` on each result is what to match against. Example (rug search): `{"color": ["gray","blue"], "material": ["wool"], "shape": ["rectangular"], "style": ["vintage"], "size": [], "feature": ["washable"]}`.
+Colour comes from the photo tags the search already makes; for a shown result without one, one vision call (6 s cap in all) names the product's colours (multicolour patterns: "multicolor" plus up to two),
+else the title's colour words. The other dimensions come from the listing title only (the search gives no description), never from the photo.
+
 The current page displays: the cards (`title`, `price`, `seller`, `thumbnail_url`, `rating`, `size_hint`, `also_at`), the request chips from `query`, `headline` and `warnings` above the grid, the ratings, `saved`, `profile` chips, the cost footer and the "How I decided" panel from `trace` (a React page may skip the panel). Example: `GET /api/shop/session?id=Xq3kP9...`.
 
 ### GET /job/{id}

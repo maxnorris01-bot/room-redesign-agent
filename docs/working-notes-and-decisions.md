@@ -245,6 +245,7 @@ this choice over the alternatives. Note what's still open or deferred within it,
   appended (`more_coming`); the wait clock runs from question 1 being shown, so a pipeline that is ready first waits (defaults 30 s idle, 60 s max, matching Fly); a `touched` post counts as interaction;
   answers filter and reorder what is already fetched (the extra fetch after answers is gone); options get an icon or swatch from the shared vocabulary instead of a picture search, and only an option with
   neither may get a real thumbnail, later. See `docs/sessions/2026-11-06-clarify-fast.md`.
+- **2026-11-06, stage F1: filters replace the clarifying questions (backend).** Every shown result gets `attrs` and each batch gets `facets` / `facets_unknown` (contract in `docs/api-contract.md`). Decisions: attrs are deterministic from the title via the shared vocabulary (no extra model call), except colour, which prefers the photo tags the search already makes, then one capped vision call, then title words; facets are computed in the view so a Shop Again batch and old saved sessions work without migration. The "skipped photo checking" for typed searches was only the progress step being marked skipped and the photo tags being discarded, not the photo step. The clarify code stays (flag off), to be retired later. See `docs/sessions/2026-11-06-shop-filters-b1.md`.
 
 ## See also
 

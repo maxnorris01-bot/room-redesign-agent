@@ -31,8 +31,10 @@ from app.schemas import DimensionsM, RankedFinalists, SchemaError, parse_model, 
 from app.shop import typed as typed_mod
 from app.shop.candidates import TagBook, Taggable, note_key, tag_results
 from app.shop.clock import Clock
+from app.shop.colortags import shown_colors
 from app.shop.decide import composition, top_share
 from app.shop.dedupe import Dedupe, Index, Listing
+from app.shop.facets import title_attrs
 from app.shop.models import (
     MAX_SEARCH_TEXT_CHARS,
     AlsoAt,
@@ -1350,8 +1352,11 @@ def run_query(
     timeline = (again.timeline if again is not None else None) or Timeline(clock)
     prog = progress or (again.progress if again is not None else None)
     steps = prog if isinstance(prog, Progress) else None
-    if steps is not None and again is None:
-        steps.skip("tagging")  # a typed search tags nothing: the step is already satisfied
+    photo_steps = photos is not None and config.shop_photo_tag_top_n > 0
+    if steps is not None and again is None and not photo_steps:
+        # a typed search tags no titles; the step is shown only while photos are read (stage F1:
+        # it used to be skipped for every typed search, though its photo step does run)
+        steps.skip("tagging")
     pipeline: TagPipeline | None = None
     if again is not None and book is not None and config.shop_tag_top_n > 0:
         pipeline = TagPipeline(
@@ -1749,6 +1754,8 @@ def run_query(
         if target_book is None:
             return
         say("Reading photos")
+        if steps is not None and again is None:
+            steps.begin("tagging")
         with timeline.span(
             "model", f"photo tags for {min(len(ordered), config.shop_photo_tag_top_n)}"
         ):
@@ -2165,6 +2172,14 @@ def run_query(
                 f"Left out {len(again.dropped_phrasings)} search phrasing(s) to stay within the "
                 f"{again.max_calls}-call cap: {'; '.join(again.dropped_phrasings)}."
             )
+    attrs_info = _attach_attrs(
+        results, again, photo_book, typed_sources, book, photos, budget, config,
+        max(0.0, hard_stop_at - clock.now()),
+    )  # fmt: skip
+    if steps is not None and again is None and photo_steps:
+        steps.finish("tagging")
+    if attrs_info and again is not None:
+        composition_info["shown_attrs"] = attrs_info
     t_end = clock.now()
     dd = counts.dedupe or {}
     filtered_out = (
@@ -2360,6 +2375,7 @@ def run_query(
             **({"thin": thin_info} if thin_info else {}),
             **({"fill": fill_info} if fill_info and again is None else {}),
             **({"typed": typed_info} if typed_info and again is None else {}),
+            **({"shown_attrs": attrs_info} if attrs_info else {}),
             **({"seller_cap": cap_info} if cap_info and again is None else {}),
             **({"price_outliers": outlier_info} if outlier_info and again is None else {}),
         },
@@ -2375,6 +2391,40 @@ def run_query(
             again.tag_source if again is not None else {},
         ),
     )
+
+
+def _attach_attrs(
+    results: list[ShopResult],
+    again: AgainContext | None,
+    photo_book: TagBook | None,
+    typed_sources: Mapping[str, str],
+    book: TagBook | None,
+    photos: ThumbCache | None,
+    budget: Budget,
+    config: Config,
+    time_left_s: float,
+) -> dict[str, Any]:
+    """Stage F1: give each shown result its `attrs` (in place) and return the trace. Colour comes
+    from a photo tag the run already made, else one vision call over the shown results (at most
+    `COLOR_BUDGET_S`), else the title; every other dimension from the title. Changes no order."""
+    if not results:
+        return {}
+    tags = book if again is not None else photo_book
+    sources: Mapping[str, str] = again.tag_source if again is not None else typed_sources
+    photo_colors: dict[str, str | None] = {}
+    for r in results:
+        got = tags.get(r.id) if tags is not None else None
+        if got and sources.get(r.id) == "photo":
+            photo_colors[r.id] = got.get("color")
+    report = shown_colors(
+        [(r.id, r.title, r.thumbnail_url) for r in results],
+        photo_colors, photos, budget, config, time_left_s,
+    )  # fmt: skip
+    for i, r in enumerate(results):
+        attrs = title_attrs(r.title)
+        attrs["color"] = report.colors.get(r.id) or attrs["color"]
+        results[i] = r.model_copy(update={"attrs": attrs})
+    return report.as_dict()
 
 
 def _collapse_near(

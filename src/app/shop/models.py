@@ -214,6 +214,10 @@ class ShopResult(_Strict):
     rating_count: int | None = None
     also_at: list[AlsoAt] = []  # stage 2n: the same product from other sellers (text only)
     source: ResultSource | None = None  # stage 2q: the search that found it (None in old sessions)
+    # stage F1: what the result is, per dimension (color, material, shape, style, size, feature):
+    # lowercase clarify_vocab.json keys, [] = unknown. None in sessions saved before F1; the view
+    # then reads it from the title. Display and filters only: it never enters ranking.
+    attrs: dict[str, list[str]] | None = None
 
 
 class FilterCounts(BaseModel):
