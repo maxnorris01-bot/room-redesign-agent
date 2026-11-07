@@ -125,6 +125,7 @@ RefineKind = Literal[
     "price_min",
     "must_have",
     "free_note",
+    "filter",  # set only by the typed filters (`app.shop.refine_filters`), never by the model
 ]
 
 
@@ -188,7 +189,7 @@ class SellerBet(_Strict):
 
 class ResultSource(_Strict):
     """Which search first found a result (stage 2q): `kind` is base, writer, seller, peer,
-    thin_variant, supply or refill; `query` is that search's words (never a URL or a key)."""
+    thin_variant, supply, refill or filter; `query` is that search's words (never a URL/key)."""
 
     kind: str
     query: str
