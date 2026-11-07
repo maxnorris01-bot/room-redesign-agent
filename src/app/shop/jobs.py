@@ -66,6 +66,13 @@ class JobManager:
         ]:
             del self._jobs[jid]
 
+    def busy(self, session_id: str | None) -> bool:
+        """Whether a job is running for this session."""
+        with self._lock:
+            return session_id is not None and any(
+                j.state == "running" and j.session_id == session_id for j in self._jobs.values()
+            )
+
     def start(
         self,
         session_id: str | None,

@@ -277,14 +277,11 @@ def test_build_profile_degrades_when_the_model_answer_is_unusable(
 # ---- Shop Again: exclusions, sellers, pages ----
 
 
-def test_shop_again_needs_a_rating_and_a_search(
+def test_shop_again_needs_a_search_not_a_rating(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     svc, _, _, view = start(tmp_path, monkeypatch, [items("a", 8)])
-    with pytest.raises(ApiError) as err:
-        svc.shop_again(view["session_id"])
-    assert err.value.status == 400 and err.value.message == "Rate a few results first"
-    assert view["can_shop_again"] is False
+    assert view["can_shop_again"] is True  # a finished search is enough (refine B1)
     with pytest.raises(ApiError) as err2:
         svc.shop_again("nope-nope-nope-nope")
     assert err2.value.status == 404
@@ -701,7 +698,6 @@ def searched(app: ShopApp) -> tuple[str, list[dict[str, Any]]]:
 
 def test_shop_again_endpoint_end_to_end_and_validation(app: ShopApp) -> None:
     sid, res = searched(app)
-    assert post(app, "/api/shop-again", {"session_id": sid}).status == 400  # nothing rated
     assert post(app, "/api/shop-again", {}).status == 400
     assert post(app, "/api/shop-again", {"session_id": 5}).status == 400
     assert post(app, "/api/shop-again", {"session_id": "a" * 20}).status == 404
@@ -757,7 +753,7 @@ def test_new_endpoints_keep_the_security_behaviour(app: ShopApp) -> None:
         post(app, "/api/shop-again", {"session_id": sid}, {"Host": "evil.example"}),
         post(app, "/api/preference/remove", {}, {"Host": "evil.example"}),
     ]
-    assert [r.status for r in responses] == [400, 404, 403, 403]
+    assert [r.status for r in responses] == [200, 404, 403, 403]  # no rating needed (B1)
     assert all(r.all_headers()["Content-Security-Policy"] == CSP for r in responses)
     cross = {**hdr(), "Origin": "http://evil.example"}
     assert post(app, "/api/shop-again", {"session_id": sid}, cross).status == 403

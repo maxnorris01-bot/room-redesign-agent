@@ -58,6 +58,7 @@ from app.shop.refine import (
     suppress_inferred,
     writer_lines,
 )
+from app.shop.refine_filters import targeted_text
 from app.shop.retailers import (
     AFFINITY_TIERS,
     Retailer,
@@ -68,6 +69,7 @@ from app.shop.retailers import (
 )
 from app.shop.search import (
     AgainContext,
+    FilterFetch,
     SearchOutcome,
     _holds,
     _search_page,
@@ -551,11 +553,31 @@ def run_shop_again(
         session, bets, ratings_now = prepare_bets(session, warnings)
     book = TagBook(cache=session.tag_cache)
     topic_now = current_topic(session)
-    book.notes = build_set(topic_now.refinements if topic_now is not None else []).note_specs()
+    early_set = build_set(topic_now.refinements if topic_now is not None else [])
+    book.notes = early_set.note_specs()
+    filters = early_set.filters  # refine filters: a targeted fetch, tiers, `filters_match`
+    no_ratings = not rated_results(session)  # nothing to learn: only the fetches below run
     shown = list(session.results.values())
     skip_pages = pages_fetched(session)
+    filter_fetch: list[FilterFetch] = []
     prefetched: dict[tuple[str, int], list[SearchCandidate] | Exception] = {}
     concurrent = getattr(search, "thread_safe", False) and search.name == "serper"
+
+    def prefetch_filter() -> None:
+        """The ONE targeted fetch of a filtered Shop Again: the typed search text plus the filter
+        words, the page after the last one fetched for those words. Beside the preference call."""
+        if not filters:
+            return
+        text = targeted_text(base.search_text, filters)
+        if query_key(text) == query_key(base.search_text):
+            return  # the typed words already name every filter word: nothing targeted to ask
+        found = FilterFetch(text, skip_pages.get(query_key(text), 0) + 1, fetches=1)
+        try:
+            with timeline.span("search", f"{text} (page {found.page})"):
+                found.got = _search_page(search, text, found.page, budget, clock)
+        except ProviderError as exc:
+            found.got = exc
+        filter_fetch.append(found)
 
     def tag_shown() -> float:
         # the model tags everything shown (once per result: cached in the session), so the lift
@@ -587,10 +609,23 @@ def run_shop_again(
         steps.begin("ratings")
     timeline.phase_start("preferences")
     t_prefs = clock.now()
-    if concurrent:
-        with ThreadPoolExecutor(max_workers=2) as ex:
+    if no_ratings:
+        # nothing rated, so nothing to learn and nothing to tag: the batch is new because the
+        # session's shown items are excluded and the fetches (next page, written variants, the
+        # filters' words) reach past them
+        profile, warning, tag_shown_s = StoredProfile(), "", 0.0
+        if concurrent:
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                futures = [ex.submit(prefetch_typed), ex.submit(prefetch_filter)]
+                for f in futures:
+                    f.result()
+        else:
+            prefetch_filter()
+    elif concurrent:
+        with ThreadPoolExecutor(max_workers=3) as ex:
             f_tag = ex.submit(tag_shown)
             f_search = ex.submit(prefetch_typed)
+            f_filter = ex.submit(prefetch_filter)
 
             def exposure() -> Exposure:
                 f_tag.result()
@@ -605,8 +640,10 @@ def run_shop_again(
             profile, warning = build_profile(session, base, budget, thumbnailer, exposure=exposure)
             tag_shown_s = f_tag.result()
             f_search.result()
+            f_filter.result()
     else:
         tag_shown_s = tag_shown()
+        prefetch_filter()
         untagged_now = sum(1 for r in shown if book.get(r.id) is None)
         exposure_now = build_exposure(
             shown,
@@ -633,6 +670,8 @@ def run_shop_again(
     ctx = again_context(session, profile, config, queries, dropped, book, query)
     ctx.refine, ctx.refine_lines = rs, ranker_lines(rs)
     ctx.typed = typed_attributes(base)  # stage 2p: the typed request's colour, material, finish
+    ctx.filters = dict(rs.filters)
+    ctx.filter_fetch = filter_fetch[0] if filter_fetch else None
     for name in rs.focus_sellers:  # a focus on a seller searches that seller by name
         key = seller_key(name)
         ctx.affinity_sellers.add(key)

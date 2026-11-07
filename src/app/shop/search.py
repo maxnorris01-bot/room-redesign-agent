@@ -62,6 +62,13 @@ from app.shop.pricecheck import split_price_outliers
 from app.shop.progress import Progress, Timeline
 from app.shop.queries import QueryInput, QueryResult, extra_fillers, variant_queries
 from app.shop.refine import RefineSet
+from app.shop.refine_filters import (
+    MAX_FETCHES,
+    PHOTO_CAP,
+    candidate_attrs,
+    match_stats,
+    tier_sorted,
+)
 from app.shop.retailers import (
     MARKETPLACE_BUDGET,
     canonical_name,
@@ -206,6 +213,23 @@ class AgainContext:
     refine: RefineSet | None = None
     refine_dropped: dict[str, set[str]] = field(default_factory=dict)
     refine_lines: list[str] = field(default_factory=list)
+    # refine filters: the accepted values per dimension (empty: none), and the targeted fetch the
+    # Shop Again made for them (made beside the preference call; see `FilterFetch`)
+    filters: dict[str, list[str]] = field(default_factory=dict)
+    filter_fetch: FilterFetch | None = None
+
+
+@dataclass
+class FilterFetch:
+    """The targeted search of a filtered Shop Again: its words, its page, the page it got (or the
+    error) and how many fetches were made for it (at most `refine_filters.MAX_FETCHES`)."""
+
+    text: str
+    page: int
+    got: list[SearchCandidate] | Exception | None = None
+    fetches: int = 0
+    new: int = 0  # candidates it added to the pool
+    note: str = ""
 
 
 @dataclass
@@ -276,6 +300,7 @@ class SearchOutcome:
     fingerprints: dict[str, int | None] = field(default_factory=dict)  # stage 2n: by result id
     alignment_signals: int = 0  # decided signals the match was measured against
     alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
+    filters_match: dict[str, Any] | None = None  # refine filters: satisfied_all, shown, filters
 
     @property
     def total_usd(self) -> float:
@@ -1349,6 +1374,18 @@ def run_query(
 
     consumed: set[tuple[str, int]] = set()
     book = again.tag_book if again is not None else None
+    filt = again.filters if again is not None else {}  # refine filters (empty: nothing below runs)
+
+    def cattrs(c: SearchCandidate) -> dict[str, list[str]]:
+        """A candidate's attrs for the filter tiers: the colour a photo tag gave it, else its
+        title's words (the same reading the first search publishes)."""
+        rid = result_id(c.product_id)
+        tags = book.get(rid) if book is not None and again is not None else None
+        photo = (
+            tags.get("color") if tags and again and again.tag_source.get(rid) == "photo" else None
+        )
+        return candidate_attrs(c.title, photo)
+
     timeline = (again.timeline if again is not None else None) or Timeline(clock)
     prog = progress or (again.progress if again is not None else None)
     steps = prog if isinstance(prog, Progress) else None
@@ -1644,6 +1681,26 @@ def run_query(
                     pipeline.submit(added)
                 row["found"], row["new_candidates"] = len(got), len(added)
             model_log.append(row)
+    ff = again.filter_fetch if again is not None and filt else None
+    if ff is not None and ff.got is not None:  # the targeted fetch for the refine filters
+        calls += ff.fetches
+        if isinstance(ff.got, Exception):
+            ff.note = "failed"
+            warnings.append(f"The search for your filters was unavailable ({ff.got}).")
+        else:
+            added = absorb(ff.text, ff.page, ff.got, "filter")
+            if not added and ff.fetches < MAX_FETCHES and not expired("the second filter search"):
+                calls += 1
+                ff.fetches += 1
+                more = fetch(ff.text, ff.page + 1)  # nothing new on the first page: the next one
+                if isinstance(more, Exception):
+                    warnings.append(f"The search for your filters was unavailable ({more}).")
+                else:
+                    added = absorb(ff.text, ff.page + 1, more, "filter")
+            ff.new = len(added)
+            supplied.update(c.product_id for c in added)
+            if pipeline is not None:
+                pipeline.submit(added)
     thin_info: dict[str, Any] = {}
     fill_info: dict[str, Any] = {}
     if steps is not None:
@@ -1675,6 +1732,8 @@ def run_query(
         rest = [c for c in pool if c.product_id not in kept][: limit - len(keep)]
         chosen = {c.product_id for c in [*keep, *rest]}
         pool = [c for c in pool if c.product_id in chosen]
+    if filt:  # the rank call sees the candidates that fit the filters first
+        pool = tier_sorted(pool, cattrs, filt)
     pool_index = {c.product_id: i + 1 for i, c in enumerate(pool)}
     ranked = False
     ordered: list[tuple[SearchCandidate, str]] = []
@@ -1770,7 +1829,11 @@ def run_query(
                 again.tag_source if again is not None else typed_sources,
                 timeline, max(0.0, hard_stop_at - clock.now()),
                 use_images=config.shop_photo_tag_top_n > 0,
-                limit=config.shop_photo_tag_top_n or config.shop_tag_top_n,
+                limit=(
+                    min(config.shop_photo_tag_top_n or config.shop_tag_top_n, PHOTO_CAP)
+                    if filt and config.shop_photo_tag_top_n > 0
+                    else config.shop_photo_tag_top_n or config.shop_tag_top_n
+                ),
             )  # fmt: skip
         photo_info = report.as_dict()
 
@@ -1779,6 +1842,8 @@ def run_query(
         photo_book = TagBook()
     if again is not None and book is not None:
         composition_info["peers"] = peer_log
+        if filt:  # the most promising candidates are tagged and photographed first
+            ordered = tier_sorted(ordered, lambda p: cattrs(p[0]), filt)
         tag_top(ordered)
         photo_step()
         if not minority_values([c for c, _ in ordered], again):
@@ -1890,6 +1955,9 @@ def run_query(
     guard_state: list[dict[str, Any]] = []
 
     def select() -> tuple[list[ShopResult], int, int]:
+        nonlocal ordered
+        if filt:  # refine filters: the batch fills from the best tier first (a stable sort)
+            ordered = tier_sorted(ordered, lambda p: cattrs(p[0]), filt)
         seller_cap_log.clear()
         guard_state.clear()
         caps_now = again.guard_caps if again is not None else None
@@ -2180,6 +2248,20 @@ def run_query(
         steps.finish("tagging")
     if attrs_info and again is not None:
         composition_info["shown_attrs"] = attrs_info
+    filters_match: dict[str, Any] | None = None
+    if filt:
+        filters_match = match_stats([r.attrs for r in results], filt)
+        composition_info["filters"] = {
+            **filters_match,
+            "values": filt,
+            "fetch": (
+                {"text": ff.text, "page": ff.page, "fetches": ff.fetches, "new": ff.new,
+                 "note": ff.note}
+                if ff is not None
+                else None
+            ),
+            "photo_cap": PHOTO_CAP,
+        }  # fmt: skip
     t_end = clock.now()
     dd = counts.dedupe or {}
     filtered_out = (
@@ -2363,6 +2445,7 @@ def run_query(
         ranked=ranked,
         warnings=warnings,
         kind="shop_again" if again is not None else "search",
+        filters_match=filters_match,
         serper_credits=calls * config.serper_credits_per_call if search.name == "serper" else 0,
         queries=used,
         pages=pages,
