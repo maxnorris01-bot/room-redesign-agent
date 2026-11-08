@@ -431,6 +431,7 @@ def test_only_the_clarify_flow_and_its_callers_import_the_spike() -> None:
     """Stage Q1 wired the spike modules in behind a flag: the flow module (and the two modules
     that call it) import them; the pipeline, the parse, the store and the server do not."""
     importers = set()
+    pure = {"facets.py": set(), "colortags.py": set()}  # what the two helper users import
     for path in (ROOT / "src").rglob("*.py"):
         if path.name in ("clarify.py", "clarify_verify.py"):
             continue
@@ -443,11 +444,21 @@ def test_only_the_clarify_flow_and_its_callers_import_the_spike() -> None:
                 names = [a.name for a in node.names]
             if any("clarify" in n for n in names):
                 importers.add(path.name)
+                if path.name in pure:
+                    pure[path.name].update(n for n in names if "clarify" in n)
     assert importers <= {
         "clarify_flow.py",
         "clarify_mock.py",
         "clarify_first.py",
         "service.py",
         "again.py",
+        # The colour facet code (PR #41) reuses the option vocabulary helpers. Allowed because it
+        # imports only clarify_visual, a small pure module (checked below), never the spike.
+        "facets.py",
+        "colortags.py",
+    }
+    assert pure == {
+        "facets.py": {"app.shop.clarify_visual"},
+        "colortags.py": {"app.shop.clarify_visual"},
     }
     assert not importers & {"search.py", "parse.py", "store.py", "server.py", "jobs.py"}

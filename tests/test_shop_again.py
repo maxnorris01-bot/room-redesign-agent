@@ -478,8 +478,12 @@ def test_rank_v4_is_used_for_shop_again_and_v1_for_a_typed_search(
     svc.rate(sid, res[2]["id"], "dislike", "too dark")
     search.sequence = [items("n", 6), []]
     svc.shop_again(sid)
-    titles = [c["output_config"]["format"]["schema"]["title"] for c in client.calls]
-    assert [t for t in titles if t != "CandidateTags"][-2:] == ["PreferenceTags", "RankedFinalists"]
+    # The colour call's schema is hand-written (no pydantic model, so no `title`): it reads as None.
+    titles = [c["output_config"]["format"]["schema"].get("title") for c in client.calls]
+    assert [t for t in titles if t not in ("CandidateTags", None)][-2:] == [
+        "PreferenceTags",
+        "RankedFinalists",
+    ]
     assert "CandidateTags" in titles[-6:]  # the shown and pool results are tagged first
     rank = rank_call(client)
     assert "repeat search" in rank["system"]
