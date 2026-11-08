@@ -126,6 +126,7 @@ RefineKind = Literal[
     "must_have",
     "free_note",
     "filter",  # set only by the typed filters (`app.shop.refine_filters`), never by the model
+    "price",  # set only by the typed price range (`app.shop.refine_price`), never by the model
 ]
 
 

@@ -92,6 +92,7 @@ class SearchRecord(_Model):
     alignment_total: int | None = None
     alignment_signals: int | None = None  # decided signals the match was measured against (2f)
     filters_match: dict[str, Any] | None = None  # refine filters: satisfied_all, shown, filters
+    price_filter: dict[str, Any] | None = None  # typed price: min, max, removed
     topic: int | None = None  # stage 2j: the topic this search belongs to
     topic_notice: str = ""  # stage 2j: what the page says under the search box
 

@@ -67,6 +67,7 @@ from app.shop.refine_filters import (
     PHOTO_CAP,
     candidate_attrs,
     match_stats,
+    targeted_text,
     tier_sorted,
 )
 from app.shop.retailers import (
@@ -217,6 +218,8 @@ class AgainContext:
     # Shop Again made for them (made beside the preference call; see `FilterFetch`)
     filters: dict[str, list[str]] = field(default_factory=dict)
     filter_fetch: FilterFetch | None = None
+    # the typed price range (min, max), None without one: strict drop, price words, one extra page
+    price: tuple[float | None, float | None] | None = None
 
 
 @dataclass
@@ -301,6 +304,7 @@ class SearchOutcome:
     alignment_signals: int = 0  # decided signals the match was measured against
     alignment: tuple[int, int] | None = None  # (matching, total) for a Shop Again
     filters_match: dict[str, Any] | None = None  # refine filters: satisfied_all, shown, filters
+    price_filter: dict[str, Any] | None = None  # typed price: min, max, removed (None: no price)
 
     @property
     def total_usd(self) -> float:
@@ -1701,6 +1705,25 @@ def run_query(
             supplied.update(c.product_id for c in added)
             if pipeline is not None:
                 pipeline.submit(added)
+    price_page = False  # the one extra page a typed price may cost (never padded past the range)
+    if (
+        again is not None
+        and again.price is not None
+        and len(pool) < RESULT_COUNT
+        and not expired("the extra price search")
+    ):
+        ptext = targeted_text(query.search_text, filt, again.price)
+        ppage = max(again.skip_pages.get(query_key(ptext), 0), pages.get(query_key(ptext), 0)) + 1
+        calls += 1
+        price_page = True
+        got_more = fetch(ptext, ppage)
+        if isinstance(got_more, Exception):
+            warnings.append(f"The extra search for your price was unavailable ({got_more}).")
+        else:
+            added = absorb(ptext, ppage, got_more, "price")
+            supplied.update(c.product_id for c in added)
+            if pipeline is not None:
+                pipeline.submit(added)
     thin_info: dict[str, Any] = {}
     fill_info: dict[str, Any] = {}
     if steps is not None:
@@ -2116,6 +2139,7 @@ def run_query(
         again is not None
         and len(results) < RESULT_COUNT
         and calls < cap
+        and not price_page  # a typed price already spent its one extra page
         and not expired("the refill search")
     ):
         word = _strongest_value(again)
@@ -2446,6 +2470,15 @@ def run_query(
         warnings=warnings,
         kind="shop_again" if again is not None else "search",
         filters_match=filters_match,
+        price_filter=(
+            {
+                "min": again.price[0],
+                "max": again.price[1],
+                "removed": counts.no_price + counts.out_of_range,
+            }
+            if again is not None and again.price is not None
+            else None
+        ),
         serper_credits=calls * config.serper_credits_per_call if search.name == "serper" else 0,
         queries=used,
         pages=pages,

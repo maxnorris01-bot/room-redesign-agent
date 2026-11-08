@@ -52,6 +52,7 @@ from app.shop.progress import SHOP_AGAIN_REFINE_STEPS, Progress
 from app.shop.redact import log_failure
 from app.shop.refine import REJECTED, add_chips, clean_instruction, interpret
 from app.shop.refine_filters import FilterError, parse_filters, with_filters
+from app.shop.refine_price import PriceError, parse_price, with_price
 from app.shop.resolve import (
     UnknownResult,
     auto_lookups_used,
@@ -287,6 +288,7 @@ class ShopService:
             base["search"] = {
                 "index": last.index,
                 "filters_match": last.filters_match,
+                "price_filter": last.price_filter,
                 "topic": last.topic,
                 "topic_notice": last.topic_notice,
                 "request": last.request,
@@ -681,6 +683,7 @@ class ShopService:
                 },
                 tagging=outcome.tagging,
                 filters_match=outcome.filters_match,
+                price_filter=outcome.price_filter,
                 diversity={d: [v[0], v[1]] for d, v in outcome.diversity.items()},
                 seller_share=list(outcome.seller_share) if outcome.seller_share else None,
                 pages=outcome.pages,
@@ -1030,14 +1033,40 @@ class ShopService:
             chips = [c.model_dump(mode="json") for c in topic.refinements]
             return {"refine": chips, "notices": [], "refine_usd": live.refine_usd}
 
-    def refine(self, session_id: Any, text: Any, filters: Any = UNSET) -> dict[str, Any]:
+    def set_price(self, session_id: Any, raw: Any) -> dict[str, Any]:
+        """Replace the typed price range of the current topic (`{}` or both null clears it). It is a
+        chip (kind `price`, id `price`) that every following Shop Again applies until removed with
+        `/refine/remove`. See `app.shop.refine_price`."""
+        try:
+            price = parse_price(raw)
+        except PriceError as exc:
+            raise ApiError(400, str(exc)) from None
+        self._load(session_id)
+        assert isinstance(session_id, str)
+        with self.store.transaction(session_id) as live:
+            topic = self._topic_of(live)
+            topic.refinements = with_price(topic.refinements, price)
+            chips = [c.model_dump(mode="json") for c in topic.refinements]
+            return {"refine": chips, "notices": [], "refine_usd": live.refine_usd}
+
+    def refine(
+        self, session_id: Any, text: Any, filters: Any = UNSET, price: Any = UNSET
+    ) -> dict[str, Any]:
         """Interpret one plain instruction and add its chips to the current topic. Rejects empty or
         nonsense input with a short message. The instruction is untrusted text (see
         `app.shop.refine`). With `filters` (and no text) only the typed filters are replaced."""
+        done: dict[str, Any] | None = None
+        if price is not UNSET:
+            try:
+                parse_price(price)  # both payloads are checked before either is stored
+            except PriceError as exc:
+                raise ApiError(400, str(exc)) from None
         if filters is not UNSET:
             done = self.set_filters(session_id, filters)
-            if text in (None, ""):
-                return done
+        if price is not UNSET:
+            done = self.set_price(session_id, price)
+        if done is not None and text in (None, ""):
+            return done
         if not isinstance(text, str):
             raise ApiError(400, "type an instruction first")
         cleaned = clean_instruction(text)

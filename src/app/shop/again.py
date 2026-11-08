@@ -464,7 +464,7 @@ def refine_trace(
             elif c.note_mode == "exclude":
                 applied["removed"] = len(ctx.refine_dropped.get(c.id, ()))
             applied["rank_hint"] = c.note_mode != "exclude"
-        elif c.kind in ("price_max", "price_min"):
+        elif c.kind in ("price_max", "price_min", "price"):
             applied["price"] = c.target
             applied["rank_hint"] = False
         rows.append(
@@ -568,7 +568,7 @@ def run_shop_again(
         words, the page after the last one fetched for those words. Beside the preference call."""
         if not filters:
             return
-        text = targeted_text(base.search_text, filters)
+        text = targeted_text(base.search_text, filters, early_set.typed_price)
         if query_key(text) == query_key(base.search_text):
             return  # the typed words already name every filter word: nothing targeted to ask
         found = FilterFetch(text, skip_pages.get(query_key(text), 0) + 1, fetches=1)
@@ -671,6 +671,7 @@ def run_shop_again(
     ctx.refine, ctx.refine_lines = rs, ranker_lines(rs)
     ctx.typed = typed_attributes(base)  # stage 2p: the typed request's colour, material, finish
     ctx.filters = dict(rs.filters)
+    ctx.price = rs.typed_price
     ctx.filter_fetch = filter_fetch[0] if filter_fetch else None
     for name in rs.focus_sellers:  # a focus on a seller searches that seller by name
         key = seller_key(name)

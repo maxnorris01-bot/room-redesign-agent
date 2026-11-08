@@ -223,6 +223,27 @@ What a Shop Again does with filters: one targeted search (the typed search text 
 
 `search.filters_match` (always present): `null` unless the batch was made with filters, else `{"satisfied_all": integer, "shown": integer, "filters": [Dimension, ...]}`, computed from the shown results' `attrs`: "5 of 12 match all your filters".
 
+**Price range (additive).** A typed price for the NEXT Shop Again. Send it on the same endpoint, alongside `filters` and/or `text`:
+
+Request `{"session_id": string, "price": {"min": number | null, "max": number | null}}`. It REPLACES the stored price; `{}` or both null clears it. Numbers are `>= 0`; `min <= max` when both are given. `400` otherwise (a non-object, a negative, a non-number, `min > max`); a `400` stores nothing, not even the `filters` sent with it. With `price` only (no `text`) no model is called. Response `200`, the same shape as above: the `refine` list gains (or loses) one chip, id `price`, kind `price`, strength `focus`, removable with `POST /refine/remove` (id `price`), cleared by a new product category like the other refinements, and applied to every following Shop Again until removed.
+
+| range | `target` | `label` |
+|---|---|---|
+| min and max | `price:50-200` | `Price: $50-$200` |
+| max only | `price:-200` | `Under $200` |
+| min only | `price:50-` | `Over $50` |
+
+Whole dollars read without cents ("$50"); a fractional bound reads with them ("$49.50"). Example chip: `{"id": "price", "kind": "price", "target": "price:50-200", "strength": "focus", "label": "Price: $50-$200", "approximate": false, "text": "", "note_mode": ""}`.
+
+What a Shop Again does with a typed price (a first search, and a Shop Again without one, behave exactly as before):
+
+1. The typed range REPLACES the budget parsed from the original request and any text refinement such as "under $400" (both ends: a parsed floor is dropped when only a max is typed).
+2. Strict filter, after the fetches and the merge and before ranking: every candidate whose item price (the one the card shows, not shipping) is outside `[min, max]`, inclusive, is dropped, and so is every candidate with no usable USD price. Nothing out of range is ever shown, even if the batch ends short.
+3. Fetch: when there are typed filters, the price words come first in the targeted search ("under $200", "over $50" or "$50 to $200"), then the filter words, at most 4 added words in all. Serper's shopping endpoint takes no price parameter, so there is no other lever. If the strict filter leaves fewer than a full batch (24), ONE extra page is fetched (the targeted words with the price words, the next page for them) and the result re-filtered; it counts in `serper_calls`, `serper_credits` and `total_usd`, and replaces the usual refill search. A failed extra page is a warning.
+4. It works with typed filters: the price drop comes first, then the filter tiers.
+
+`search.price_filter` (always present): `null` unless the batch was made with a typed price, else `{"min": number | null, "max": number | null, "removed": integer}`, `removed` being how many candidates the price rule dropped (out of range or unpriced) across everything fetched.
+
 ### POST /refine/remove
 
 Request `{"session_id": string, "id": string}`. Response `200 {"refine": [chip, ...]}`. `404` for an unknown chip. An answer to a clarifying question
