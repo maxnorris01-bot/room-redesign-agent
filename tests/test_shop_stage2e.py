@@ -53,7 +53,7 @@ def tag_calls(client: RouterClient) -> list[dict[str, Any]]:
     return [
         c
         for c in client.calls
-        if c["output_config"]["format"]["schema"]["title"] == "CandidateTags"
+        if c["output_config"]["format"]["schema"].get("title") == "CandidateTags"
     ]
 
 

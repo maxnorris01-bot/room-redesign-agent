@@ -108,9 +108,8 @@ def test_every_model_call_in_shop_mode_asks_for_no_thinking() -> None:
             assert (
                 shared or "disable_thinking=True" in text[match.start() : match.start() + 1200]
             ), path.name
-    assert (
-        calls == 8
-    )  # parse, rank, preferences (live, comment), two tagging calls, the query writer, the refine call
+    assert calls == 9  # parse, rank, preferences (live, comment), two tagging calls, the query
+    # writer, the refine call, and the result-colour vision call (colortags.py, PR #41)
 
 
 def test_the_wrapper_sends_the_disabled_field_only_when_asked(
