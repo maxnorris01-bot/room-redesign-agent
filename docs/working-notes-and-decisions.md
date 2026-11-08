@@ -249,6 +249,8 @@ this choice over the alternatives. Note what's still open or deferred within it,
 
 - **2026-11-06, refine B1: filters are preferences for the next search; Shop Again needs no rating.** Filters are refine chips (kind `filter`) set through `POST /refine`; a filtered Shop Again makes one targeted fetch (a second page only if the first added nothing new), orders candidates into tiers (colour > style > material; a known wrong colour never outranks a fitting one) and reports `filters_match`. An unrated Shop Again skips the preference and shown-tagging calls and relies on exclusion plus fresh fetches. "At most 2 fetches" was read as the targeted ones. See `docs/sessions/2026-11-06-shop-refine-b1.md`.
 
+- **2026-11-07, shop-price: a typed price range is a refine chip that overrides the parsed budget.** `POST /refine` takes `price`; the strict drop reuses `apply_filters` (the query carries the typed range, both ends replaced), so out-of-range and unpriced items never show; price words lead the targeted search (4-word cap); at most ONE extra page when the drop leaves under 24 (it replaces the refill search). A price-only Shop Again gets no targeted fetch of its own. See `docs/sessions/2026-11-07-shop-price.md`.
+
 ## See also
 
 - `docs/sessions/*.md` - what changed and why, per work session.

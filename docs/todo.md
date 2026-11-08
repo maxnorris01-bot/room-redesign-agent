@@ -8,6 +8,8 @@ the checkmark itself. Add new items as they come up; don't wait for a session's 
 
 ## Up next (in priority order)
 
+- [ ] **Max: review the price PR (`shop-price`), then `fly deploy`.** `POST /refine` takes `price`; `search.price_filter` is new; the page needs a price control (`docs/api-contract.md`, "Price range"). One live run: 24 shown, 0 above $100, 51 dropped. `docs/sessions/2026-11-07-shop-price.md`.
+
 <!-- The most important items, in the order you'd actually tackle them. -->
 
 - [ ] **Max: review the refine B1 PR (`shop-refine`), run the two live Shop Agains on "rug" (script path in `docs/sessions/2026-11-06-shop-refine-b1.md`; the live command was denied in the build session), then `fly deploy`.** Shop Again works unrated; `POST /refine` takes `filters`; `search.filters_match` is new. The front end must stop gating the button on a rating and use the filters as "refine search" (`docs/api-contract.md`). Four tests already failing on `main` since PR #41 are listed in the session doc.

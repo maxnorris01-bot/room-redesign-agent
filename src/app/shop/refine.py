@@ -32,6 +32,7 @@ from app.shop.models import (
     StoredProfile,
 )
 from app.shop.refine_filters import filters_of
+from app.shop.refine_price import price_of
 from app.shop.retailers import TIER_LABELS, TIERS, canonical_name, retailer_of, seller_key
 from app.shop.thresholds import (
     FREE_NOTES_MAX,
@@ -299,6 +300,8 @@ class RefineSet:
     prefer_notes: dict[str, str] = field(default_factory=dict)
     # refine filters: dimension -> accepted values (the typed filter chips, priority order)
     filters: dict[str, list[str]] = field(default_factory=dict)
+    # the typed price range (chip kind `price`): (min, max), overrides every parsed price
+    typed_price: tuple[float | None, float | None] | None = None
 
     @property
     def active(self) -> bool:
@@ -348,8 +351,8 @@ def build_set(chips: list[RefineChip]) -> RefineSet:
             rs.price_min = float(c.target)
         elif c.kind == "must_have":
             rs.must_have.append(c.target)
-        elif c.kind == "filter":
-            pass  # read below, once, by `filters_of`
+        elif c.kind in ("filter", "price"):
+            pass  # read below, once, by `filters_of` and `price_of`
         else:
             rs.notes.append(c.label + (" (approximate)" if c.approximate else ""))
             mode = c.note_mode or "prefer"
@@ -358,17 +361,27 @@ def build_set(chips: list[RefineChip]) -> RefineSet:
             )
             bucket[c.id] = c.target
     rs.filters = filters_of(chips)
+    rs.typed_price = price_of(chips)
+    if rs.typed_price is not None:  # a typed price replaces the parsed and the text ones, both ends
+        rs.price_min, rs.price_max = rs.typed_price
     return rs
 
 
 def apply_to_query(query: ShopQuery, rs: RefineSet) -> ShopQuery:
     """The query with the refine prices (which replace the typed range) and must-haves."""
     update: dict[str, Any] = {}
-    if rs.price_max is not None:
-        update["price_max"] = rs.price_max
-    if rs.price_min is not None:
-        update["price_min"] = rs.price_min
-    if update.get("price_max") is not None and (update.get("price_min") or query.price_min):
+    if rs.typed_price is not None:  # both ends, so a parsed budget on the other end is replaced
+        update["price_min"], update["price_max"] = rs.typed_price
+    else:
+        if rs.price_max is not None:
+            update["price_max"] = rs.price_max
+        if rs.price_min is not None:
+            update["price_min"] = rs.price_min
+    if (
+        rs.typed_price is None
+        and update.get("price_max") is not None
+        and (update.get("price_min") or query.price_min)
+    ):
         low = update.get("price_min", query.price_min)
         if low is not None and low > update["price_max"]:
             update["price_min"] = None  # a lower cap than the typed floor: the cap wins

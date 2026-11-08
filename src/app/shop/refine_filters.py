@@ -21,6 +21,7 @@ from typing import Any, Literal, TypeVar
 from app.shop.colortags import photo_tag_color
 from app.shop.facets import ATTR_DIMENSIONS, TITLES, _vocabulary_order, title_attrs
 from app.shop.models import MAX_SEARCH_TEXT_CHARS, RefineChip
+from app.shop.refine_price import Price, price_words
 
 _T = TypeVar("_T")
 Filters = dict[str, list[str]]  # dimension -> accepted values, in priority order
@@ -101,12 +102,15 @@ def filters_of(chips: Iterable[RefineChip]) -> Filters:
     return {d: found[d] for d in PRIORITY if d in found}
 
 
-def targeted_text(base_text: str, filters: Filters) -> str:
-    """The typed search text plus at most `MAX_ADDED_WORDS` words of the filters (colour first,
-    then style, material, the rest; a word already in the text is not added). No price words: a
-    filter value is a vocabulary key, never a number."""
+def targeted_text(base_text: str, filters: Filters, price: Price | None = None) -> str:
+    """The typed search text plus at most `MAX_ADDED_WORDS` added words: the typed price's words
+    first ("under $200", only with a typed price), then the filters (colour first, then style,
+    material, the rest). A word already in the text is not added."""
     have = set(base_text.lower().split())
     added: list[str] = []
+    for word in price_words(price) if price is not None else []:
+        if word.lower() not in have and word not in added and len(added) < MAX_ADDED_WORDS:
+            added.append(word)
     for values in filters.values():
         for value in values:
             for word in value.replace("_", " ").split():

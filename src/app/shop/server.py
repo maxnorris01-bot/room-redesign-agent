@@ -421,6 +421,7 @@ class ShopApp:
                 data.get("session_id"),
                 data.get("text"),
                 data["filters"] if "filters" in data else UNSET,
+                data["price"] if "price" in data else UNSET,
             )
         if name == "refine_remove":
             return s.remove_refine(data.get("session_id"), data.get("id"))
