@@ -13,7 +13,7 @@ This repository is the Python back end, the evaluation harness and the design re
 Shop Mode (the part that is live):
 
 - You type a request such as "modern couches under $1000". It searches Google Shopping through Serper, filters and ranks the listings with Claude Haiku, and shows a grid.
-- You rate each item Love, Like or Dislike, with an optional comment.
+- You rate each item Love, Like or Dislike.
 - **Shop Again** returns a fresh batch that excludes everything already seen and is shaped by your ratings.
 - **Refine search** applies to the next batch: colour, material, shape, style, size, feature, a price minimum and maximum, or free text.
 - A Saved list keeps what you loved and liked, and a Share list (email, text, print, CSV) lives in the front end.
@@ -82,7 +82,7 @@ Latest full live run: 2026-10-29, 11 of the 12 cases scored (case-07 failed with
 - **Attributes are thin.** Material, style and shape come mostly from listing titles, which often leave them out; many listings state no size, so the judge answers "cannot tell" and the check counts that as a miss.
 - **The judges are the same model family as the pipeline** (Haiku) and uncalibrated, so blind spots may be shared. The persona is a text description, not a person.
 - **Small, noisy sample.** Twelve requests, one live run, live results vary run to run ([`evals/shop/known_instability.md`](evals/shop/known_instability.md)).
-- **Clarifying questions were built and set aside.** Questions with option pictures were meant to hide the search wait; they appeared 6 to 10 s into the search and the filters replaced them. The code stays behind `APP_SHOP_CLARIFY`, off by default ([ADR 0015](docs/adr/0015-clarifying-questions-spike.md), [0016](docs/adr/0016-clarify-picture-verification.md), [0017](docs/adr/0017-clarifying-questions-backend.md)).
+- **Clarifying questions were built and set aside.** Questions with option pictures were meant to hide the search wait and sharpen the results. In live tests they added waiting instead of hiding it and barely changed what came back, so I retired them and added "Refine search" after the first results instead. The code stays behind `APP_SHOP_CLARIFY`, off by default ([ADR 0015](docs/adr/0015-clarifying-questions-spike.md), [0016](docs/adr/0016-clarify-picture-verification.md), [0017](docs/adr/0017-clarifying-questions-backend.md)).
 - **Redesign Mode is not built.**
 
 ## Security and cost
